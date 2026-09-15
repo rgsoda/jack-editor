@@ -168,33 +168,42 @@ impl View {
     /// Strip trailing whitespace from every line, as one undoable transaction,
     /// and say how many lines changed. The cursor comes back to where it was,
     /// or to the end of its line if it was sitting in the spaces that went.
-    /// Indent or dedent lines `first..=last` by `levels` steps, as one
-    /// transaction. Returns how many lines actually moved.
-    ///
-    /// Blank lines are left alone, as vim leaves them: indenting a paragraph
-    /// should not leave trailing whitespace on the gaps between its lines.
-    pub fn shift_lines(
-        &mut self,
-        first: usize,
-        last: usize,
-        out: bool,
-        levels: usize,
-        indent: Indent,
-    ) -> usize {
+    /// Whether there is an indent query for this file at all, as opposed to
+    /// there being one that has nothing to say about a particular line.
+    pub fn has_indent_rules(&self) -> bool {
+        self.syntax.as_ref().is_some_and(|syntax| syntax.has_indent_rules())
+    }
+
+    /// What the grammar says this line's indentation should be, in steps.
+    /// `None` when there is no indent query for the language.
+    pub fn indent_level(&self, line: usize) -> Option<usize> {
+        let syntax = self.syntax.as_ref()?;
+        let text = self.doc.line_str(line);
+        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        let base = self.doc.line_to_char(line);
+        let at = self.doc.text.char_to_byte(base + blank);
+
+        let start = self.doc.line_to_byte(line);
+        let end = match line + 1 < self.doc.len_lines() {
+            true => self.doc.line_to_byte(line + 1),
+            false => self.doc.len_bytes(),
+        };
+        syntax.indent_level(&self.doc.text, at, start..end)
+    }
+
+    /// Put each of `targets` - (line, display column) - at that column, as one
+    /// transaction. Blank lines are left alone, as vim leaves them: indenting
+    /// a paragraph should not leave trailing whitespace in the gaps between
+    /// its lines. Returns how many lines actually moved.
+    pub fn set_indents(&mut self, targets: &[(usize, usize)], indent: Indent) -> usize {
         let mut changes = Vec::new();
-        let step = indent.width * levels;
-        for line in first..=last.min(self.doc.len_lines().saturating_sub(1)) {
+        for &(line, column) in targets {
             let text = self.doc.line_str(line);
             if text.trim().is_empty() {
                 continue;
             }
             let leading = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-            let column = display_col(&text, leading);
-            let target = match out {
-                true => column + step,
-                false => column.saturating_sub(step),
-            };
-            let wanted = indent.make(target);
+            let wanted = indent.make(column);
             if wanted == text[..leading_bytes(&text, leading)] {
                 continue;
             }
@@ -226,6 +235,65 @@ impl View {
         self.goal_col = None;
         self.history.push(Transaction { sel_after: self.sel, ..tx });
         count
+    }
+
+    /// Indent or dedent lines `first..=last` by `levels` steps.
+    pub fn shift_lines(
+        &mut self,
+        first: usize,
+        last: usize,
+        out: bool,
+        levels: usize,
+        indent: Indent,
+    ) -> usize {
+        let step = indent.width * levels;
+        let targets: Vec<(usize, usize)> = (first..=last.min(self.last_line()))
+            .map(|line| {
+                let text = self.doc.line_str(line);
+                let leading = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+                let column = display_col(&text, leading);
+                let target = match out {
+                    true => column + step,
+                    false => column.saturating_sub(step),
+                };
+                (line, target)
+            })
+            .collect();
+        self.set_indents(&targets, indent)
+    }
+
+    /// Put one line at `column`, keeping the cursor where it is in the text
+    /// rather than where it is on the screen. `merge` folds the edit into the
+    /// transaction before it, for the auto-indent that follows `enter`: one
+    /// keypress should be one undo.
+    pub fn set_line_indent(&mut self, line: usize, column: usize, indent: Indent, merge: bool) {
+        let text = self.doc.line_str(line);
+        let leading = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+        let wanted = indent.make(column);
+        if wanted == text[..leading_bytes(&text, leading)] {
+            return;
+        }
+
+        let base = self.doc.line_to_char(line);
+        let cursor = self.sel.head;
+        let moved = (cursor + wanted.chars().count()).saturating_sub(leading);
+        let change = Change {
+            pos: base,
+            removed: text.chars().take(leading).collect(),
+            inserted: wanted,
+        };
+        let tx = Transaction::new(vec![change], self.sel, Selection::point(moved.max(base)));
+
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        self.sel = tx.sel_after;
+        self.goal_col = None;
+        match merge {
+            true => self.history.amend(tx),
+            false => self.history.push(tx),
+        }
     }
 
     pub fn trim_trailing_whitespace(&mut self) -> usize {

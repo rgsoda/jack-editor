@@ -26,6 +26,9 @@ pub struct LanguageConfig {
     language: fn() -> Language,
     highlights: &'static str,
     injections: &'static str,
+    /// Written here rather than shipped by the grammar crates, which have no
+    /// indent queries: what indents, and what comes back out.
+    indents: &'static str,
 }
 
 fn rust_language() -> Language {
@@ -49,6 +52,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         language: rust_language,
         highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
         injections: tree_sitter_rust::INJECTIONS_QUERY,
+        indents: include_str!("../queries/rust/indents.scm"),
     },
     LanguageConfig {
         name: "html",
@@ -56,6 +60,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         language: html_language,
         highlights: tree_sitter_html::HIGHLIGHTS_QUERY,
         injections: tree_sitter_html::INJECTIONS_QUERY,
+        indents: include_str!("../queries/html/indents.scm"),
     },
     LanguageConfig {
         name: "javascript",
@@ -63,6 +68,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         language: javascript_language,
         highlights: tree_sitter_javascript::HIGHLIGHT_QUERY,
         injections: tree_sitter_javascript::INJECTIONS_QUERY,
+        indents: include_str!("../queries/javascript/indents.scm"),
     },
 ];
 
@@ -81,11 +87,15 @@ struct Compiled {
     language: Language,
     highlights: Query,
     injections: Option<Query>,
+    indents: Option<Query>,
     /// Highlight capture index to style, resolved against the theme up front.
     capture_styles: Vec<Option<Style>>,
     /// Indices of the `@injection.content` and `@injection.language` captures.
     content_capture: Option<u32>,
     language_capture: Option<u32>,
+    /// Indices of the `@indent` and `@outdent` captures.
+    indent_capture: Option<u32>,
+    outdent_capture: Option<u32>,
 }
 
 fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
@@ -114,13 +124,28 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
         None => (None, None),
     };
 
+    let indents = match config.indents.trim().is_empty() {
+        true => None,
+        false => Some(
+            Query::new(&language, config.indents)
+                .with_context(|| format!("compiling {} indent query", config.name))?,
+        ),
+    };
+    let (indent_capture, outdent_capture) = match &indents {
+        Some(query) => (capture(query, "indent"), capture(query, "outdent")),
+        None => (None, None),
+    };
+
     Ok(Rc::new(Compiled {
         language,
         highlights,
         injections,
+        indents,
         capture_styles,
         content_capture,
         language_capture,
+        indent_capture,
+        outdent_capture,
     }))
 }
 
@@ -231,6 +256,90 @@ impl Syntax {
             found.push((capture.node.byte_range(), kind));
         }
         found
+    }
+
+    /// Whether the byte sits anywhere inside a node tree-sitter could not
+    /// make sense of.
+    fn inside_error(&self, byte: usize) -> bool {
+        let mut node = self.tree.root_node().descendant_for_byte_range(byte, byte);
+        while let Some(current) = node {
+            if current.is_error() {
+                return true;
+            }
+            node = current.parent();
+        }
+        false
+    }
+
+    pub fn has_indent_rules(&self) -> bool {
+        self.root.indents.is_some()
+    }
+
+    /// How many steps of indentation the line covering `line` (a byte range)
+    /// deserves, reading the tree at `at`. `None` when the grammar has nothing
+    /// to say: no indent query, or a tree too broken here to trust.
+    ///
+    /// Every `@indent` ancestor that started on an earlier line is a step; an
+    /// `@outdent` node starting on this line takes one back, which is what
+    /// puts a closing brace under the thing it closes.
+    pub fn indent_level(&self, rope: &Rope, at: usize, line: Range<usize>) -> Option<usize> {
+        let query = self.root.indents.as_ref()?;
+        let (indent, outdent) = (self.root.indent_capture?, self.root.outdent_capture);
+
+        // One query run, restricted to the line: tree-sitter returns every
+        // match that *overlaps* that range, which is exactly the enclosing
+        // blocks plus whatever starts on the line itself.
+        let mut indents: Vec<usize> = Vec::new();
+        let mut outdents: Vec<usize> = Vec::new();
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(line);
+        let mut matches = cursor.captures(query, self.tree.root_node(), RopeProvider(rope));
+        while let Some((m, index)) = matches.next() {
+            let capture = m.captures()[*index];
+            if capture.index == indent {
+                indents.push(capture.node.id());
+            } else if Some(capture.index) == outdent {
+                outdents.push(capture.node.id());
+            }
+        }
+
+        // What decides this line's indent is the context before it, so that is
+        // what has to have parsed. A half-typed block is an ERROR node with
+        // the `{` loose inside it rather than a block at all - and that is
+        // exactly the moment you are asking.
+        let before = rope
+            .bytes_at(at)
+            .reversed()
+            .position(|b| !b.is_ascii_whitespace())
+            .map(|back| at - back - 1);
+        if self.inside_error(at) || before.is_some_and(|byte| self.inside_error(byte)) {
+            return None;
+        }
+
+        let row = rope.byte_to_line(at);
+        // One byte wide, not zero: an empty range on a token boundary picks
+        // the node that *contains* it, and the closing brace we need to see is
+        // the one that starts there.
+        let end = (at + 1).min(rope.len_bytes());
+        let mut node = self.tree.root_node().descendant_for_byte_range(at, end)?;
+        // Counted separately and subtracted at the end: the walk meets the
+        // closing brace before the blocks that put it there, so taking one off
+        // as we go would take it off nothing.
+        let (mut steps, mut back) = (0usize, 0usize);
+        loop {
+            let starts_here = node.start_position().row == row;
+            if !starts_here && indents.contains(&node.id()) {
+                steps += 1;
+            }
+            if starts_here && outdents.contains(&node.id()) {
+                back += 1;
+            }
+            match node.parent() {
+                Some(parent) => node = parent,
+                None => break,
+            }
+        }
+        Some(steps.saturating_sub(back))
     }
 
     fn paint(
@@ -674,3 +783,5 @@ mod tests {
         );
     }
 }
+
+

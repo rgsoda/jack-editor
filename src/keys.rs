@@ -41,6 +41,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "yy Y y{motion}", what: "yank lines, over a motion", mode: "normal" },
     Binding { keys: "p P", what: "put after, before the cursor", mode: "normal" },
     Binding { keys: ">> << >{motion}", what: "indent, dedent lines", mode: "normal" },
+    Binding { keys: "== ={motion}", what: "re-indent: ask the grammar where lines go", mode: "normal" },
     Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
     Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
@@ -70,6 +71,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "c s", what: "delete it and start typing", mode: "visual" },
     Binding { keys: "y", what: "yank the selection", mode: "visual" },
     Binding { keys: "> <", what: "indent, dedent the lines ({n} steps)", mode: "visual" },
+    Binding { keys: "=", what: "re-indent the lines", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
     Binding { keys: "D X Y C S", what: "the same, on whole lines", mode: "visual" },
     Binding { keys: "esc", what: "back to normal mode", mode: "visual" },
@@ -98,6 +100,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set shiftwidth=4", what: "how wide one indent step is", mode: "command" },
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
     Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
+    Binding { keys: ":set autoindent", what: "noautoindent: indent new lines by the grammar", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
 
@@ -127,6 +130,8 @@ enum Pending {
     Yank,
     Indent,
     Dedent,
+    /// `=`, which asks the grammar where the lines belong.
+    Reindent,
     /// The `g` prefix, waiting for `gg`.
     Go,
     /// The space leader, waiting for which picker to open.
@@ -213,6 +218,7 @@ impl Keys {
             Some(Pending::Yank) => "y",
             Some(Pending::Indent) => ">",
             Some(Pending::Dedent) => "<",
+            Some(Pending::Reindent) => "=",
             Some(Pending::Go) => "g",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
@@ -390,6 +396,10 @@ impl Keys {
                 editor.shift_selection(false, repeat);
                 editor.set_mode(Mode::Normal);
             }
+            KeyCode::Char('=') => {
+                editor.reindent_selection();
+                editor.set_mode(Mode::Normal);
+            }
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
@@ -518,6 +528,7 @@ impl Keys {
             KeyCode::Char('y') => self.pending = Some(Pending::Yank),
             KeyCode::Char('>') => self.pending = Some(Pending::Indent),
             KeyCode::Char('<') => self.pending = Some(Pending::Dedent),
+            KeyCode::Char('=') => self.pending = Some(Pending::Reindent),
             KeyCode::Char('g') => self.pending = Some(Pending::Go),
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
             KeyCode::Char('G') => {
@@ -548,6 +559,7 @@ impl Keys {
         match operator {
             Some('>') => editor.shift_selection(true, 1),
             Some('<') => editor.shift_selection(false, 1),
+            Some('=') => editor.reindent_selection(),
             Some('y') => editor.yank_selection(self.register),
             Some('c') => {
                 // An empty object - `ci(` on `()` - deletes nothing, but the
@@ -575,6 +587,7 @@ impl Keys {
                 | (Pending::Yank, KeyCode::Char('y'))
                 | (Pending::Indent, KeyCode::Char('>'))
                 | (Pending::Dedent, KeyCode::Char('<'))
+                | (Pending::Reindent, KeyCode::Char('='))
         );
         if doubled {
             match operator {
@@ -583,6 +596,10 @@ impl Keys {
                 Pending::Yank => editor.yank_lines(self.register, count),
                 Pending::Indent => editor.shift_count(true, count),
                 Pending::Dedent => editor.shift_count(false, count),
+                Pending::Reindent => {
+                    let (line, _) = editor.view().cursor_coords();
+                    editor.reindent_lines(line, line + count - 1);
+                }
                 Pending::Go | Pending::Register | Pending::Leader | Pending::Object { .. } => {}
             }
             return;
@@ -608,6 +625,7 @@ impl Keys {
             // `>j` moves this line and the next one, and leaves them there.
             Pending::Indent => editor.shift_motion(true),
             Pending::Dedent => editor.shift_motion(false),
+            Pending::Reindent => editor.reindent_motion(),
             _ => editor.delete_selection(self.register),
         }
         if operator == Pending::Change {
@@ -623,6 +641,7 @@ fn operator_key(operator: Pending) -> char {
         Pending::Yank => 'y',
         Pending::Indent => '>',
         Pending::Dedent => '<',
+        Pending::Reindent => '=',
         _ => 'd',
     }
 }
@@ -792,6 +811,19 @@ mod tests {
             let mut editor = Editor::scratch();
             editor.view_mut().doc.text = Rope::from_str(text);
             Vim { editor, keys: Keys::default() }
+        }
+
+        /// The same, under a file name, so there is a grammar to ask.
+        fn file(name: &str, text: &str) -> Self {
+            let mut vim = Vim::new(text);
+            let view = vim.editor.view_mut();
+            view.doc.path = Some(name.into());
+            view.attach_syntax(&crate::theme::Theme::built_in());
+            vim
+        }
+
+        fn rust(text: &str) -> Self {
+            Vim::file("demo.rs", text)
         }
 
         /// Type a key sequence. `<esc>`, `<cr>`, `<bs>`, `<tab>` and `<C-x>`
@@ -2089,6 +2121,116 @@ plain
         assert_eq!(vim.editor.message, "init line 2: not an option: wobble");
         // And it stopped there, rather than carrying on past the mistake.
         assert!(!vim.editor.emacs);
+    }
+
+
+    #[test]
+    fn reindent_puts_a_line_where_the_grammar_says() {
+        let mut vim = Vim::rust("fn main() {\nlet x = 1;\n}\n");
+        vim.press("j==");
+        assert_eq!(vim.text(), "fn main() {\n\tlet x = 1;\n}\n");
+    }
+
+    #[test]
+    fn reindent_over_a_motion_or_an_object_takes_the_whole_block() {
+        let mut vim = Vim::rust("fn main() {\n  let x = 1;\n      if x > 0 {\nlet y = 2;\n}\n}\n");
+        vim.press("=ip");
+        assert_eq!(
+            vim.text(),
+            "fn main() {\n\tlet x = 1;\n\tif x > 0 {\n\t\tlet y = 2;\n\t}\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_closing_brace_comes_back_out_on_its_own_line() {
+        let mut vim = Vim::rust("fn main() {\n\tif a {\n\t\tb();\n\t\t}\n}\n");
+        vim.press("jjj==");
+        assert_eq!(vim.text(), "fn main() {\n\tif a {\n\t\tb();\n\t}\n}\n");
+    }
+
+    #[test]
+    fn enter_indents_the_new_line_by_the_grammar() {
+        let mut vim = Vim::rust("fn main() {\n}\n");
+        vim.press("A<cr>x");
+        assert_eq!(vim.text(), "fn main() {\n\tx\n}\n");
+    }
+
+    #[test]
+    fn typing_a_closing_brace_takes_the_line_back_out() {
+        let mut vim = Vim::rust("fn main() {\n");
+        vim.press("A<cr>x();<cr>}");
+        assert_eq!(vim.text(), "fn main() {\n\tx();\n}\n");
+    }
+
+    #[test]
+    fn the_auto_indent_after_enter_is_part_of_the_same_undo() {
+        let mut vim = Vim::rust("fn main() {\n}\n");
+        vim.press("A<cr><esc>u");
+        assert_eq!(vim.text(), "fn main() {\n}\n");
+    }
+
+    #[test]
+    fn without_a_grammar_a_new_line_keeps_the_indent_it_had() {
+        let mut vim = Vim::new("\t\tone\n");
+        vim.press("A<cr>two<esc>");
+        assert_eq!(vim.text(), "\t\tone\n\t\ttwo\n");
+
+        // And `=` says so rather than doing something arbitrary.
+        vim.press("==");
+        assert_eq!(vim.editor.message, "no indent rules for this file");
+    }
+
+    #[test]
+    fn autoindent_can_be_turned_off() {
+        let mut vim = Vim::rust("fn main() {\n}\n");
+        vim.press(":set noautoindent<cr>A<cr>x");
+        assert_eq!(vim.text(), "fn main() {\nx\n}\n");
+    }
+
+
+
+
+    #[test]
+    fn the_other_grammars_have_indent_rules_too() {
+        let mut vim = Vim::file("demo.js", "function f() {\nconst a = {\nb: 1,\n};\n}\n");
+        vim.press("=ip");
+        assert_eq!(vim.text(), "function f() {\n\tconst a = {\n\t\tb: 1,\n\t};\n}\n");
+
+        let mut vim = Vim::file("demo.html", "<div>\n<p>hi</p>\n</div>\n");
+        vim.press("=ip");
+        assert_eq!(vim.text(), "<div>\n\t<p>hi</p>\n</div>\n");
+    }
+
+    #[test]
+    fn a_half_typed_block_falls_back_to_the_line_above() {
+        // There is no block node yet - just an error node with a loose brace -
+        // so the guess is what indents this, and it has to be right because it
+        // is the case that happens on every keystroke.
+        let mut vim = Vim::rust("fn main() {\n");
+        vim.press("A<cr>let x = 1;");
+        assert_eq!(vim.text(), "fn main() {\n\tlet x = 1;\n");
+    }
+
+
+    #[test]
+    fn re_indenting_a_big_file_is_worth_measuring() {
+        let mut text = String::new();
+        text.push_str("fn main() {\n");
+        for i in 0..5_000 {
+            text.push_str(&format!("let x{i} = {i};\n"));
+        }
+        text.push_str("}\n");
+        let mut vim = Vim::rust(&text);
+
+        let start = std::time::Instant::now();
+        vim.editor.reindent_lines(0, 5_001);
+        let elapsed = start.elapsed();
+        // One query run per line, restricted to that line: about 11us each in
+        // release, so `=` over a whole file is tens of milliseconds and the
+        // one line `enter` re-indents is free.
+        println!("5000 lines re-indented in {elapsed:?}");
+        assert!(vim.text().contains("\tlet x4999"), "the lines moved");
+        assert!(elapsed.as_millis() < 2_000, "{elapsed:?}");
     }
 
 }

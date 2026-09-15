@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 21: emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 22: tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -42,6 +42,7 @@ Starts in normal mode, like vim.
 | `p` `P` | put after / before the cursor |
 | `diw` `daw` `ciw` `yiw` | an operator over a text object (see below) |
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
+| `==` `={motion}` | re-indent: ask the grammar where the lines go |
 | `v` `V` | select characters / whole lines |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
@@ -72,6 +73,7 @@ Starts in normal mode, like vim.
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
+| `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -97,6 +99,7 @@ Starts in normal mode, like vim.
 | `c` `s` | delete it and start typing |
 | `y` | yank it |
 | `>` `<` `{n}>` | indent / dedent the lines, n steps |
+| `=` | re-indent the lines |
 | `p` `P` | replace it with a register |
 | `D` `X` `Y` `C` `S` | the same, on whole lines |
 | `esc` | back to normal mode |
@@ -154,6 +157,8 @@ Starts in normal mode, like vim.
   own pre-edit coordinates and the selection either side of it, so it can be
   inverted without the document and undo lands the cursor where you left it.
   Runs of typing or deleting coalesce into a single undo step.
+- `queries/<language>/indents.scm` — which nodes indent what they contain and
+  which tokens come back out. Ours, not the grammar's.
 - `syntax.rs` — tree-sitter. Holds the parser and tree, patches the tree with
   each applied edit and reparses incrementally, and runs the highlight query
   over the visible byte range only. Injected regions (a macro body, code in a
@@ -378,6 +383,47 @@ visual mode without repeating anything. None of it is syntax-aware: brackets are
 counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
+
+## Indentation, from the grammar
+
+`==` puts a line where the grammar says it belongs, `={motion}` a range of them
+— `=ip`, `=i{`, `=G` — and `=` does the selection in visual mode. `enter` uses
+the same rule for the new line, and typing `}` on a line of its own snaps it
+back under whatever it closes.
+
+The rule is one walk up the tree. The grammar's `indents.scm` marks nodes
+`@indent` (a block, an argument list, an object literal) and tokens `@outdent`
+(`}`, `]`, `)`, a closing tag). For a given line: every `@indent` ancestor that
+*started on an earlier line* is a step, and an `@outdent` node that starts on
+*this* line takes one back. That is what puts a closing brace under its opener
+rather than under the body. The two are counted separately and subtracted at the
+end — the walk meets the brace before the blocks that put it there, so taking
+one off as you go takes it off nothing. That was a bug for about ten minutes.
+
+The queries are in `queries/<language>/indents.scm` and are ours: the grammar
+crates ship highlights, injections and tags, but indent queries are an editor's
+business and no two editors agree on the format. Adding a language means adding
+that file next to its entry in `LANGUAGES`.
+
+### The half-typed file
+
+Here is the part that decides whether any of this is usable. You type `fn main()
+{` and press enter — and tree-sitter does not see a block, because there is no
+closing brace yet. It sees an ERROR node with a loose `{` inside it, and a query
+asked about the next line confidently answers "no indentation at all".
+
+So before trusting the tree, the last non-whitespace byte before the line is
+checked: if *that* sits inside an error node, the query has nothing useful to say
+and the old heuristic takes over — the previous non-blank line's indent, plus a
+step if it ended with an opener, minus one if this line starts with a closer. It
+is the rule every editor used before grammars, and it is exactly right for the
+case the grammar cannot see, which is the one that happens on every keystroke.
+`:set noautoindent` turns the whole thing off; without a grammar, `enter` still
+copies the line above as it always did.
+
+One query run per line, restricted to that line's bytes, which is about 11µs:
+`=` over 5000 lines is 57ms, and the single line `enter` re-indents is free.
+There is a test that measures it.
 
 ## Emacs chords, and a config file
 
@@ -659,8 +705,9 @@ was at first:
 
 ## Next
 
-- Tree-sitter indentation queries, so a step is what the nesting deserves
-  rather than a fixed width - and so `enter` indents the new line properly.
+- Indent queries that can *align* rather than step: a continuation line under
+  an open paren wants the column, not a tab. That needs `@align`, which needs
+  columns, which the walk does not track yet.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

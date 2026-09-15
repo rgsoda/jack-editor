@@ -15,7 +15,7 @@ use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
-use crate::view::{Indent, Move, Selection, TAB_WIDTH, View};
+use crate::view::{self, Indent, Move, Selection, TAB_WIDTH, View};
 
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
@@ -150,6 +150,9 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// Indent a new line the way the grammar says, rather than copying the
+    /// line above. Only does anything where there is an indent query.
+    pub autoindent: bool,
     /// Emacs chords in insert mode. Off by default: this is a vim-flavoured
     /// editor and half of these keys already mean something else.
     pub emacs: bool,
@@ -215,6 +218,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            autoindent: true,
             emacs: false,
             indent: Indent { width: TAB_WIDTH, tabs: true },
             quit: None,
@@ -496,6 +500,8 @@ impl Editor {
             return;
         }
         match option {
+            "autoindent" | "ai" => self.autoindent = true,
+            "noautoindent" | "noai" => self.autoindent = false,
             "emacs" => self.emacs = true,
             "noemacs" => self.emacs = false,
             "expandtab" | "et" => self.indent.tabs = false,
@@ -515,13 +521,14 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} emacs={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
                     self.indent.width,
                     !self.indent.tabs,
+                    self.autoindent,
                     self.emacs
                 );
             }
@@ -990,15 +997,93 @@ impl Editor {
     /// is half-open at both: a selection that stops at the start of a line has
     /// not reached into it.
     pub fn shift_selection(&mut self, out: bool, levels: usize) {
+        let (first, last) = self.selection_lines();
+        self.shift_lines(out, first, last, levels);
+    }
+
+    /// The first and last line a selection or an object reaches. Half-open at
+    /// the end: a range that stops at the start of a line has not reached into
+    /// it.
+    fn selection_lines(&self) -> (usize, usize) {
         let (start, end) = self.selection_range().unwrap_or_else(|| self.view().sel.range());
         let view = self.view();
         let (first, _) = view.doc.coords(start);
         let (last, column) = view.doc.coords(end);
-        let last = match column == 0 && last > first {
-            true => last - 1,
-            false => last,
+        match column == 0 && last > first {
+            true => (first, last - 1),
+            false => (first, last),
+        }
+    }
+
+    /// `=`: put lines where the grammar says they belong.
+    pub fn reindent_lines(&mut self, first: usize, last: usize) {
+        let indent = self.indent;
+        let last = last.min(self.view().last_line());
+        let mut targets = Vec::new();
+        for line in first..=last {
+            if let Some(level) = self.view().indent_level(line) {
+                targets.push((line, level * indent.width));
+            }
+        }
+        if !self.view().has_indent_rules() {
+            self.message = "no indent rules for this file".into();
+            return;
+        }
+        self.view_mut().set_indents(&targets, indent);
+    }
+
+    /// The lines a selection covers, for visual `=` and `=ip`.
+    pub fn reindent_selection(&mut self) {
+        let (first, last) = self.selection_lines();
+        self.reindent_lines(first, last);
+    }
+
+    /// The lines a motion covered, for `=j`.
+    pub fn reindent_motion(&mut self) {
+        let view = self.view();
+        let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
+        let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
+        self.reindent_lines(first, last);
+    }
+
+    /// Re-indent the line the cursor is on. `merge` makes it part of the edit
+    /// before it, which is what the auto-indent after `enter` wants.
+    fn reindent_current_line(&mut self, merge: bool) {
+        if !self.autoindent || !self.view().has_indent_rules() {
+            return;
+        }
+        let indent = self.indent;
+        let (line, _) = self.view().cursor_coords();
+        let column = match self.view().indent_level(line) {
+            Some(level) => level * indent.width,
+            None => match self.guessed_indent_column(line) {
+                Some(column) => column,
+                None => return,
+            },
         };
-        self.shift_lines(out, first, last, levels);
+        self.view_mut().set_line_indent(line, column, indent, merge);
+    }
+
+    /// What to indent a line to when the tree cannot say - which is most of
+    /// the time while you are typing, because an unclosed brace is an error
+    /// node and not a block. The old rule, and a good one: the line above,
+    /// plus a step if it opened something, minus one if this line closes it.
+    fn guessed_indent_column(&self, line: usize) -> Option<usize> {
+        let view = self.view();
+        let previous = (0..line)
+            .rev()
+            .map(|l| view.doc.line_str(l))
+            .find(|text| !text.trim().is_empty())?;
+
+        let leading = previous.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+        let mut column = view::display_col(&previous, leading);
+        if previous.trim_end().ends_with(['{', '[', '(']) {
+            column += self.indent.width;
+        }
+        if view.doc.line_str(line).trim_start().starts_with(['}', ']', ')']) {
+            column = column.saturating_sub(self.indent.width);
+        }
+        Some(column)
     }
 
     /// The lines a motion covered, for `>j`. A motion ends *on* a line rather
@@ -1094,10 +1179,33 @@ impl Editor {
 
     pub fn insert(&mut self, text: &str) {
         self.view_mut().insert(text);
+        // A closing bracket typed at the start of a line belongs under what it
+        // closes, and until it is typed there is nothing to tell the grammar
+        // where that is. Only when it is the whole line so far, so a bracket
+        // typed in the middle of an expression is left alone.
+        if matches!(text, "}" | "]" | ")") && self.line_is_only_indent_before(1) {
+            self.reindent_current_line(false);
+        }
+    }
+
+    /// True when everything before the cursor on this line is whitespace, not
+    /// counting the last `tail` characters.
+    fn line_is_only_indent_before(&self, tail: usize) -> bool {
+        let view = self.view();
+        let (line, column) = view.cursor_coords();
+        let text = view.doc.line_str(line);
+        column >= tail
+            && text
+                .chars()
+                .take(column - tail)
+                .all(|c| c == ' ' || c == '\t')
     }
 
     pub fn insert_newline(&mut self) {
         self.view_mut().insert_newline();
+        // The copied indent is the fallback; where the grammar has an opinion
+        // it replaces it, folded into the same undo step.
+        self.reindent_current_line(true);
     }
 
     pub fn delete_backward(&mut self) {

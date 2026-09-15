@@ -118,6 +118,21 @@ impl History {
         self.undo.push(tx);
     }
 
+    /// Fold a transaction into the one before it when it only rewrites text
+    /// that transaction inserted - the auto-indent after `enter`, which is
+    /// part of the same keypress and should be part of the same undo. Falls
+    /// back to pushing when the two do not sit that way.
+    pub fn amend(&mut self, tx: Transaction) {
+        self.redo.clear();
+        if self.saved_depth != Some(self.undo.len())
+            && let Some(last) = self.undo.last_mut()
+            && last.absorb(&tx)
+        {
+            return;
+        }
+        self.undo.push(tx);
+    }
+
     /// Pops the last transaction and returns its inverse, ready to apply.
     pub fn undo(&mut self) -> Option<Transaction> {
         let tx = self.undo.pop()?;
@@ -149,6 +164,41 @@ impl History {
 
 /// Fold `tx` into `last` if they are one continuous run of typing or deleting,
 /// so undo steps back by a word-ish chunk rather than a keystroke.
+impl Transaction {
+    /// Rewrite this transaction as though `other` had been part of it. Only
+    /// when both are single changes and `other` replaces a stretch of what
+    /// this one inserted - then the merge is a splice into that text, and no
+    /// coordinates outside it move.
+    fn absorb(&mut self, other: &Transaction) -> bool {
+        let ([mine], [theirs]) = (&self.changes[..], &other.changes[..]) else {
+            return false;
+        };
+        if !mine.removed.is_empty() {
+            return false;
+        }
+        let inserted: Vec<char> = mine.inserted.chars().collect();
+        let Some(from) = theirs.pos.checked_sub(mine.pos) else {
+            return false;
+        };
+        let to = from + theirs.removed.chars().count();
+        if to > inserted.len() {
+            return false;
+        }
+        // What they removed has to be what is actually there, or this is not
+        // the situation it looks like.
+        if inserted[from..to].iter().collect::<String>() != theirs.removed {
+            return false;
+        }
+
+        let mut text: String = inserted[..from].iter().collect();
+        text.push_str(&theirs.inserted);
+        text.extend(&inserted[to..]);
+        self.changes[0].inserted = text;
+        self.sel_after = other.sel_after;
+        true
+    }
+}
+
 fn coalesce(last: &mut Transaction, tx: &Transaction) -> bool {
     let (Some(prev), Some(next)) = (last.changes.first(), tx.changes.first()) else {
         return false;
