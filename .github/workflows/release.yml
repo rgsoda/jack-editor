@@ -1,0 +1,129 @@
+# Tag a version, get binaries. `git tag v0.1.0 && git push --tags` builds every
+# target, attaches a tarball and a checksum for each to a GitHub release, and
+# renders the Homebrew formula with those checksums already in it.
+#
+# No third-party actions: `checkout` for the source and `gh`, which is on every
+# runner and already authenticated, for the release itself. A release workflow
+# is the one place where trusting someone else's action means trusting it with
+# the artifacts people install.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One release to attach everything to, made before the builds so they can
+  # upload into it as they finish rather than waiting for each other.
+  create:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # `if !` rather than `&& exit 0`: steps run under `set -e`, where a
+        # failing test on the left of `&&` fails the whole step.
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "jack $GITHUB_REF_NAME" \
+              --notes "Binaries below. \`brew install rgsoda/tap/jack\`, or download and put \`jack\` on your PATH." \
+              --verify-tag
+          fi
+
+  build:
+    needs: create
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Static, for a distro older than the runner's glibc.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            packages: musl-tools
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            packages: gcc-aarch64-linux-gnu
+            cc: aarch64-linux-gnu-gcc
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tree-sitter grammars are C, so a cross build needs a cross C
+      # compiler as well as a Rust target - which is the whole reason these
+      # three lines exist.
+      - name: Cross toolchain
+        if: matrix.packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          CC_FOR_TARGET: ${{ matrix.cc }}
+        run: |
+          if [ -n "$CC_FOR_TARGET" ]; then
+            underscored=$(echo "$TARGET" | tr 'a-z-' 'A-Z_')
+            export "CC_${TARGET//-/_}=$CC_FOR_TARGET"
+            export "CARGO_TARGET_${underscored}_LINKER=$CC_FOR_TARGET"
+          fi
+          cargo build --release --locked --target "$TARGET"
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.create.outputs.version }}
+        run: |
+          name="jack-$VERSION-$TARGET"
+          mkdir "$name"
+          cp "target/$TARGET/release/jack" README.md LICENSE "$name/"
+          strip "$name/jack" || true
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create.outputs.version }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "jack-$VERSION-${{ matrix.target }}.tar.gz" \
+            "jack-$VERSION-${{ matrix.target }}.tar.gz.sha256" \
+            --clobber
+
+  # The formula, with the checksums of the tarballs that were just built, so
+  # updating the tap is copying one file rather than pasting four hashes.
+  formula:
+    needs: [create, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create.outputs.version }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern '*.sha256' --dir sums
+          ./packaging/homebrew/render-formula.sh "$VERSION" sums > jack.rb
+          cat jack.rb
+          gh release upload "$GITHUB_REF_NAME" jack.rb --clobber

@@ -17,13 +17,24 @@ cargo run -- .                         # a directory: the file picker, there
 ## Install
 
 ```sh
-cargo install --git https://github.com/rgsoda/jack-editor   # from here
+brew install rgsoda/tap/jack                                # macOS or Linux
+cargo install --git https://github.com/rgsoda/jack-editor   # from source
 cargo install --path .                                      # from a clone
 ```
 
-Either way the command is `jack`, and `jack --version` says so. Needs a Rust
-toolchain of 1.88 or newer (let-chains) and a C compiler, because the
-tree-sitter grammars are C and are built from source.
+Either way the command is `jack`, and `jack --version` says so. Building from
+source needs a Rust toolchain of 1.88 or newer (let-chains) and a C compiler,
+because the tree-sitter grammars are C; the Homebrew formula installs a
+prebuilt binary and needs neither.
+
+Releases are cut by tagging: `git tag v0.1.0 && git push --tags` builds five
+targets — glibc and static musl x86-64 Linux, arm64 Linux, and both macOS
+architectures — attaches a tarball and a checksum for each to a GitHub release,
+and renders the Homebrew formula with those checksums already in it. The
+grammars being C is what makes the cross builds need a cross *C* compiler as
+well as a Rust target, which is what the three `apt-get` lines in
+`.github/workflows/release.yml` are for. `packaging/homebrew/` has the formula
+renderer and what to do with it.
 
 The package is `jack-editor` and the binary is `jack`, which is not fussiness:
 `jack` on crates.io is the audio server's bindings, and on Arch `jack` is what
