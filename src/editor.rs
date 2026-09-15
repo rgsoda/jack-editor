@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
-use crate::complete::Completion;
+use crate::complete::{self, Completion, Pick};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
@@ -16,6 +16,11 @@ use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
 use crate::view::{self, Indent, Move, Selection, TAB_WIDTH, View};
+
+/// How many characters of a word bring the completion popup up on its own.
+/// Two, because one character narrows a buffer to hundreds of words and three
+/// is most of a short name already typed.
+const DEFAULT_AUTOCOMPLETE: usize = 2;
 
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
@@ -187,6 +192,9 @@ pub struct Editor {
     /// Emacs chords in insert mode. Off by default: this is a vim-flavoured
     /// editor and half of these keys already mean something else.
     pub emacs: bool,
+    /// How many characters of a word bring the completion popup up on their
+    /// own. Zero waits for `^n`.
+    pub autocomplete: usize,
     /// One step of indentation: how wide, and tabs or spaces.
     pub indent: Indent,
     /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
@@ -205,6 +213,12 @@ pub struct Editor {
     pub picker: Option<Picker>,
     /// The insert-mode completion popup, while one is open.
     pub completion: Option<Completion>,
+    /// The word the popup has nothing more to say about: dismissed with `esc`,
+    /// or offered nothing when it was asked. It does not come up on its own
+    /// again until you are on a different word - otherwise dismissing it only
+    /// buys you one keystroke of quiet, and a name nothing matches costs a
+    /// gather per character.
+    dismissed: Option<usize>,
     /// The status-line prompt, when one is open. It owns the keyboard too.
     pub prompt: Option<Prompt>,
     pub search: Search,
@@ -252,6 +266,8 @@ impl Editor {
             tabline: Tabline::Auto,
             autoindent: true,
             emacs: false,
+            autocomplete: DEFAULT_AUTOCOMPLETE,
+            dismissed: None,
             indent: Indent { width: TAB_WIDTH, tabs: true },
             quit: None,
             signs_enabled: true,
@@ -524,6 +540,12 @@ impl Editor {
                 ("shiftwidth" | "sw", Ok(width)) if width > 0 && width <= 16 => {
                     self.indent.width = width;
                 }
+                ("autocomplete" | "ac", Ok(chars)) if chars <= 16 => {
+                    self.autocomplete = chars;
+                }
+                ("autocomplete" | "ac", _) => {
+                    self.message = format!("autocomplete wants 0 to 16, not {value:?}");
+                }
                 ("tabline", _) => match Tabline::parse(value) {
                     Some(tabline) => self.tabline = tabline,
                     None => self.message = "tabline wants off, auto or always".into(),
@@ -542,6 +564,8 @@ impl Editor {
             "noautoindent" | "noai" => self.autoindent = false,
             "emacs" => self.emacs = true,
             "noemacs" => self.emacs = false,
+            "autocomplete" | "ac" => self.autocomplete = DEFAULT_AUTOCOMPLETE,
+            "noautocomplete" | "noac" => self.autocomplete = 0,
             "expandtab" | "et" => self.indent.tabs = false,
             "noexpandtab" | "noet" => self.indent.tabs = true,
             "number" | "nu" => self.numbers = Numbers::Absolute,
@@ -559,7 +583,7 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
@@ -568,7 +592,8 @@ impl Editor {
                     !self.indent.tabs,
                     self.autoindent,
                     self.emacs,
-                    self.tabline.name()
+                    self.tabline.name(),
+                    self.autocomplete
                 );
             }
             other => self.message = format!("not an option: {other}"),
@@ -998,9 +1023,50 @@ impl Editor {
     /// is `^p`, which opens on the last candidate rather than the first.
     pub fn open_completion(&mut self, backward: bool) {
         let at = self.view().sel.head;
-        self.completion = Completion::new(self.view(), at, backward);
+        let pick = match backward {
+            true => Pick::Last,
+            false => Pick::First,
+        };
+        self.completion = Completion::new(self.view(), at, pick);
+        self.dismissed = None;
         if self.completion.is_none() {
             self.message = "no completions".into();
+        }
+    }
+
+    /// Called after every character typed in insert mode: bring the popup up
+    /// by itself once the word is long enough to be worth finishing.
+    ///
+    /// Nothing is selected when it opens, so typing straight past it changes
+    /// nothing - the popup is a list of what you *could* press `^n` for, not a
+    /// guess at what you meant. No message either: a suggestion that has
+    /// nothing to suggest should say nothing at all.
+    pub fn suggest_completion(&mut self) {
+        if self.autocomplete == 0 || self.mode != Mode::Insert || self.completion.is_some() {
+            return;
+        }
+        let at = self.view().sel.head;
+        let view = self.view();
+        // The word so far, and nothing to offer until there is enough of it to
+        // narrow the buffer down.
+        let mut start = at;
+        while start > 0 && complete::is_word(view.doc.text.char(start - 1)) {
+            start -= 1;
+        }
+        if at - start < self.autocomplete || self.dismissed == Some(start) {
+            return;
+        }
+        // Prose, where offering to finish every word in the file is noise.
+        if view.in_comment_or_string(start) {
+            return;
+        }
+        self.completion = Completion::new(view, at, Pick::Nothing);
+        // Nothing to offer, and there never will be: the candidates come from
+        // a window that does not move while you type, and a longer prefix can
+        // only match fewer of them. Remembering that is what keeps typing a
+        // new name in a big file from gathering once per keystroke.
+        if self.completion.is_none() {
+            self.dismissed = Some(start);
         }
     }
 
@@ -1010,8 +1076,10 @@ impl Editor {
         }
     }
 
+    /// `esc`: put the popup away, and remember the word it was over so it
+    /// stays away until you start another one.
     pub fn close_completion(&mut self) {
-        self.completion = None;
+        self.dismissed = self.completion.take().map(|completion| completion.start);
     }
 
     /// Follow the buffer as it changes under the popup: a typed character
@@ -1032,15 +1100,24 @@ impl Editor {
 
     /// Replace the half-typed word with the selected candidate, as one edit so
     /// a single undo takes the whole completion back.
-    pub fn accept_completion(&mut self) {
-        let Some(completion) = self.completion.take() else {
-            return;
+    ///
+    /// False when there is nothing selected - a popup that came up on its own
+    /// and has not been stepped into. The key that asked then goes on to mean
+    /// what it usually means, which is how `enter` stays `enter`.
+    pub fn accept_completion(&mut self) -> bool {
+        let Some(text) = self
+            .completion
+            .as_ref()
+            .and_then(|completion| completion.selected_text())
+            .map(str::to_string)
+        else {
+            return false;
         };
-        let text = completion.selected_text().to_string();
-        let start = completion.start;
+        let start = self.completion.take().expect("checked above").start;
         let at = self.view().sel.head;
         let cursor = start + text.chars().count();
         self.view_mut().edit_at(start, at - start, &text, Some(cursor));
+        true
     }
 
     /// `>>` and `<<`, `>` over a motion, `>` in visual mode: move lines

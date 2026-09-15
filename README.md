@@ -74,6 +74,7 @@ Starts in normal mode, like vim.
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
+| `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
@@ -110,8 +111,9 @@ Starts in normal mode, like vim.
 | | |
 |---|---|
 | any character, `enter`, `tab` | insert |
+| typing | the popup comes up on its own, selecting nothing |
 | `^n` `^p`, up/down | complete the word: next candidate, previous |
-| `enter` `tab` `^y` | accept the completion |
+| `enter` `tab` `^y` | accept the selected completion |
 | `esc` `^e` | close the popup, still typing |
 | `^t` `^d` | indent / dedent this line |
 | `backspace` `delete` | delete a grapheme, or the selection |
@@ -505,11 +507,34 @@ queries for exactly that, and it is the obvious next thing here.
 
 ## Autocomplete
 
-`^n` in insert mode offers what could finish the word you are on, `^p` the same
-list from the bottom. While the popup is up the arrow keys walk it, `enter`,
-`tab` or `^y` takes one, and `esc` closes it and leaves you typing — so the
-newline `enter` would otherwise have made is one press away. Typing narrows the list and deleting widens it; when nothing matches
-any more the popup closes itself.
+The popup comes up on its own once you are two characters into a word, and `^n`
+asks for it at any point — `^p` the same list from the bottom. While it is up
+the arrow keys walk it, `enter`, `tab` or `^y` takes the selected one, and `esc`
+closes it and leaves you typing. Typing narrows the list and deleting widens it;
+when nothing matches any more the popup closes itself.
+
+A popup that came up by itself **selects nothing**. That is the whole rule that
+makes it bearable: nothing is highlighted until you press `^n` or an arrow, so
+typing straight past it changes nothing you would have typed, and `enter` is
+still a newline rather than a word you never asked for. It only ever becomes an
+accept key once you have pointed at something. `esc` dismisses it, and it stays
+dismissed until you start a different word — otherwise dismissing it buys you
+exactly one keystroke of quiet. It also stays out of comments and strings, where
+offering to finish every word in the file is noise rather than help; `^n` still
+works there if you want it.
+
+`:set autocomplete=4` asks for a longer word first, and `:set noautocomplete`
+goes back to `^n` and nothing else.
+
+This is how most editors do it, minus the part they cannot avoid. VS Code and
+the LSP editors pop after one character and again on trigger characters like
+`.`; Emacs' company-mode waits out a `company-idle-delay` before asking; helix
+debounces 250ms. The delay in all of them is there because the answer comes from
+a language server over a pipe. Ours comes from the buffer in front of us, so
+there is no timer anywhere in this: the gather happens on the keystroke that
+crosses the threshold, and every keystroke after that only filters what was
+already gathered. A word nothing matches is remembered as such, so typing a
+brand new name does not gather once per character.
 
 Two tiers, and the second is what the grammar is for:
 
@@ -534,7 +559,8 @@ different amounts. On a 1.4MB buffer, scanning 400k chars for words takes about
 a millisecond; running the highlight query over the same span takes forty. So
 words come from ±200k chars and names from ±20k, which puts the whole thing at
 about 7ms — once, when the popup opens. Filtering as you type touches only what
-was already gathered. There is a test that measures it.
+was already gathered. There are tests that measure both: one gather, and typing
+a whole unmatched name a character at a time.
 
 What this is not: it does not know scope, so a local in another function is
 offered here; it does not know types, so `.` completes nothing in particular;

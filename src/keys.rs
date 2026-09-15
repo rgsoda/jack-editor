@@ -78,8 +78,9 @@ pub const BINDINGS: &[Binding] = &[
 
     Binding { keys: "esc", what: "back to normal mode", mode: "insert" },
     Binding { keys: "^n ^p", what: "complete the word: next, previous", mode: "insert" },
+    Binding { keys: "(typing)", what: "the popup comes up on its own (:set autocomplete)", mode: "insert" },
     Binding { keys: "up down", what: "next, previous completion", mode: "insert" },
-    Binding { keys: "enter tab ^y", what: "accept the completion", mode: "insert" },
+    Binding { keys: "enter tab ^y", what: "accept the selected completion", mode: "insert" },
     Binding { keys: "^t ^d", what: "indent, dedent this line", mode: "insert" },
     Binding { keys: "^a ^e ^f ^b ^n ^p", what: "emacs: motions (:set emacs)", mode: "insert" },
     Binding { keys: "M-f M-b", what: "emacs: word forward, back", mode: "insert" },
@@ -101,6 +102,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
     Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
     Binding { keys: ":set autoindent", what: "noautoindent: indent new lines by the grammar", mode: "command" },
+    Binding { keys: ":set autocomplete=2", what: "noautocomplete: word length that pops the list", mode: "command" },
     Binding { keys: ":set tabline=auto", what: "off, auto, always: list buffers along the top", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
@@ -690,10 +692,10 @@ fn completing(editor: &mut Editor, key: KeyEvent, ctrl: bool) -> bool {
         (KeyCode::Char('p'), true) | (KeyCode::Up, _) => editor.completion_step(false),
         // `tab` accepts because every other editor taught everyone that; `^y`
         // accepts because vim taught the rest of us. `enter` accepts rather
-        // than splitting the line: while the popup is up it is the popup's key,
-        // and esc is one press away if a newline is what you wanted.
+        // than splitting the line - but only once something is selected, so a
+        // popup that came up by itself never swallows a newline.
         (KeyCode::Char('y'), true) | (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
-            editor.accept_completion()
+            return editor.accept_completion();
         }
         // Esc closes the popup and leaves you typing rather than leaving insert
         // mode: one escape, one thing undone.
@@ -793,8 +795,16 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
         _ => {}
     }
 
-    // Typing and deleting change the word under the popup.
+    // Typing and deleting change the word under the popup - and typing a word
+    // character is also what brings one up in the first place.
     editor.update_completion();
+    if let KeyCode::Char(c) = key.code
+        && !ctrl
+        && !alt
+        && crate::complete::is_word(c)
+    {
+        editor.suggest_completion();
+    }
 }
 
 #[cfg(test)]
@@ -1937,13 +1947,112 @@ plain
     fn the_arrows_walk_the_popup_and_enter_takes_one() {
         let mut vim = Vim::new("alpha album\n");
         vim.press("Goal<C-n><down>");
-        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), 1);
+        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), Some(1));
         vim.press("<up>");
-        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), 0);
+        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), Some(0));
 
         vim.press("<cr>");
         assert!(vim.editor.completion.is_none());
         assert_eq!(vim.text(), "alpha album\nalbum\n");
+    }
+
+    #[test]
+    fn typing_brings_the_popup_up_by_itself() {
+        let mut vim = Vim::new("album\n");
+        vim.press("Goa");
+        // One character is not a word yet.
+        assert!(vim.editor.completion.is_none());
+        vim.press("l");
+        let completion = vim.editor.completion.as_ref().expect("suggested");
+        // It suggests; it does not choose.
+        assert_eq!(completion.selected(), None);
+        assert_eq!(completion.len(), 1);
+    }
+
+    #[test]
+    fn a_popup_that_came_up_by_itself_leaves_enter_and_tab_alone() {
+        let mut vim = Vim::new("album\n");
+        vim.press("Goal<cr>");
+        assert_eq!(vim.text(), "album\nal\n\n");
+        assert!(vim.editor.completion.is_none());
+
+        // And the first arrow selects rather than stepping off the top.
+        let mut vim = Vim::new("album\n");
+        vim.press("Goal<down>");
+        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), Some(0));
+        vim.press("<cr>");
+        assert_eq!(vim.text(), "album\nalbum\n");
+    }
+
+    #[test]
+    fn a_dismissed_popup_stays_away_until_the_next_word() {
+        let mut vim = Vim::new("album alphabet\n");
+        vim.press("Goal<esc>");
+        assert!(vim.editor.completion.is_none());
+        // Still the same word, so it does not come back on its own...
+        vim.press("p");
+        assert!(vim.editor.completion.is_none());
+        // ...but `^n` still works, because asking is not the same as being
+        // offered.
+        vim.press("<C-n><esc>");
+        // And a new word starts over.
+        vim.press(" al");
+        assert!(vim.editor.completion.is_some());
+    }
+
+    #[test]
+    fn deleting_does_not_bring_the_popup_up() {
+        let mut vim = Vim::new("album\n");
+        vim.press("Goalb<esc>");
+        assert!(vim.editor.completion.is_none());
+        vim.press("<bs>");
+        assert!(vim.editor.completion.is_none());
+    }
+
+    #[test]
+    fn nothing_is_suggested_inside_a_comment() {
+        let mut vim = Vim::rust("fn album() {}\n// ");
+        vim.press("GA");
+        vim.press("al");
+        assert!(vim.editor.completion.is_none(), "prose is not code");
+        // Asking still works.
+        vim.press("<C-n>");
+        assert!(vim.editor.completion.is_some());
+    }
+
+    #[test]
+    fn autocomplete_can_be_turned_off_and_its_length_set() {
+        let mut vim = Vim::new("album\n");
+        vim.editor.run_command("set noautocomplete");
+        vim.press("Goal");
+        assert!(vim.editor.completion.is_none());
+
+        let mut vim = Vim::new("album\n");
+        vim.editor.run_command("set autocomplete=4");
+        vim.press("Goalb");
+        assert!(vim.editor.completion.is_none());
+        vim.press("u");
+        assert!(vim.editor.completion.is_some());
+    }
+
+    #[test]
+    fn typing_a_new_name_into_a_big_file_stays_cheap() {
+        // Gathering candidates is milliseconds on a file this size, and
+        // suggesting happens on a keystroke. A name nothing in the file
+        // matches is the bad case: without remembering that, every further
+        // character would gather the whole window again.
+        let mut text = String::new();
+        while text.len() < 800_000 {
+            text.push_str("fn render_widget(count: usize) -> usize { count + 1 }\n");
+        }
+        let mut vim = Vim::rust(&text);
+
+        let start = std::time::Instant::now();
+        vim.press("Gozzaphod");
+        let elapsed = start.elapsed();
+
+        assert!(vim.editor.completion.is_none(), "nothing matches zzaphod");
+        assert!(elapsed.as_millis() < 500, "typing took {elapsed:?}");
     }
 
     #[test]

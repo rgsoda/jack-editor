@@ -258,6 +258,27 @@ impl Syntax {
         found
     }
 
+    /// Whether the byte sits inside a comment or a string. Completion suggests
+    /// itself while you type, and prose is the one place where offering to
+    /// finish every word in the file is noise rather than help.
+    ///
+    /// By node kind rather than by query, so it works for every grammar we
+    /// have without another file each: every one of them spells these
+    /// `line_comment`, `block_comment`, `string_literal`, `template_string`.
+    pub fn in_comment_or_string(&self, byte: usize) -> bool {
+        let end = (byte + 1).min(self.tree.root_node().end_byte());
+        let mut node = self.tree.root_node().descendant_for_byte_range(byte, end);
+        while let Some(current) = node {
+            let kind = current.kind();
+            if kind.contains("comment") || kind.contains("string") || kind.contains("char_literal")
+            {
+                return true;
+            }
+            node = current.parent();
+        }
+        false
+    }
+
     /// Whether the byte sits anywhere inside a node tree-sitter could not
     /// make sense of.
     fn inside_error(&self, byte: usize) -> bool {

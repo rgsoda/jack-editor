@@ -181,8 +181,9 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
     let kind_style = editor.theme.style("ui.completion.kind");
 
     // Scrolled so the selection is always one of the rows drawn, and wide
-    // enough for the rows that are.
-    let first = completion.selected().saturating_sub(rows - 1);
+    // enough for the rows that are. An untouched popup shows the top of the
+    // list, because there is no selection to keep in view.
+    let first = completion.selected().unwrap_or(0).saturating_sub(rows - 1);
     let shown: Vec<&Candidate> = completion.items().skip(first).take(rows).collect();
     let width = shown
         .iter()
@@ -210,7 +211,7 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
         if y >= bottom {
             break;
         }
-        let style = match first + row == completion.selected() {
+        let style = match Some(first + row) == completion.selected() {
             true => selected,
             false => base,
         };

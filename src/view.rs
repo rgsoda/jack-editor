@@ -158,6 +158,15 @@ impl View {
         }
     }
 
+    /// Whether the cursor is somewhere completion should keep quiet. False
+    /// without a grammar: with nothing to go on, we would rather offer.
+    pub fn in_comment_or_string(&self, at: usize) -> bool {
+        match &self.syntax {
+            Some(syntax) => syntax.in_comment_or_string(self.doc.text.char_to_byte(at)),
+            None => false,
+        }
+    }
+
     pub fn highlights(&self, range: Range<usize>, theme: &Theme) -> Highlights {
         match &self.syntax {
             Some(syntax) => syntax.highlights(&self.doc.text, range, theme),
@@ -165,9 +174,6 @@ impl View {
         }
     }
 
-    /// Strip trailing whitespace from every line, as one undoable transaction,
-    /// and say how many lines changed. The cursor comes back to where it was,
-    /// or to the end of its line if it was sitting in the spaces that went.
     /// Whether there is an indent query for this file at all, as opposed to
     /// there being one that has nothing to say about a particular line.
     pub fn has_indent_rules(&self) -> bool {
@@ -296,6 +302,9 @@ impl View {
         }
     }
 
+    /// Strip trailing whitespace from every line, as one undoable transaction,
+    /// and say how many lines changed. The cursor comes back to where it was,
+    /// or to the end of its line if it was sitting in the spaces that went.
     pub fn trim_trailing_whitespace(&mut self) -> usize {
         let mut changes = Vec::new();
         for line in 0..self.doc.len_lines() {

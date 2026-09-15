@@ -19,6 +19,18 @@ const MAX_ITEMS: usize = 200;
 /// The shortest word worth remembering as a candidate.
 const MIN_LEN: usize = 2;
 
+/// Where the selection lands when a popup opens or re-filters.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pick {
+    /// `^n`, and a list that re-filtered under a selection.
+    First,
+    /// `^p`.
+    Last,
+    /// A popup that appeared while you were typing: it suggests, it does not
+    /// choose.
+    Nothing,
+}
+
 /// One thing you could be typing, and what the grammar thinks it is.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Candidate {
@@ -38,25 +50,31 @@ pub struct Completion {
     all: Vec<Candidate>,
     /// Indices into `all` that still match the prefix.
     shown: Vec<usize>,
-    selected: usize,
+    /// `None` until the user picks something. A popup that opened on its own
+    /// starts here, so typing straight past it changes nothing and `enter`
+    /// still means `enter`.
+    selected: Option<usize>,
 }
 
 impl Completion {
     /// Gather the candidates for the word ending at `at`. `None` when there is
     /// no word there, or nothing in the buffer that could finish it.
-    pub fn new(view: &View, at: usize, backward: bool) -> Option<Completion> {
+    ///
+    /// `pick` is which candidate to land on: the first for `^n`, the last for
+    /// `^p`, and none at all when the popup opened on its own.
+    pub fn new(view: &View, at: usize, pick: Pick) -> Option<Completion> {
         let start = word_start(view, at);
         let prefix = view.doc.slice_str(start, at);
-        let all = candidates(view, at);
+        let all = candidates(view, at, start);
 
         let mut completion = Completion {
             start,
             prefix,
             all,
             shown: Vec::new(),
-            selected: 0,
+            selected: None,
         };
-        completion.filter(backward);
+        completion.filter(pick);
         match completion.shown.is_empty() {
             true => None,
             false => Some(completion),
@@ -71,20 +89,28 @@ impl Completion {
             return false;
         }
         self.prefix = view.doc.slice_str(self.start, at);
-        self.filter(false);
+        // A popup the user has not touched stays untouched; one they have been
+        // stepping through goes back to the top, because the list underneath
+        // it is a different list now.
+        let pick = match self.selected {
+            Some(_) => Pick::First,
+            None => Pick::Nothing,
+        };
+        self.filter(pick);
         !self.shown.is_empty()
     }
 
-    fn filter(&mut self, backward: bool) {
+    fn filter(&mut self, pick: Pick) {
         let prefix = self.prefix.clone();
         self.shown = (0..self.all.len())
             // A candidate that is already the whole prefix has nothing to add.
             .filter(|&i| self.all[i].text != prefix && matches(&self.all[i].text, &prefix))
             .take(MAX_ITEMS)
             .collect();
-        self.selected = match backward {
-            true => self.shown.len().saturating_sub(1),
-            false => 0,
+        self.selected = match pick {
+            Pick::Nothing => None,
+            Pick::First => Some(0),
+            Pick::Last => Some(self.shown.len().saturating_sub(1)),
         };
     }
 
@@ -94,10 +120,19 @@ impl Completion {
         if self.shown.is_empty() {
             return;
         }
-        self.selected = match forward {
-            true => (self.selected + 1) % self.shown.len(),
-            false => (self.selected + self.shown.len() - 1) % self.shown.len(),
+        // The first press on an untouched popup selects an end of the list
+        // rather than stepping off one.
+        let Some(selected) = self.selected else {
+            self.selected = Some(match forward {
+                true => 0,
+                false => self.shown.len() - 1,
+            });
+            return;
         };
+        self.selected = Some(match forward {
+            true => (selected + 1) % self.shown.len(),
+            false => (selected + self.shown.len() - 1) % self.shown.len(),
+        });
     }
 
     pub fn items(&self) -> impl Iterator<Item = &Candidate> {
@@ -108,12 +143,13 @@ impl Completion {
         self.shown.len()
     }
 
-    pub fn selected(&self) -> usize {
+    /// Which row is picked, or `None` while the popup is only a suggestion.
+    pub fn selected(&self) -> Option<usize> {
         self.selected
     }
 
-    pub fn selected_text(&self) -> &str {
-        &self.all[self.shown[self.selected]].text
+    pub fn selected_text(&self) -> Option<&str> {
+        Some(&self.all[self.shown[self.selected?]].text)
     }
 
     pub fn prefix(&self) -> &str {
@@ -156,7 +192,10 @@ fn word_start(view: &View, at: usize) -> usize {
 /// needed to see it. On top of that, what the grammar *names* - functions,
 /// types, fields - is marked with its kind and ranked first, so a real
 /// identifier beats a word that only ever appeared in a comment.
-fn candidates(view: &View, at: usize) -> Vec<Candidate> {
+///
+/// The word at `current` is the one being typed, and is skipped where it
+/// stands: a half-typed `xyz` must not offer to finish itself with `xyz`.
+fn candidates(view: &View, at: usize, current: usize) -> Vec<Candidate> {
     let chars = view.doc.len_chars();
     let from = at.saturating_sub(WORD_WINDOW);
     let to = (at + WORD_WINDOW).min(chars);
@@ -167,7 +206,9 @@ fn candidates(view: &View, at: usize) -> Vec<Candidate> {
     let mut word = String::new();
     let mut word_start = from;
     let record = |word: &mut String, start: usize, seen: &mut HashMap<_, _>| {
-        if word.len() >= MIN_LEN && word.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+        if start != current
+            && word.len() >= MIN_LEN && word.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        {
             let distance = at.abs_diff(start);
             let entry = seen.entry(std::mem::take(word)).or_insert((None, distance));
             entry.1 = entry.1.min(distance);
@@ -252,7 +293,7 @@ mod tests {
     fn a_word_is_completed_from_the_words_in_the_buffer() {
         let text = "alphabet album\nal";
         let view = open(text, None);
-        let completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
 
         assert_eq!(completion.prefix(), "al");
         // `album` is nearer the cursor than `alphabet`.
@@ -262,25 +303,25 @@ mod tests {
     #[test]
     fn the_word_being_typed_is_not_offered_to_finish_itself() {
         let view = open("alpha\nalpha", None);
-        let completion = Completion::new(&view, view.doc.len_chars(), false);
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First);
         assert!(completion.is_none(), "nothing left to add");
     }
 
     #[test]
     fn short_words_and_numbers_are_not_candidates() {
         let view = open("a 42 42x ab\na", None);
-        let completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
         assert_eq!(texts(&completion), ["ab"]);
     }
 
     #[test]
     fn a_lower_case_prefix_matches_either_case() {
         let view = open("Widget widget\nwi", None);
-        let completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
         assert_eq!(texts(&completion), ["widget", "Widget"]);
 
         let view = open("Widget widget\nWi", None);
-        let completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
         assert_eq!(texts(&completion), ["Widget"]);
     }
 
@@ -290,7 +331,7 @@ mod tests {
         // comment, and is nearer the cursor - the kind still wins.
         let text = "fn render_all() {}\n// render_later\nre";
         let view = open(text, Some("demo.rs"));
-        let completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
 
         let items: Vec<_> = completion.items().collect();
         assert_eq!(items[0].text, "render_all");
@@ -302,19 +343,19 @@ mod tests {
     #[test]
     fn stepping_wraps_in_both_directions() {
         let view = open("one once only\non", None);
-        let mut completion = Completion::new(&view, view.doc.len_chars(), false).unwrap();
-        assert_eq!(completion.selected(), 0);
+        let mut completion = Completion::new(&view, view.doc.len_chars(), Pick::First).unwrap();
+        assert_eq!(completion.selected(), Some(0));
         completion.step(false);
-        assert_eq!(completion.selected(), completion.len() - 1);
+        assert_eq!(completion.selected(), Some(completion.len() - 1));
         completion.step(true);
-        assert_eq!(completion.selected(), 0);
+        assert_eq!(completion.selected(), Some(0));
     }
 
     #[test]
     fn opening_backwards_starts_at_the_bottom() {
         let view = open("one once only\non", None);
-        let completion = Completion::new(&view, view.doc.len_chars(), true).unwrap();
-        assert_eq!(completion.selected(), completion.len() - 1);
+        let completion = Completion::new(&view, view.doc.len_chars(), Pick::Last).unwrap();
+        assert_eq!(completion.selected(), Some(completion.len() - 1));
     }
 
     #[test]
@@ -331,7 +372,7 @@ mod tests {
         let at = view.doc.len_chars() / 2;
 
         let start = std::time::Instant::now();
-        let completion = Completion::new(&view, at, false).unwrap();
+        let completion = Completion::new(&view, at, Pick::First).unwrap();
         let elapsed = start.elapsed();
         println!(
             "{} chars, {} candidates in {elapsed:?}",
