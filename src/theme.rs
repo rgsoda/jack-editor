@@ -276,7 +276,7 @@ mod tests {
         // The override lands...
         assert_eq!(theme.style("keyword").fg, Some(Color::Red));
         // ...and everything the user did not mention survives.
-        assert!(theme.style("ui.statusline").reverse);
+        assert!(theme.style("ui.selection").reverse);
         assert_eq!(theme.style("string").fg, Some(Color::Green));
     }
 

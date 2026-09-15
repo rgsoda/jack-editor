@@ -1,10 +1,11 @@
 use unicode_width::UnicodeWidthChar;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::Editor;
 use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
 use crate::screen::{Style, Surface};
+use crate::status::{self, Glyphs, Segment};
 use crate::stream::Sign;
 use crate::syntax::Highlights;
 
@@ -296,44 +297,113 @@ fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         return;
     }
 
-    let mode = format!(" {} ", editor.mode.name());
-    let mode_style = editor.theme.style(match editor.mode {
-        Mode::Normal => "ui.mode.normal",
-        Mode::Insert => "ui.mode.insert",
-        Mode::Visual | Mode::VisualLine => "ui.mode.visual",
-    });
+    let bar = editor.theme.style("ui.statusline");
+    let glyphs = status::glyphs(editor);
+    let mut status = status::build(editor, keys);
 
-    let (line, col) = editor.cursor_coords();
-    // The buffer position is only worth the columns when there is more than one.
-    let position = match editor.views().len() {
-        1 => String::new(),
-        total => format!(" [{}/{}]", editor.current_index() + 1, total),
-    };
-    let left = if editor.message.is_empty() {
-        format!(
-            " {}{}{}",
-            editor.view().doc.display_name(),
-            if editor.is_modified() { " [+]" } else { "" },
-            position
-        )
-    } else {
-        format!(" {}", editor.message)
-    };
-    // A half-typed command shows on the right, as vim does.
-    let right = format!("{}  {}:{} ", keys.pending_text(), line + 1, col + 1);
+    // The two sides are laid out as runs of (text, style): each segment padded,
+    // and between two of them a separator drawn in the left one's background
+    // over the right one's. A segment whose colours the theme leaves to the
+    // terminal cannot be blended into its neighbour, so those get the hairline
+    // separator instead.
+    let left = run(&status.left, bar, glyphs, true);
+    let left_width = run_width(&left);
 
-    let gap = width
-        .saturating_sub(str_width(&mode) + str_width(&left) + str_width(&right));
-    let text = format!("{left}{}{right}", " ".repeat(gap));
+    // In a narrow terminal the right side gives up its segments from the left,
+    // because the cursor position is the one worth keeping, and the file name
+    // is then clipped rather than pushing the position off the end.
+    while status.right.len() > 1 {
+        let right = run(&status.right, bar, glyphs, false);
+        if left_width + run_width(&right) <= width {
+            break;
+        }
+        status.right.remove(0);
+    }
+    let right = run(&status.right, bar, glyphs, false);
+    let start = width.saturating_sub(run_width(&right));
 
-    let style = editor.theme.style("ui.statusline");
-    let mut x = put_str(surface, 0, row, &mode, mode_style, width);
-    x = put_str(surface, x, row, &text, style, width);
-    // The bar runs the full width even when the text does not fill it.
-    while x < width {
-        surface.put(x, row, ' ', 1, style);
+    let mut x = 0;
+    for (text, style) in &left {
+        x = put_str(surface, x, row, text, *style, start);
+    }
+    // A message sits in the gap between the two sides, clipped where the right
+    // side begins rather than pushing it along.
+    if !status.message.is_empty() {
+        let message = format!(" {}", status.message);
+        x = put_str(surface, x, row, &message, bar, start);
+    }
+    while x < start {
+        surface.put(x, row, ' ', 1, bar);
         x += 1;
     }
+    for (text, style) in &right {
+        x = put_str(surface, x, row, text, *style, width);
+    }
+    while x < width {
+        surface.put(x, row, ' ', 1, bar);
+        x += 1;
+    }
+}
+
+/// Expand segments into the pieces to paint, separators included. `forward` is
+/// the left side, which points its wedges the way the text reads.
+fn run(
+    segments: &[Segment],
+    bar: Style,
+    glyphs: &Glyphs,
+    forward: bool,
+) -> Vec<(String, Style)> {
+    let mut pieces: Vec<(String, Style)> = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        // Outside the bar at the far end, the neighbour is the next segment.
+        let outer = match forward {
+            true => segments.get(i + 1).map_or(bar, |s| s.style),
+            false => segments.get(i.wrapping_sub(1)).map_or(bar, |s| s.style),
+        };
+        let separator = separator(segment.style, outer, glyphs, forward);
+        if !forward && let Some(separator) = separator.clone() {
+            pieces.push(separator);
+        }
+        pieces.push((format!(" {} ", segment.text), segment.style));
+        if forward && let Some(separator) = separator {
+            pieces.push(separator);
+        }
+    }
+    pieces
+}
+
+/// The wedge between a segment and what follows it, or `None` when the two
+/// share a background and there is nothing to divide.
+fn separator(
+    inner: Style,
+    outer: Style,
+    glyphs: &Glyphs,
+    forward: bool,
+) -> Option<(String, Style)> {
+    let wedge = match forward {
+        true => glyphs.section_right,
+        false => glyphs.section_left,
+    };
+    // Nothing to blend - the two share a background, or the glyph set has no
+    // wedge to draw - so a hairline in the segment's own colours divides them.
+    if inner.bg == outer.bg || wedge.is_empty() {
+        let thin = match forward {
+            true => glyphs.thin_right,
+            false => glyphs.thin_left,
+        };
+        return match thin.is_empty() {
+            true => None,
+            false => Some((thin.to_string(), inner)),
+        };
+    }
+    // The wedge is the inner colour, drawn on the outer one - which is what
+    // makes one block look like it flows into the next.
+    let style = Style { fg: inner.bg, bg: outer.bg, ..Style::default() };
+    Some((wedge.to_string(), style))
+}
+
+fn run_width(run: &[(String, Style)]) -> usize {
+    run.iter().map(|(text, _)| str_width(text)).sum()
 }
 
 fn put_str(surface: &mut Surface, mut x: usize, row: usize, text: &str, style: Style, width: usize) -> usize {
@@ -396,9 +466,13 @@ mod tests {
         let hybrid = cost_of_a_cursor_move(Numbers::Hybrid);
         println!("one line down, 40 rows: off {off}b, absolute {absolute}b, hybrid {hybrid}b");
 
+        // `off` is not free: the status line repaints its position segment on
+        // every move whatever the numbering is, so what each mode actually
+        // costs is the difference from it.
+        let (absolute, hybrid) = (absolute - off, hybrid - off);
         // Absolute numbering does not repaint numbers that did not change; the
         // cursor's line changing style is the only difference from off.
-        assert!(absolute < off * 3, "absolute {absolute} vs off {off}");
+        assert!(absolute < off, "absolute {absolute} vs off {off}");
         // Hybrid repaints every number, which is the cost it is worth knowing.
         assert!(hybrid > absolute * 3, "hybrid {hybrid} vs absolute {absolute}");
     }
@@ -445,4 +519,54 @@ mod tests {
         editor.signs_enabled = true;
         assert_eq!(editor.cursor_screen(), (6, 0));
     }
+
+    /// The status row as text, for asserting on what it actually says.
+    fn status_row(editor: &Editor, keys: &Keys) -> String {
+        let mut screen = Screen::new();
+        let (width, height) = (editor.width, editor.height + 1);
+        let surface = screen.begin(width, height);
+        draw(editor, keys, surface);
+        (0..width).map(|x| surface.get(x, height - 1).ch).collect()
+    }
+
+    #[test]
+    fn the_status_line_shows_the_mode_the_file_and_the_position() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(80, 20);
+        let row = status_row(&editor, &Keys::default());
+        assert!(row.contains("NORMAL"), "{row}");
+        assert!(row.contains("[scratch]"), "{row}");
+        assert!(row.trim_end().ends_with('1'), "{row}");
+    }
+
+    #[test]
+    fn a_message_survives_the_gap_it_is_drawn_into() {
+        // The gap between the two sides is filled with spaces after the message
+        // is drawn, which once erased it.
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(80, 20);
+        editor.message = "wrote demo.rs".into();
+        let row = status_row(&editor, &Keys::default());
+        assert!(row.contains("wrote demo.rs"), "{row}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_keeps_the_cursor_position() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(24, 20);
+        let row = status_row(&editor, &Keys::default());
+        // The file name is what gives way, not the position.
+        assert!(row.trim_end().ends_with('1'), "{row}");
+        assert!(!row.contains("[scratch]"), "{row}");
+    }
+
+    #[test]
+    fn plain_glyphs_keep_the_status_line_ascii() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(80, 20);
+        editor.glyphs = false;
+        let row = status_row(&editor, &Keys::default());
+        assert!(row.is_ascii(), "{row}");
+    }
+
 }

@@ -149,6 +149,9 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
+    /// terminal whose font has not been patched.
+    pub glyphs: bool,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
     /// Show git signs in the gutter.
@@ -203,6 +206,7 @@ impl Editor {
             registers: Registers::default(),
             numbers: Numbers::default(),
             trim_on_save: true,
+            glyphs: true,
             quit: None,
             signs_enabled: true,
             signs_token: 0,
@@ -443,6 +447,8 @@ impl Editor {
             "hybrid" => self.numbers = Numbers::Hybrid,
             "trim" => self.trim_on_save = true,
             "notrim" => self.trim_on_save = false,
+            "glyphs" => self.glyphs = true,
+            "noglyphs" => self.glyphs = false,
             "signs" => self.signs_enabled = true,
             "nosigns" => {
                 self.signs_enabled = false;
@@ -450,10 +456,11 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={}",
+                    "number={} trim={} signs={} glyphs={}",
                     self.numbers.name(),
                     self.trim_on_save,
-                    self.signs_enabled
+                    self.signs_enabled,
+                    self.glyphs
                 );
             }
             other => self.message = format!("not an option: {other}"),

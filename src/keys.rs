@@ -82,6 +82,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
     Binding { keys: ":set number", what: "nonumber, relativenumber, hybrid", mode: "command" },
     Binding { keys: ":set trim", what: "notrim: strip trailing space on save", mode: "command" },
+    Binding { keys: ":set glyphs", what: "noglyphs: nerd font status line, or ascii", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
 
@@ -277,7 +278,7 @@ impl Keys {
                 });
             }
             Some(operator) => {
-                self.operator(editor, operator, key, count.unwrap_or(1));
+                self.operator(editor, operator, key, ctrl, count.unwrap_or(1));
                 self.finish();
             }
             None => {
@@ -526,7 +527,13 @@ impl Keys {
         }
     }
 
-    fn operator(&mut self, editor: &mut Editor, operator: Pending, key: KeyEvent, count: usize) {
+    fn operator(&mut self, editor: &mut Editor, operator: Pending, key: KeyEvent, ctrl: bool, count: usize) {
+        // A chord is not a motion, and `^d` in particular reaches here as a
+        // plain `d`, which would make `d^d` delete lines. An operator waiting
+        // for a motion and handed a chord gives up instead.
+        if ctrl {
+            return;
+        }
         let doubled = matches!(
             (operator, key.code),
             (Pending::Delete, KeyCode::Char('d'))
@@ -1146,7 +1153,6 @@ plain
         assert_eq!(vim.keys.pending_text(), "");
     }
 
-
     #[test]
     fn v_enters_visual_mode_and_selects_the_character_under_the_cursor() {
         let mut vim = Vim::new("hello\n");
@@ -1290,7 +1296,6 @@ plain
         assert_eq!(vim.editor.cursor_coords(), (0, 1));
     }
 
-
     #[test]
     fn shift_and_an_arrow_starts_a_selection_in_normal_mode() {
         let mut vim = Vim::new("hello world\n");
@@ -1323,7 +1328,6 @@ plain
         assert_eq!(vim.editor.selection_range(), None);
         assert_eq!(vim.editor.cursor_coords(), (0, 2));
     }
-
 
     #[test]
     fn leaving_insert_mode_with_a_selection_lands_in_visual_mode() {
@@ -1362,7 +1366,6 @@ plain
         assert_eq!(vim.editor.selection_range(), None);
         assert_eq!(vim.editor.cursor_coords(), (0, 1));
     }
-
 
     #[test]
     fn leader_question_mark_opens_the_help() {
@@ -1411,7 +1414,6 @@ plain
             assert!(did_something, "{} did nothing", binding.keys);
         }
     }
-
 
     #[test]
     fn slash_opens_a_prompt_that_owns_the_keyboard() {
@@ -1548,7 +1550,6 @@ plain
         assert_eq!(vim.editor.cursor_coords(), (0, 12));
     }
 
-
     #[test]
     fn colon_opens_a_command_line_that_does_not_preview() {
         let mut vim = Vim::new("one\ntwo\nthree\n");
@@ -1640,7 +1641,6 @@ plain
         assert_eq!(vim.editor.selection_range(), Some((0, 5)));
     }
 
-
     #[test]
     fn change_inner_word_replaces_the_whole_word() {
         let mut vim = Vim::new("let x = foo_bar(1);");
@@ -1707,6 +1707,14 @@ plain
         let mut vim = Vim::new("bc");
         vim.press("ia<esc>llax<esc>");
         assert_eq!(vim.text(), "abcx");
+    }
+
+    #[test]
+    fn a_chord_does_not_finish_an_operator() {
+        // `^d` arrives as a plain `d`, which would otherwise read as `dd`.
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press("2d<C-d>");
+        assert_eq!(vim.text(), "one\ntwo\nthree\n");
     }
 
 }

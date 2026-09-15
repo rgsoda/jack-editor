@@ -23,9 +23,13 @@
 "tag"              = "blue"
 "tag.error"        = "red"
 
-# Reverse video rather than explicit colors, so these stay legible whatever the
-# terminal's own background is.
-"ui.statusline"    = { reverse = true }
+# The status line names its colors rather than reversing video: the powerline
+# separators are drawn in one segment's background over the next one's, which
+# needs both to be known. A segment left uncolored falls back to a hairline.
+"ui.statusline"    = { fg = "#f8f8f2", bg = "#44475a" }
+"ui.statusline.file" = { fg = "#f8f8f2", bg = "#6272a4" }
+"ui.statusline.info" = { fg = "#f8f8f2", bg = "#44475a" }
+"ui.statusline.position" = { fg = "#282a36", bg = "#bd93f9", bold = true }
 "ui.selection"     = { reverse = true }
 "ui.eof"           = "dark_grey"
 "ui.mode.normal"   = { fg = "black", bg = "blue", bold = true }

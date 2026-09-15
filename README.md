@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 17: text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 18: a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -67,6 +67,7 @@ Starts in normal mode, like vim.
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
+| `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -125,6 +126,8 @@ Starts in normal mode, like vim.
   view and writes to a register.
 - `object.rs` — text objects: a position and a shape (`Word`, `Quote`,
   `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
+- `status.rs` — the status line as a list of coloured `Segment`s, plus the two
+  glyph sets. Knows nothing about painting.
 - `history.rs` — `Change` / `Transaction` / `History`. A transaction carries its
   own pre-edit coordinates and the selection either side of it, so it can be
   inverted without the document and undo lands the cursor where you left it.
@@ -353,6 +356,39 @@ counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
 
+## The status line
+
+```
+ NORMAL   main.rs ● 1/2   3  1                    rust   42%    128   17 
+```
+
+Blocks, left to right: the mode, the file (its language's icon, its name, a dot
+while it has unsaved changes, and which of several buffers it is), then what git
+would say about the buffer — the gutter's signs, counted rather than recomputed.
+The right side carries any half-typed command, the language, how far down the
+file you are, and the cursor's line and column. A message takes the space
+between the two sides, and is clipped there rather than pushing the position off
+the end; in a terminal too narrow for everything, the right side gives up its
+blocks from the left and the file name is what gets clipped, because the
+position is the part you actually look at.
+
+The wedge between two blocks is drawn in the left one's background colour on the
+right one's, which is the whole trick: it needs both colours to be *known*, so
+`ui.statusline` and friends name their colours instead of reversing video. Two
+blocks that share a background get a hairline instead, and a theme that leaves a
+block's colours to the terminal degrades to hairlines rather than to mud.
+
+The glyphs are Nerd Font code points — the Powerline wedges, the Devicons file
+icons, and `` / `` for line and column. If your terminal font is not patched
+you will see boxes, and `:set noglyphs` swaps in an ASCII set (`|`, `+`, `ln`,
+`col`) that keeps the colours and loses the pictures. Everything else is
+unaffected: the glyph set is eleven strings in `status.rs` and nothing else
+knows about it.
+
+`status.rs` decides *what* the line says, as a list of coloured blocks, and
+`ui.rs` decides how to paint them. That split is why the narrow-terminal rule is
+four lines and why the ASCII fallback needed no new drawing code.
+
 ## Theming
 
 Drop a file at `$XDG_CONFIG_HOME/soda_edit/theme.toml` (or
@@ -369,6 +405,11 @@ lookup falls back along the dots, so `variable` also styles
 `variable.parameter`. Colors are ANSI names, a 0-255 palette index, or
 `#rrggbb`. A broken theme is reported in the status line and the built-in one
 is used instead. See `themes/default.toml`.
+
+The status line's blocks are `ui.statusline` (the bar), `ui.statusline.file`,
+`ui.statusline.info`, `ui.statusline.position` and the three `ui.mode.*` keys.
+Give them backgrounds if you want the powerline wedges; leave them out and you
+get hairlines.
 
 ## Modes
 

@@ -7,6 +7,7 @@ mod picker;
 mod register;
 mod screen;
 mod search;
+mod status;
 mod stream;
 mod syntax;
 mod theme;
