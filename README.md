@@ -12,15 +12,29 @@ Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
 cargo run -- .                         # a directory: the file picker, there
-
-cargo install --path .                 # then it is just `jack`
-jack src/main.rs
 ```
 
-The crate, the binary and the config directory are all `jack`: `~/.config/jack`
-holds `init` and `theme.toml`.
+## Install
 
-Starts in normal mode, like vim.
+```sh
+cargo install --git https://github.com/rgsoda/jack-editor   # from here
+cargo install --path .                                      # from a clone
+```
+
+Either way the command is `jack`, and `jack --version` says so. Needs a Rust
+toolchain of 1.88 or newer (let-chains) and a C compiler, because the
+tree-sitter grammars are C and are built from source.
+
+The package is `jack-editor` and the binary is `jack`, which is not fussiness:
+`jack` on crates.io is the audio server's bindings, and on Arch `jack` is what
+`jack2` and `pipewire-jack` provide. The command name itself is unclaimed, so
+that is the half worth keeping.
+
+The config directory is `~/.config/jack` — `init` and `theme.toml` — and
+`:config` writes the first one for you.
+
+Starts in normal mode, like vim. `jack --help` is the one-screen version of
+that; `<space>?` inside is the searchable keymap.
 
 A single directory argument is not a buffer, it is a project: the editor
 changes into it and opens the file picker, because the picker already walks the

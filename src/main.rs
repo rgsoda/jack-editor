@@ -68,8 +68,46 @@ fn start_directory(paths: &[String]) -> Option<&String> {
     }
 }
 
+/// What `--version` and `--help` say. Every packaging recipe reaches for one
+/// of these to check the thing it just installed actually runs, and a text
+/// editor that has to be opened to answer is no use to a build script.
+const USAGE: &str = "\
+jack - a terminal text editor
+
+Usage:
+  jack [file ...]   open files
+  jack <dir>        start in that directory with the file picker open
+  jack              an empty buffer
+
+Options:
+  -h, --help        this
+  -V, --version     the version
+
+Inside: :help is <space>?, and :config writes a config file of every default.
+";
+
+/// `--help` and `--version` before anything else opens a terminal. `Some` is
+/// what to print and leave.
+fn flag(paths: &[String]) -> Option<String> {
+    match paths.iter().find(|arg| arg.starts_with('-')).map(String::as_str) {
+        Some("-h" | "--help") => Some(USAGE.to_string()),
+        Some("-V" | "--version") => {
+            Some(format!("jack {}\n", env!("CARGO_PKG_VERSION")))
+        }
+        // Anything else starting with a dash is a mistake worth saying so
+        // about, rather than a file to create called `--colour`.
+        Some(other) => Some(format!("jack: not an option: {other}\n\n{USAGE}")),
+        None => None,
+    }
+}
+
 fn main() -> Result<()> {
     let paths: Vec<String> = std::env::args().skip(1).collect();
+
+    if let Some(text) = flag(&paths) {
+        print!("{text}");
+        return Ok(());
+    }
 
     // A directory is not a buffer: it means start in that project with the
     // file picker open. Nothing here is a mode - the picker already walks the
@@ -227,7 +265,30 @@ fn cursor_style(mode: Mode) -> SetCursorStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::start_directory;
+    use super::{flag, start_directory};
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_flags_answer_without_opening_a_terminal() {
+        let version = flag(&args(&["--version"])).expect("a version");
+        assert_eq!(version, format!("jack {}\n", env!("CARGO_PKG_VERSION")));
+        assert_eq!(flag(&args(&["-V"])), Some(version));
+
+        assert!(flag(&args(&["--help"])).unwrap().starts_with("jack - "));
+        assert_eq!(flag(&args(&["-h"])), flag(&args(&["--help"])));
+    }
+
+    #[test]
+    fn an_unknown_flag_says_so_rather_than_being_a_file_name() {
+        let message = flag(&args(&["--colour"])).expect("a complaint");
+        assert!(message.starts_with("jack: not an option: --colour"));
+        // Files are not flags, whatever they are called.
+        assert_eq!(flag(&args(&["src/main.rs", "README.md"])), None);
+        assert_eq!(flag(&[]), None);
+    }
 
     #[test]
     fn one_directory_argument_names_where_to_start() {

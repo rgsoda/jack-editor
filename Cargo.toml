@@ -1,7 +1,20 @@
 [package]
-name = "jack"
+name = "jack-editor"
 version = "0.1.0"
 edition = "2024"
+# Let-chains, which this uses freely: `if let Some(x) = y && ...`.
+rust-version = "1.88"
+description = "A terminal text editor with tree-sitter highlighting, vim keys and no configuration to speak of"
+license = "MIT"
+repository = "https://github.com/rgsoda/jack-editor"
+readme = "README.md"
+keywords = ["editor", "terminal", "vim", "tree-sitter", "tui"]
+categories = ["text-editors", "command-line-utilities"]
+# `jack` on crates.io is the audio server's bindings, and on Arch it is what
+# jack2 provides - hence a package name that is not what you type.
+[[bin]]
+name = "jack"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
