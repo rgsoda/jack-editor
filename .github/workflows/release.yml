@@ -28,7 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        # The tag is the version, and the formula's `test do` asserts the
+        # binary says the same thing - so a tag that disagrees with Cargo.toml
+        # ships a release nobody can install. Say so here rather than there.
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          crate=$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$version" != "$crate" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $crate" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,8 +71,13 @@ jobs:
             cc: aarch64-linux-gnu-gcc
           - target: aarch64-apple-darwin
             os: macos-latest
+          # Both Apple targets on the same arm64 runner: macos-13 was the last
+          # Intel one and GitHub retired it, so a job asking for it queues for
+          # ever and takes the formula job down with it. Clang on macOS builds
+          # for either architecture, and cc-rs passes the target through, so
+          # the grammars cross-compile without a toolchain to install.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +130,9 @@ jobs:
   # updating the tap is copying one file rather than pasting four hashes.
   formula:
     needs: [create, build]
+    # Even if a target failed: the renderer leaves out what is not there, and
+    # a formula that installs on three platforms beats no formula at all.
+    if: always() && needs.create.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
