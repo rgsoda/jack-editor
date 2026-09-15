@@ -1,0 +1,30 @@
+# Keys are tree-sitter capture names plus the editor's own `ui.*` elements.
+# Lookup falls back along the dots: `variable.parameter` tries `variable.parameter`
+# then `variable`, so a theme only has to name what it wants to change.
+#
+# A value is either a color, or a table of { fg, bg, bold, italic, underline,
+# dim, reverse }. Colors are ANSI names ("blue", "dark_grey"), a 0-255 palette
+# index ("117"), or true color ("#8be9fd").
+
+"comment"          = { fg = "dark_grey", italic = true }
+"string"           = "green"
+"character"        = "green"
+"escape"           = "cyan"
+"keyword"          = "magenta"
+"variable.builtin" = "magenta"
+"function"         = "blue"
+"type"             = "yellow"
+"constructor"      = "yellow"
+"constant"         = "cyan"
+"attribute"        = "dark_yellow"
+"label"            = "dark_yellow"
+"operator"         = "dark_cyan"
+"number"           = "cyan"
+"tag"              = "blue"
+"tag.error"        = "red"
+
+# Reverse video rather than explicit colors, so these stay legible whatever the
+# terminal's own background is.
+"ui.statusline"    = { reverse = true }
+"ui.selection"     = { reverse = true }
+"ui.eof"           = "dark_grey"
