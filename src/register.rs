@@ -4,6 +4,9 @@ use std::collections::HashMap;
 pub const UNNAMED: char = '"';
 /// The last yank, kept apart so a later delete does not clobber it.
 pub const YANK: char = '0';
+/// The system clipboard, as vim spells it. What `^c` writes and `^v` reads;
+/// the editor syncs it with the session's clipboard either side of those.
+pub const SYSTEM: char = '+';
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegisterValue {
@@ -41,6 +44,12 @@ impl Registers {
     pub fn get(&self, name: Option<char>) -> RegisterValue {
         let name = name.map_or(UNNAMED, |c| c.to_ascii_lowercase());
         self.map.get(&name).cloned().unwrap_or_default()
+    }
+
+    /// Write one register and nothing else - the way the system clipboard is
+    /// brought in, which is not a yank and should not disturb what is.
+    pub fn set(&mut self, name: char, value: RegisterValue) {
+        self.map.insert(name, value);
     }
 
     pub fn record_delete(&mut self, name: Option<char>, value: RegisterValue) {

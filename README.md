@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 27: a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 28: the system clipboard on `^c` `^x` `^v`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -45,6 +45,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>d` | pick a definition in this buffer |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
+| `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
 | `^d` `^u`, page up/down | scroll |
 | `i` `I` `a` `A` | insert here / at first non-blank / after / at line end |
 | `o` `O` | open a line below / above |
@@ -118,6 +119,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `>` `<` `{n}>` | indent / dedent the lines, n steps |
 | `=` | re-indent the lines |
 | `p` `P` | replace it with a register |
+| `^c` `^x` `^v` | copy / cut / paste over the selection |
 | `D` `X` `Y` `C` `S` | the same, on whole lines |
 | `esc` | back to normal mode |
 
@@ -131,6 +133,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `enter` `tab` `^y` | accept the selected completion |
 | `esc` `^e` | close the popup, still typing |
 | `^t` `^d` | indent / dedent this line |
+| `^v` | paste at the cursor, as typing it would |
+| `^c` `^x` | copy / cut this line |
 | `backspace` `delete` | delete a grapheme, or the selection |
 | arrows, `home`, `end` | move (with `shift` to select) |
 | `esc` | back to normal mode |
@@ -170,6 +174,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `command.rs` — what the `:` line knows about itself: the commands, the
   options, and what `tab` should offer for a half-typed one. No state; the
   commands are still run by `editor.rs`.
+- `clipboard.rs` — the system clipboard: the helper programs that read and
+  write it, and the OSC 52 escape for when there are none. Knows nothing about
+  the editor; hands back an escape rather than writing to stdout behind the
+  renderer's back.
 - `object.rs` — text objects: a position and a shape (`Word`, `Quote`,
   `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
 - `status.rs` — the status line as a list of coloured `Segment`s, plus the two
@@ -672,6 +680,42 @@ method with that name rather than the one for the receiver's type; and it looks
 at one file, not the project. Those are where a real index begins — and this is
 what is worth having before one.
 
+## The system clipboard
+
+`^c` copies, `^x` cuts, `^v` pastes — the selection when there is one, and the
+whole line when there is not, which is what every editor with these keys does
+and what makes `^c^v` a way to duplicate a line without selecting it first. In
+insert mode `^v` puts the text in at the cursor, as typing it would; in normal
+mode it is a put, so a copied line lands on a line of its own.
+
+Inside the editor this is the `+` register and nothing new: the same yank and
+put that `y` and `p` use, named. What is new is the two ends of it. Copying
+writes `+` out to the session's clipboard, and pasting reads the clipboard back
+into `+` first, so `^v` puts what you copied in the browser rather than what you
+copied here an hour ago. Text arriving with a trailing newline is taken as whole
+lines, which is what makes a line copied here paste back as a line.
+
+Two ways out of the terminal and one way in:
+
+- **A helper program** — `wl-copy`, `xclip`, `xsel`, `pbcopy` — found once by
+  reading `PATH` rather than by running anything, in that order, so a Wayland
+  session does not end up talking to an `xclip` with no display. This is the
+  only one that works in both directions.
+- **OSC 52** otherwise: the terminal's own clipboard protocol, base64 in an
+  escape sequence, and the only thing that works over ssh. Write-only in
+  practice — terminals that will take a copy mostly will not answer a read —
+  and capped at 74994 bytes, past which terminals differ about how much they
+  will silently drop.
+
+The escape goes back to the run loop to be written with the frame rather than
+straight to stdout: the renderer owns that, and a module writing to it from
+underneath would eventually write into the middle of a frame.
+
+No dependency was added for any of this — the base64 encoder is fifteen lines,
+which is less than the plumbing for a crate that wanted a display connection.
+With neither a helper nor a willing terminal, all three keys still work; they
+just move text around inside the editor, which is where they put it anyway.
+
 ## The symbol picker
 
 `<space>d` lists what this buffer defines — functions, methods, types, traits,
@@ -858,8 +902,12 @@ puts the text back inline after the cursor; `dd` then `p` puts a whole line
 below the current one. This is the whole reason a register is not just a
 string.
 
+Register `+` is the system clipboard, which `^c` and `^v` write and read; see
+above for how it gets in and out of the terminal. The `"+y` spelling is not
+wired up yet — the chords are the way to it.
+
 The numbered registers `1`-`9` are not implemented, nor are the read-only
-ones (`%`, `.`, `:`), nor the system clipboard.
+ones (`%`, `.`, `:`).
 
 ## Picker
 

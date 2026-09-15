@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
+use crate::clipboard;
 use crate::command;
 use crate::complete::{self, Completion, Pick};
 use crate::jump::{Jump, Jumps};
@@ -14,7 +15,7 @@ use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
 use crate::search::{self, Search};
 use crate::stream::{self, Message, Sign};
-use crate::register::{RegisterValue, Registers};
+use crate::register::{RegisterValue, Registers, SYSTEM};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
 use crate::view::{self, Find, Indent, Move, Selection, TAB_WIDTH, View};
@@ -250,6 +251,10 @@ pub struct Editor {
     pub glyphs: bool,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
+    /// An escape sequence the run loop should write out with the next frame.
+    /// A copy with no clipboard helper to run leaves an OSC 52 here, because
+    /// the editor does not own stdout and the renderer does.
+    pub escape: Option<String>,
     /// Show git signs in the gutter.
     pub signs_enabled: bool,
     /// The diff we are waiting on: which request, and which view asked.
@@ -313,6 +318,7 @@ impl Editor {
             height: 24,
             mode: Mode::default(),
             registers: Registers::default(),
+            escape: None,
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
@@ -1842,6 +1848,85 @@ impl Editor {
             Err(err) => self.message = format!("{err:#}"),
         }
         self.clamp_cursor();
+    }
+
+    // --- the system clipboard: ^c ^x ^v ---------------------------------
+
+    /// `^c`: the selection, or the whole line when there is none - which is
+    /// what every editor with these keys does, and what makes `^c^v` a way to
+    /// duplicate a line without selecting it first.
+    pub fn clip_copy(&mut self) {
+        match self.mode {
+            Mode::Visual | Mode::VisualLine => {
+                self.yank_visual(Some(SYSTEM));
+                self.set_mode(Mode::Normal);
+            }
+            _ => self.yank_lines(Some(SYSTEM), 1),
+        }
+        self.push_clipboard();
+        self.message = "copied".into();
+    }
+
+    /// `^x`, the same rule: the selection, or the line.
+    pub fn clip_cut(&mut self) {
+        match self.mode {
+            Mode::Visual | Mode::VisualLine => {
+                self.delete_visual(Some(SYSTEM));
+                self.set_mode(Mode::Normal);
+            }
+            _ => self.delete_lines(Some(SYSTEM), 1),
+        }
+        self.push_clipboard();
+        self.clamp_cursor();
+    }
+
+    /// `^v`. In insert mode the text goes in at the cursor, as typing it
+    /// would; anywhere else it is a put, so a copied line lands on a line of
+    /// its own rather than in the middle of the one you are on.
+    pub fn clip_paste(&mut self) {
+        self.pull_clipboard();
+        if self.registers.get(Some(SYSTEM)).is_empty() {
+            self.message = "nothing to put".into();
+            if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
+                self.set_mode(Mode::Normal);
+            }
+            return;
+        }
+        match self.mode {
+            Mode::Visual | Mode::VisualLine => self.put_over_visual(Some(SYSTEM)),
+            Mode::Insert => {
+                let text = self.registers.get(Some(SYSTEM)).text;
+                self.insert(&text);
+            }
+            Mode::Normal => {
+                self.put(Some(SYSTEM), 1, true);
+                self.clamp_cursor();
+            }
+        }
+    }
+
+    /// Send the `+` register out to the session's clipboard.
+    fn push_clipboard(&mut self) {
+        let text = self.registers.get(Some(SYSTEM)).text;
+        self.escape = clipboard::copy(&text);
+    }
+
+    /// Bring the session's clipboard in, so a `^v` pastes what was copied in
+    /// the browser rather than what was copied here an hour ago. Text ending
+    /// in a newline is taken as whole lines - which is what makes copying a
+    /// line here and pasting it back put it on a line of its own.
+    fn pull_clipboard(&mut self) {
+        let Some(text) = clipboard::paste() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let value = match text.ends_with('\n') {
+            true => RegisterValue::linewise(text),
+            false => RegisterValue::charwise(text),
+        };
+        self.registers.set(SYSTEM, value);
     }
 
     // --- commands that touch both a view and the registers -------------

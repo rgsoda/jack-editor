@@ -65,10 +65,12 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>b", what: "pick a buffer", mode: "normal" },
     Binding { keys: "<space>f", what: "pick a file", mode: "normal" },
     Binding { keys: "<space>s", what: "grep the working directory", mode: "normal" },
+    Binding { keys: "^c ^x ^v", what: "copy, cut, paste the line (the system clipboard)", mode: "normal" },
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
 
+    Binding { keys: "^c ^x ^v", what: "copy, cut, paste over the selection", mode: "visual" },
     Binding { keys: "any motion", what: "drag the selection", mode: "visual" },
     Binding { keys: "o", what: "swap which end moves", mode: "visual" },
     Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
@@ -88,6 +90,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "up down", what: "next, previous completion", mode: "insert" },
     Binding { keys: "enter tab ^y", what: "accept the selected completion", mode: "insert" },
     Binding { keys: "^t ^d", what: "indent, dedent this line", mode: "insert" },
+    Binding { keys: "^v ^c ^x", what: "paste here, copy the line, cut the line", mode: "insert" },
     Binding { keys: "^a ^e ^f ^b ^n ^p", what: "emacs: motions (:set emacs)", mode: "insert" },
     Binding { keys: "M-f M-b", what: "emacs: word forward, back", mode: "insert" },
     Binding { keys: "^k ^u ^w M-d", what: "emacs: kill to line end, start, word", mode: "insert" },
@@ -430,6 +433,13 @@ impl Keys {
         }
 
         match key.code {
+            // The clipboard chords come before the letters they share: `^x` is
+            // a cut where `x` is a delete, and a ctrl that fell through to the
+            // letter would be the wrong one of the two.
+            KeyCode::Char('c') if ctrl => editor.clip_copy(),
+            KeyCode::Char('x') if ctrl => editor.clip_cut(),
+            KeyCode::Char('v') if ctrl => editor.clip_paste(),
+
             KeyCode::Char('v') => editor.set_mode(match editor.mode {
                 Mode::Visual => Mode::Normal,
                 _ => Mode::Visual,
@@ -542,6 +552,9 @@ impl Keys {
             //
             // `^i` and `tab` are the same byte in a terminal, so they are the
             // same key here whether you think of it as vim's or not.
+            KeyCode::Char('c') if ctrl => editor.clip_copy(),
+            KeyCode::Char('x') if ctrl => editor.clip_cut(),
+            KeyCode::Char('v') if ctrl => editor.clip_paste(),
             KeyCode::Char('o') if ctrl => editor.jump_back(),
             KeyCode::Char('i') if ctrl => editor.jump_forward(),
             KeyCode::Tab => editor.jump_forward(),
@@ -905,6 +918,9 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     }
 
     match key.code {
+        KeyCode::Char('c') if ctrl => editor.clip_copy(),
+        KeyCode::Char('x') if ctrl => editor.clip_cut(),
+        KeyCode::Char('v') if ctrl => editor.clip_paste(),
         KeyCode::Char('n') if ctrl => editor.open_completion(false),
         KeyCode::Char('p') if ctrl => editor.open_completion(true),
         KeyCode::Char('t') if ctrl => editor.shift_current_line(true),
@@ -2565,6 +2581,75 @@ plain
 
         assert!(vim.editor.completion.is_none(), "nothing matches zzaphod");
         assert!(elapsed.as_millis() < 500, "typing took {elapsed:?}");
+    }
+
+    #[test]
+    fn ctrl_c_copies_the_line_and_ctrl_v_puts_it_back() {
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("<C-c>");
+        // Copying a line looks like nothing happening, so it says so.
+        assert_eq!(vim.editor.message, "copied");
+        vim.press("<C-v>");
+        // A line copied is a line pasted onto a line of its own, not into the
+        // middle of the one the cursor was on.
+        assert_eq!(vim.text(), "one\none\ntwo\n");
+    }
+
+    #[test]
+    fn ctrl_x_cuts_the_line() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press("j<C-x>");
+        assert_eq!(vim.text(), "one\nthree\n");
+        vim.press("<C-v>");
+        assert_eq!(vim.text(), "one\nthree\ntwo\n");
+    }
+
+    #[test]
+    fn the_chords_take_the_selection_when_there_is_one() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press("ve<C-c>");
+        // Copying leaves visual mode, as it does everywhere else these keys
+        // work.
+        assert_eq!(vim.editor.mode, Mode::Normal);
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("hello"));
+
+        vim.press("$<C-v>");
+        assert_eq!(vim.text(), "hello worldhello\n");
+    }
+
+    #[test]
+    fn ctrl_x_in_visual_mode_cuts_the_selection() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press("wve<C-x>");
+        assert_eq!(vim.text(), "hello \n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn ctrl_v_in_insert_mode_types_the_clipboard_in() {
+        let mut vim = Vim::new("say \n");
+        // As if it had been copied somewhere else entirely.
+        crate::clipboard::copy("when");
+        vim.press("A<C-v> so");
+        assert_eq!(vim.text(), "say when so\n");
+        assert_eq!(vim.editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn a_copy_here_is_a_paste_anywhere_else() {
+        let mut vim = Vim::new("keep me\n");
+        vim.press("<C-c>");
+        // What the session's clipboard would have been handed.
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("keep me\n"));
+    }
+
+    #[test]
+    fn pasting_nothing_says_so() {
+        let mut vim = Vim::new("one\n");
+        crate::clipboard::copy("");
+        vim.press("<C-v>");
+        assert_eq!(vim.text(), "one\n");
+        assert_eq!(vim.editor.message, "nothing to put");
     }
 
     #[test]

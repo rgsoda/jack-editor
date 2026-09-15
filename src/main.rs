@@ -1,4 +1,5 @@
 mod buffer;
+mod clipboard;
 mod command;
 mod complete;
 mod editor;
@@ -127,6 +128,12 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
 
         ui::draw(editor, &keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
+
+        // Anything the editor wants said to the terminal itself rather than
+        // drawn - an OSC 52 copy - goes out with the frame, never behind it.
+        if let Some(escape) = editor.escape.take() {
+            out.write_all(escape.as_bytes())?;
+        }
 
         // A block cursor in normal mode, a bar in insert, as the mode changes.
         // A bar while typing in the picker, otherwise the mode's cursor.
