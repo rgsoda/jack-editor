@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
 use crate::complete::{self, Completion, Pick};
+use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
@@ -211,6 +212,8 @@ pub struct Editor {
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
     pub picker: Option<Picker>,
+    /// Where the cursor was before each jump, for `^o` and `^i`.
+    pub jumps: Jumps,
     /// The insert-mode completion popup, while one is open.
     pub completion: Option<Completion>,
     /// The word the popup has nothing more to say about: dismissed with `esc`,
@@ -276,6 +279,7 @@ impl Editor {
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
+            jumps: Jumps::default(),
             completion: None,
             prompt: None,
             search: Search::default(),
@@ -375,6 +379,7 @@ impl Editor {
         if prompt.kind == PromptKind::Command {
             return self.run_command(&prompt.input.clone());
         }
+        let origin = self.jump_at(prompt.origin.0);
         if prompt.input.is_empty() {
             // A bare `/` repeats the last search, as vim does.
             self.search.backward = prompt.backward();
@@ -384,7 +389,11 @@ impl Editor {
         if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward()).is_none() {
             self.restore_origin(prompt.origin);
             self.message = format!("pattern not found: {}", prompt.input);
+            return;
         }
+        // The preview has already moved the cursor; what the jump list wants is
+        // where the search was typed from.
+        self.jumps.push(origin);
     }
 
     fn cancel_prompt(&mut self) {
@@ -406,6 +415,61 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// Where the cursor is now, as a jump-list entry.
+    pub fn here(&self) -> Jump {
+        let (line, column) = self.cursor_coords();
+        Jump { view: self.current, line, column }
+    }
+
+    /// A jump-list entry for a position in the current buffer. Search needs
+    /// this: by the time `enter` is pressed the cursor is already on the hit
+    /// the preview took it to, and the place worth remembering is the one the
+    /// search was typed from.
+    fn jump_at(&self, at: usize) -> Jump {
+        let view = self.view();
+        let line = view.doc.char_to_line(at);
+        Jump { view: self.current, line, column: at - view.doc.line_to_char(line) }
+    }
+
+    /// Remember where the cursor is before a command moves it somewhere else.
+    /// Called by the commands vim calls jumps - `gg`, `G`, `:{n}`, the
+    /// searches, `*`, `%`, and opening something from a picker - and by
+    /// nothing else, which is what keeps `^o` a list of places worth going
+    /// back to rather than a history of every key pressed.
+    pub fn push_jump(&mut self) {
+        let here = self.here();
+        self.jumps.push(here);
+    }
+
+    /// `^o`: back to where the last jump started.
+    pub fn jump_back(&mut self) {
+        let here = self.here();
+        match self.jumps.back(here) {
+            Some(jump) => self.go_to_jump(jump),
+            None => self.message = "at the oldest jump".into(),
+        }
+    }
+
+    /// `^i`: forward again, undoing a `^o`.
+    pub fn jump_forward(&mut self) {
+        match self.jumps.forward() {
+            Some(jump) => self.go_to_jump(jump),
+            None => self.message = "at the newest jump".into(),
+        }
+    }
+
+    /// Put the cursor back on a remembered position. The line and column are
+    /// clamped rather than trusted: the file has been edited since, and landing
+    /// near where you meant beats refusing to go.
+    fn go_to_jump(&mut self, jump: Jump) {
+        self.switch_to(jump.view);
+        let view = self.view_mut();
+        let line = jump.line.min(view.last_line());
+        let column = jump.column.min(view.doc.line_len_chars(line));
+        view.sel = Selection::point(view.doc.line_to_char(line) + column);
+        self.clamp_cursor();
+    }
+
     fn jump_to(&mut self, at: usize) {
         self.view_mut().sel = Selection::point(at);
         self.clamp_cursor();
@@ -424,12 +488,18 @@ impl Editor {
         }
         self.search.highlight = true;
 
+        // One jump-list entry for the whole command, put there by the first
+        // hit: `3n` is one jump, and a search that finds nothing is none.
+        let origin = self.here();
         let mut wrapped = false;
-        for _ in 0..count {
+        for step in 0..count {
             let from = self.view().sel.head;
             match self.search.find(&self.view().doc, from, backward) {
                 Some(hit) => {
                     wrapped |= hit.wrapped;
+                    if step == 0 {
+                        self.jumps.push(origin);
+                    }
                     self.jump_to(hit.start);
                 }
                 None => {
@@ -505,6 +575,7 @@ impl Editor {
         };
         // `:42` goes to line 42, as it does everywhere.
         if let Ok(number) = name.parse::<usize>() {
+            self.push_jump();
             self.goto_line(number.saturating_sub(1));
             self.clamp_cursor();
             return;
@@ -605,6 +676,7 @@ impl Editor {
         let head = self.view().sel.head;
         match self.view().matching_bracket(head) {
             Some(at) => {
+                self.push_jump();
                 let extend = self.mode.is_visual();
                 let view = self.view_mut();
                 match extend {
@@ -775,18 +847,25 @@ impl Editor {
             Outcome::Confirm(source, choice) => {
                 self.picker = None;
                 self.retire();
+                // Where the picker was opened from, put on the jump list by
+                // whatever the choice turns out to reach - and not at all when
+                // the file will not open.
+                let origin = self.here();
                 match source {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
-                    Source::Buffers => self.switch_to(choice.id),
-                    Source::Files => {
-                        if let Err(err) = self.open_file(&choice.target) {
-                            self.message = format!("{err:#}");
-                        }
+                    Source::Buffers => {
+                        self.jumps.push(origin);
+                        self.switch_to(choice.id);
                     }
+                    Source::Files => match self.open_file(&choice.target) {
+                        Ok(()) => self.jumps.push(origin),
+                        Err(err) => self.message = format!("{err:#}"),
+                    },
                     Source::Grep => match self.open_file(&choice.target) {
                         // Line numbers count from one; lines here count from zero.
                         Ok(()) => {
+                            self.jumps.push(origin);
                             self.goto_line(choice.id.saturating_sub(1));
                             self.clamp_cursor();
                         }
@@ -1978,6 +2057,29 @@ mod tests {
         assert_eq!(e.views().len(), 2);
         assert_eq!(e.current_index(), 0);
         assert_eq!(e.views()[0].doc.path.as_ref(), Some(&one));
+    }
+
+    #[test]
+    fn opening_a_file_from_the_picker_is_a_jump_back_out_of() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "alpha\nbeta\ngamma\n");
+        let two = write_file(&dir, "two.txt", "delta\n");
+
+        let mut e = Editor::open(&[one]).unwrap();
+        e.goto_line(1);
+        assert_eq!(e.cursor_coords(), (1, 0));
+
+        e.open_file_picker();
+        e.stream_items(e.token(), vec![two.to_string_lossy().into_owned()], true);
+        e.picker_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.current_index(), 1);
+
+        // The buffer has to come back as well as the line.
+        e.jump_back();
+        assert_eq!(e.current_index(), 0);
+        assert_eq!(e.cursor_coords(), (1, 0));
+        e.jump_forward();
+        assert_eq!(e.current_index(), 1);
     }
 
     #[test]

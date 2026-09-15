@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 23: a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 24: a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -27,6 +27,7 @@ Starts in normal mode, like vim.
 | `n` `N` | repeat the search / reverse it |
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
+| `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
@@ -149,6 +150,9 @@ Starts in normal mode, like vim.
   the registers, the theme, the viewport size and the status message. The
   editing commands live here because they touch both sides — `dd` cuts from a
   view and writes to a register.
+- `jump.rs` — the jump list: the positions jumped away from, and where `^o` has
+  walked back to in that history. Buffer, line and column; it never touches the
+  text.
 - `object.rs` — text objects: a position and a shape (`Word`, `Quote`,
   `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
 - `status.rs` — the status line as a list of coloured `Segment`s, plus the two
@@ -568,6 +572,36 @@ and it looks at one buffer, not the project. Those want a language server, which
 is a different piece of machinery — this is the tier that is worth having before
 one.
 
+## The jump list
+
+`^o` goes back to where the last jump started, `^i` forward again. What counts
+as a jump is vim's list, not every cursor move: `gg`, `G`, `{n}G`, `:{n}`, a
+search with `/` or `?`, `n` and `N`, `*`, `%`, and choosing something out of a
+picker. `j` and `w` are movement, not travel, and leaving them off the list is
+the whole point — otherwise `^o` is an undo history for the cursor and there is
+nothing to find in it.
+
+The entries are a buffer, a line and a column, which is why `^o` can come back
+out of a file the file picker opened. They are not char indices: the text goes
+on changing while you are away, and a line number that has drifted puts you
+near where you meant, where a stale char index puts you anywhere at all. Both
+are clamped on the way back, so a jump to a line that has since been deleted
+lands at the end of the file instead of refusing to go. Vim's jumps drift the
+same way, for the same reason.
+
+Two details that are easy to get wrong and are what make it feel right:
+
+- **A search remembers where it was typed from**, not where the preview had
+  wandered to while you typed it. By the time `enter` is pressed the cursor is
+  already sitting on the hit.
+- **The first `^o` records where you were**, so `^i` has somewhere to return
+  to. A jump taken from inside the history throws away what was ahead of it —
+  you took a different turning, and the old one is not coming back.
+
+`3n` is one entry, not three, and a search that finds nothing is none. The list
+holds a hundred jumps, which is vim's number and for the same reason: past that
+you are not going back, you are searching.
+
 ## The buffer list
 
 ```
@@ -760,6 +794,10 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
+- `gd`: the declaration of the word under the cursor. The locals tier wants a
+  hand-written `locals.scm` for Rust (JavaScript's grammar ships one), and the
+  items tier is the `tags.scm` every grammar crate already carries. Now that
+  the jump list is here, `^o` is the way back.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

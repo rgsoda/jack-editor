@@ -266,6 +266,7 @@ impl Keys {
             Some(Pending::Go) => {
                 match key.code {
                     KeyCode::Char('g') => {
+                        editor.push_jump();
                         editor.goto_line(count.unwrap_or(1) - 1);
                         editor.clamp_cursor();
                     }
@@ -478,6 +479,15 @@ impl Keys {
         }
 
         match key.code {
+            // Before the plain letters: `i` and `o` would otherwise match
+            // whether or not control was held.
+            //
+            // `^i` and `tab` are the same byte in a terminal, so they are the
+            // same key here whether you think of it as vim's or not.
+            KeyCode::Char('o') if ctrl => editor.jump_back(),
+            KeyCode::Char('i') if ctrl => editor.jump_forward(),
+            KeyCode::Tab => editor.jump_forward(),
+
             KeyCode::Char('i') => editor.set_mode(Mode::Insert),
             KeyCode::Char('I') => {
                 editor.move_cursor(Move::FirstNonBlank, false);
@@ -536,6 +546,7 @@ impl Keys {
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
             KeyCode::Char('G') => {
                 // Bare `G` goes to the last line, `{n}G` to line n.
+                editor.push_jump();
                 let line = count.map_or(editor.last_line(), |n| n - 1);
                 editor.goto_line(line);
                 editor.clamp_cursor();
@@ -1094,6 +1105,83 @@ mod tests {
         assert_eq!(vim.cursor(), (1, 1));
         vim.press("2G");
         assert_eq!(vim.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn control_o_goes_back_to_where_a_jump_started() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\n");
+        vim.press("jj");
+        assert_eq!(vim.cursor(), (3, 1));
+        vim.press("G");
+        assert_eq!(vim.cursor(), (5, 1));
+
+        vim.press("<C-o>");
+        assert_eq!(vim.cursor(), (3, 1));
+        // And forward again, to where `^o` was pressed from.
+        vim.press("<C-i>");
+        assert_eq!(vim.cursor(), (5, 1));
+    }
+
+    #[test]
+    fn the_jump_list_keeps_the_column_too() {
+        let mut vim = Vim::new("hello there\nsecond\nthird\n");
+        vim.press("lllll");
+        assert_eq!(vim.cursor(), (1, 6));
+        vim.press("G<C-o>");
+        assert_eq!(vim.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn walking_around_is_not_a_jump() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        // `j` and `w` move; they do not go anywhere.
+        vim.press("jw");
+        vim.press("<C-o>");
+        assert_eq!(vim.editor.message, "at the oldest jump");
+    }
+
+    #[test]
+    fn a_search_remembers_where_it_was_typed_from() {
+        let mut vim = Vim::new("alpha\nbeta\ngamma\ndelta\n");
+        vim.press("j");
+        vim.press("/delta<cr>");
+        assert_eq!(vim.cursor(), (4, 1));
+        // Not line 4 and not line 1: the line the search was typed from.
+        vim.press("<C-o>");
+        assert_eq!(vim.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_is_not_a_jump() {
+        let mut vim = Vim::new("alpha\nbeta\n");
+        vim.press("j/nowhere<cr>");
+        vim.press("<C-o>");
+        assert_eq!(vim.editor.message, "at the oldest jump");
+    }
+
+    #[test]
+    fn a_jump_that_has_drifted_lands_near_rather_than_nowhere() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\nsix\n");
+        vim.press("4G");
+        vim.press("gg");
+        // Three lines go from above where the jump was taken.
+        vim.press("dddddd");
+        vim.press("<C-o>");
+        // Line 4 is now past the end, so it clamps onto the last line instead
+        // of refusing to go.
+        assert_eq!(vim.cursor(), (3, 1));
+    }
+
+    #[test]
+    fn a_new_jump_forgets_the_way_forward() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\n");
+        vim.press("jjG");
+        vim.press("<C-o>");
+        assert_eq!(vim.cursor(), (3, 1));
+        // Somewhere else from here, and line 5 is no longer ahead of us.
+        vim.press("gg");
+        vim.press("<C-i>");
+        assert_eq!(vim.editor.message, "at the newest jump");
     }
 
     #[test]
