@@ -1878,6 +1878,12 @@ impl Editor {
         self.message = "copied".into();
     }
 
+    /// What is in the `+` register now, for telling whether a command has just
+    /// written to it - which is what a `"+y` has to notice.
+    pub fn system_register(&self) -> RegisterValue {
+        self.registers.get(Some(SYSTEM))
+    }
+
     /// True when something is selected outside visual mode - what shift and an
     /// arrow leave behind while typing. Visual mode has its own range, which
     /// covers the character under the cursor as well.
@@ -1925,8 +1931,18 @@ impl Editor {
         }
     }
 
+    /// A register's contents, asking the session's clipboard first when the
+    /// register is `+`. Every read of a register that a put could name goes
+    /// through here, so `"+p` is the same thing `^v` is.
+    fn register_value(&mut self, name: Option<char>) -> RegisterValue {
+        if name == Some(SYSTEM) {
+            self.pull_clipboard();
+        }
+        self.registers.get(name)
+    }
+
     /// Send the `+` register out to the session's clipboard.
-    fn push_clipboard(&mut self) {
+    pub fn push_clipboard(&mut self) {
         let text = self.registers.get(Some(SYSTEM)).text;
         self.escape = clipboard::copy(&text);
     }
@@ -1993,7 +2009,7 @@ impl Editor {
         let Some((start, end)) = self.selection_range() else {
             return;
         };
-        let value = self.registers.get(register);
+        let value = self.register_value(register);
         if value.is_empty() {
             self.message = "nothing to put".into();
             self.set_mode(Mode::Normal);
@@ -2125,7 +2141,7 @@ impl Editor {
 
     /// Put a register's contents back. `after` is `p`, otherwise `P`.
     pub fn put(&mut self, register: Option<char>, count: usize, after: bool) {
-        let value = self.registers.get(register);
+        let value = self.register_value(register);
         if value.is_empty() {
             self.message = "nothing to put".into();
             return;

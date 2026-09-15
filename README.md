@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 28: the system clipboard on `^c` `^x` `^v`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 28: the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -46,6 +46,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
+| `"+y` `"+d` `"+p` | the same, spelled as a register |
 | `^d` `^u`, page up/down | scroll |
 | `i` `I` `a` `A` | insert here / at first non-blank / after / at line end |
 | `o` `O` | open a line below / above |
@@ -693,7 +694,8 @@ typing it would — over the selection when there is one; in normal mode it is a
 put, so a copied line lands on a line of its own.
 
 Inside the editor this is the `+` register and nothing new: the same yank and
-put that `y` and `p` use, named. What is new is the two ends of it. Copying
+put that `y` and `p` use, named — so `"+y`, `"+dd` and `"+p` are the same keys
+by their vim spelling. What is new is the two ends of it. Copying
 writes `+` out to the session's clipboard, and pasting reads the clipboard back
 into `+` first, so `^v` puts what you copied in the browser rather than what you
 copied here an hour ago. Text arriving with a trailing newline is taken as whole
@@ -906,9 +908,16 @@ puts the text back inline after the cursor; `dd` then `p` puts a whole line
 below the current one. This is the whole reason a register is not just a
 string.
 
-Register `+` is the system clipboard, which `^c` and `^v` write and read; see
-above for how it gets in and out of the terminal. The `"+y` spelling is not
-wired up yet — the chords are the way to it.
+Register `+` is the system clipboard, by either spelling: `^c` `^x` `^v`, or
+`"+y` `"+d` `"+p` the way vim writes it. See above for how it gets in and out
+of the terminal.
+
+Reading `+` asks the session's clipboard first, and every put goes through one
+place to do it. Writing is noticed rather than declared: a command typed with
+`"+` is run, and the register is compared with what it held before — if it
+changed, the new contents go out. That is one check in the key handler instead
+of a clipboard call in each of the yanks and deletes, and it means `"+p`, which
+only reads, does not copy back out what it has just pasted.
 
 The numbered registers `1`-`9` are not implemented, nor are the read-only
 ones (`%`, `.`, `:`).

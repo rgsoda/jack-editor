@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::{Editor, Mode};
 use crate::object;
+use crate::register::SYSTEM;
 use crate::view::{Find, Move};
 
 /// One line of the help. These are written down rather than derived from the
@@ -53,6 +54,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "d c y + i( i[ i{ i<", what: "inside the brackets (a( takes them too)", mode: "normal" },
     Binding { keys: "d c y + ip ap", what: "the paragraph, with the blank line after", mode: "normal" },
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
+    Binding { keys: "\"+y \"+p", what: "yank to, put from the system clipboard", mode: "normal" },
     Binding { keys: "u ^r", what: "undo, redo", mode: "normal" },
     Binding { keys: "{count}", what: "repeat the next command", mode: "normal" },
     Binding { keys: "esc", what: "abandon a command, stop highlighting matches", mode: "normal" },
@@ -204,10 +206,23 @@ impl Keys {
             }
         }
 
+        // A command typed with `"+` writes to the system clipboard, whatever
+        // command it turns out to be: the yanks and the deletes both, and
+        // without every one of them having to know. Compared rather than
+        // assumed, so that `"+p` - which only reads - does not copy back out
+        // what it just pasted.
+        let watched = (self.register == Some(SYSTEM)).then(|| editor.system_register());
+
         match editor.mode {
             Mode::Normal => self.normal(editor, key, ctrl),
             Mode::Insert => insert(editor, key, ctrl),
             Mode::Visual | Mode::VisualLine => self.visual(editor, key, ctrl),
+        }
+
+        if let Some(before) = watched
+            && editor.system_register() != before
+        {
+            editor.push_clipboard();
         }
         Action::Continue
     }
@@ -2593,6 +2608,44 @@ plain
         // A line copied is a line pasted onto a line of its own, not into the
         // middle of the one the cursor was on.
         assert_eq!(vim.text(), "one\none\ntwo\n");
+    }
+
+    #[test]
+    fn the_plus_register_is_the_system_clipboard() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press("\"+yw");
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("hello "));
+
+        // And the other way: what is on the clipboard is what `"+p` puts.
+        crate::clipboard::copy("elsewhere");
+        vim.press("$\"+p");
+        assert_eq!(vim.text(), "hello worldelsewhere\n");
+    }
+
+    #[test]
+    fn a_delete_to_the_plus_register_copies_too() {
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("\"+dd");
+        assert_eq!(vim.text(), "two\n");
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("one\n"));
+    }
+
+    #[test]
+    fn a_visual_yank_to_the_plus_register_copies() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press("wve\"+y");
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn putting_from_the_plus_register_does_not_copy_anything_back() {
+        let mut vim = Vim::new("one\n");
+        crate::clipboard::copy("outside");
+        vim.press("\"+p");
+        // `p` puts after the cursor, which is still on the first character.
+        assert_eq!(vim.text(), "ooutsidene\n");
+        // The clipboard is untouched by a read - `"+p` is not a copy.
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("outside"));
     }
 
     #[test]
