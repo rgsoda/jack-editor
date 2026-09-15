@@ -95,12 +95,18 @@ impl Theme {
     }
 }
 
-fn user_theme_path() -> Option<PathBuf> {
+/// Where the editor keeps its files: `$XDG_CONFIG_HOME/soda_edit`, or
+/// `~/.config/soda_edit`.
+pub fn config_dir() -> Option<PathBuf> {
     let config = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    Some(config.join("soda_edit").join("theme.toml"))
+    Some(config.join("soda_edit"))
+}
+
+fn user_theme_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("theme.toml"))
 }
 
 /// A theme value is either a bare color or a table of attributes.

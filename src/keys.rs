@@ -79,6 +79,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "up down", what: "next, previous completion", mode: "insert" },
     Binding { keys: "enter tab ^y", what: "accept the completion", mode: "insert" },
     Binding { keys: "^t ^d", what: "indent, dedent this line", mode: "insert" },
+    Binding { keys: "^a ^e ^f ^b ^n ^p", what: "emacs: motions (:set emacs)", mode: "insert" },
+    Binding { keys: "M-f M-b", what: "emacs: word forward, back", mode: "insert" },
+    Binding { keys: "^k ^u ^w M-d", what: "emacs: kill to line end, start, word", mode: "insert" },
+    Binding { keys: "^y ^t ^g", what: "emacs: put back, transpose, normal mode", mode: "insert" },
+    Binding { keys: "M-/", what: "emacs: complete the word", mode: "insert" },
     Binding { keys: "esc ^e", what: "close the completion popup", mode: "insert" },
     Binding { keys: "shift+arrows", what: "select while typing", mode: "insert" },
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
@@ -92,6 +97,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set glyphs", what: "noglyphs: nerd font status line, or ascii", mode: "command" },
     Binding { keys: ":set shiftwidth=4", what: "how wide one indent step is", mode: "command" },
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
+    Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
 
@@ -621,6 +627,41 @@ fn operator_key(operator: Pending) -> char {
     }
 }
 
+/// Emacs chords in insert mode, under `:set emacs`. True when the key was one
+/// of them and insert mode should not also see it.
+///
+/// Only insert mode: normal mode is the whole point of a modal editor, and
+/// `^d` there already means half a page. `M-/` completes, because emacs calls
+/// that dabbrev-expand and `^n` is busy being a motion.
+fn emacs(editor: &mut Editor, key: KeyEvent, ctrl: bool, alt: bool) -> bool {
+    match (key.code, ctrl, alt) {
+        (KeyCode::Char('a'), true, _) => editor.move_cursor(Move::LineStart, false),
+        (KeyCode::Char('e'), true, _) => editor.move_cursor(Move::LineEnd, false),
+        (KeyCode::Char('f'), true, _) => editor.move_cursor(Move::Right, false),
+        (KeyCode::Char('b'), true, _) => editor.move_cursor(Move::Left, false),
+        (KeyCode::Char('n'), true, _) => editor.move_cursor(Move::Down, false),
+        (KeyCode::Char('p'), true, _) => editor.move_cursor(Move::Up, false),
+        (KeyCode::Char('f'), _, true) => editor.move_cursor(Move::WordForward, false),
+        (KeyCode::Char('b'), _, true) => editor.move_cursor(Move::WordBack, false),
+
+        (KeyCode::Char('d'), true, _) => editor.delete_forward(),
+        (KeyCode::Char('h'), true, _) => editor.delete_backward(),
+        (KeyCode::Char('k'), true, _) => editor.kill_to_line_end(),
+        (KeyCode::Char('u'), true, _) => editor.kill(Move::LineStart),
+        (KeyCode::Char('w'), true, _) => editor.kill(Move::WordBack),
+        (KeyCode::Char('d'), _, true) => editor.kill(Move::WordForward),
+        (KeyCode::Backspace, _, true) => editor.kill(Move::WordBack),
+        (KeyCode::Char('y'), true, _) => editor.yank_kill(),
+        (KeyCode::Char('t'), true, _) => editor.transpose_chars(),
+
+        // `^g` is emacs for "never mind", which here means normal mode.
+        (KeyCode::Char('g'), true, _) => editor.set_mode(Mode::Normal),
+        (KeyCode::Char('/'), _, true) => editor.open_completion(false),
+        _ => return false,
+    }
+    true
+}
+
 /// Insert mode with the completion popup open. True when the key was the
 /// popup's own and insert mode should not also see it.
 fn completing(editor: &mut Editor, key: KeyEvent, ctrl: bool) -> bool {
@@ -698,6 +739,13 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     // keys that are its own: typing and deleting go through as normal and the
     // popup follows along afterwards.
     if editor.completion.is_some() && completing(editor, key, ctrl) {
+        return;
+    }
+
+    // Emacs chords next, when they are turned on: half of them are keys insert
+    // mode already uses, and with `:set emacs` the emacs meaning wins.
+    if editor.emacs && emacs(editor, key, ctrl, alt) {
+        editor.update_completion();
         return;
     }
 
@@ -784,6 +832,13 @@ mod tests {
                                     _ => panic!("unknown key name"),
                                 };
                                 KeyEvent::new(code, KeyModifiers::SHIFT)
+                            } else if let Some(name) = other.strip_prefix("M-") {
+                                let c = name.chars().next().unwrap();
+                                let code = match name {
+                                    "bs" => KeyCode::Backspace,
+                                    _ => KeyCode::Char(c),
+                                };
+                                KeyEvent::new(code, KeyModifiers::ALT)
                             } else {
                                 let c = other.strip_prefix("C-").expect("unknown key name");
                                 let c = c.chars().next().unwrap();
@@ -1958,6 +2013,82 @@ plain
         let mut vim = Vim::new("one\ntwo\n\nthree\n");
         vim.press(">ap");
         assert_eq!(vim.text(), "\tone\n\ttwo\n\nthree\n");
+    }
+
+
+    #[test]
+    fn emacs_motions_move_the_cursor_in_insert_mode() {
+        let mut vim = Vim::new("one two\nthree\n");
+        vim.press(":set emacs<cr>i");
+        vim.press("<C-e>");
+        assert_eq!(vim.cursor(), (1, 8));
+        vim.press("<C-a>");
+        assert_eq!(vim.cursor(), (1, 1));
+        vim.press("<C-f><C-f>");
+        assert_eq!(vim.cursor(), (1, 3));
+        vim.press("<C-n>");
+        assert_eq!(vim.cursor(), (2, 3));
+        vim.press("<M-b>");
+        assert_eq!(vim.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn emacs_kills_go_to_the_register_and_come_back() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press(":set emacs<cr>i<C-e><C-u>");
+        assert_eq!(vim.text(), "\n");
+        vim.press("<C-y>");
+        assert_eq!(vim.text(), "hello world\n");
+
+        // `^k` at the end of a line takes the line break, which joins the next.
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press(":set emacs<cr>i<C-e><C-k>");
+        assert_eq!(vim.text(), "onetwo\n");
+    }
+
+    #[test]
+    fn emacs_kills_a_word_at_a_time() {
+        let mut vim = Vim::new("alpha beta gamma\n");
+        vim.press(":set emacs<cr>A<C-w>");
+        assert_eq!(vim.text(), "alpha beta \n");
+        vim.press("<C-a><M-d>");
+        assert_eq!(vim.text(), "beta \n");
+    }
+
+    #[test]
+    fn transpose_swaps_the_two_characters_before_the_cursor() {
+        let mut vim = Vim::new("teh\n");
+        vim.press(":set emacs<cr>A<C-t>");
+        assert_eq!(vim.text(), "the\n");
+    }
+
+    #[test]
+    fn the_emacs_chords_are_off_until_they_are_asked_for() {
+        // `^t` is indent until `:set emacs` makes it transpose.
+        let mut vim = Vim::new("ab\n");
+        vim.press("A<C-t>");
+        assert_eq!(vim.text(), "\tab\n");
+    }
+
+    #[test]
+    fn a_config_file_is_commands_one_to_a_line() {
+        let mut vim = Vim::new("one\n");
+        vim.editor.apply_config("# how I like it\n\nset emacs\n:set sw=2\nset expandtab\n");
+        assert!(vim.editor.emacs);
+        assert_eq!(vim.editor.indent.width, 2);
+
+        // `set emacs` took, so `^t` transposes rather than indenting.
+        vim.press("A<C-t>");
+        assert_eq!(vim.text(), "oen\n");
+    }
+
+    #[test]
+    fn a_config_line_that_goes_wrong_says_which_one() {
+        let mut vim = Vim::new("one\n");
+        vim.editor.apply_config("set number\nset wobble\nset emacs\n");
+        assert_eq!(vim.editor.message, "init line 2: not an option: wobble");
+        // And it stopped there, rather than carrying on past the mistake.
+        assert!(!vim.editor.emacs);
     }
 
 }

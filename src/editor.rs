@@ -150,6 +150,9 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// Emacs chords in insert mode. Off by default: this is a vim-flavoured
+    /// editor and half of these keys already mean something else.
+    pub emacs: bool,
     /// One step of indentation: how wide, and tabs or spaces.
     pub indent: Indent,
     /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
@@ -212,6 +215,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            emacs: false,
             indent: Indent { width: TAB_WIDTH, tabs: true },
             quit: None,
             signs_enabled: true,
@@ -407,6 +411,37 @@ impl Editor {
 
     /// Run a `:` command. Unknown commands say so rather than doing nothing,
     /// which is the difference between a typo and a missing feature.
+    /// Run `~/.config/soda_edit/init`: one command per line, written as it
+    /// would be typed after `:` - `set number`, `set emacs`. Blank lines and
+    /// `#` comments are skipped. Missing is not an error; the whole point is
+    /// that it need not exist.
+    pub fn load_config(&mut self) {
+        let Some(path) = crate::theme::config_dir().map(|dir| dir.join("init")) else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        self.apply_config(&text);
+    }
+
+    /// The commands in a config file, in order. Stops at the first line that
+    /// had anything to say, because the line after it would overwrite the
+    /// complaint in the status line before anyone saw it.
+    pub fn apply_config(&mut self, text: &str) {
+        for (number, line) in text.lines().enumerate() {
+            let line = line.trim().trim_start_matches(':');
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            self.run_command(line);
+            if !self.message.is_empty() {
+                self.message = format!("init line {}: {}", number + 1, self.message);
+                return;
+            }
+        }
+    }
+
     pub fn run_command(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() {
@@ -461,6 +496,8 @@ impl Editor {
             return;
         }
         match option {
+            "emacs" => self.emacs = true,
+            "noemacs" => self.emacs = false,
             "expandtab" | "et" => self.indent.tabs = false,
             "noexpandtab" | "noet" => self.indent.tabs = true,
             "number" | "nu" => self.numbers = Numbers::Absolute,
@@ -478,13 +515,14 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} emacs={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
                     self.indent.width,
-                    !self.indent.tabs
+                    !self.indent.tabs,
+                    self.emacs
                 );
             }
             other => self.message = format!("not an option: {other}"),
@@ -970,6 +1008,67 @@ impl Editor {
         let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
         let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
         self.shift_lines(out, first, last, 1);
+    }
+
+    /// Cut from the cursor to wherever `motion` lands, into the unnamed
+    /// register so `^y` - or `p` - puts it back. The emacs kills are all this
+    /// with a different motion.
+    pub fn kill(&mut self, motion: Move) {
+        let head = self.view().sel.head;
+        self.view_mut().sel.anchor = head;
+        self.move_cursor(motion, true);
+        let (start, end) = self.view().sel.range();
+        self.cut_range(None, start, end, false);
+    }
+
+    /// `^k`: to the end of the line, or the line break itself when there is
+    /// nothing left on the line - which is how emacs joins the next line up.
+    pub fn kill_to_line_end(&mut self) {
+        let view = self.view();
+        let (line, column) = view.doc.coords(view.sel.head);
+        match column < view.doc.line_len_chars(line) {
+            true => self.kill(Move::LineEnd),
+            false => {
+                let head = self.view().sel.head;
+                let end = self.view().grapheme_right(head);
+                self.cut_range(None, head, end, false);
+            }
+        }
+    }
+
+    /// `^y`: put the last kill back at the cursor, as typing it would.
+    pub fn yank_kill(&mut self) {
+        let value = self.registers.get(None);
+        if value.is_empty() {
+            self.message = "nothing to put".into();
+            return;
+        }
+        let text = value.text.clone();
+        self.insert(&text);
+    }
+
+    /// `^t`: swap the two characters around the cursor, as emacs does - which
+    /// at the end of a line means the two before it.
+    pub fn transpose_chars(&mut self) {
+        let view = self.view();
+        let (line, column) = view.doc.coords(view.sel.head);
+        // Mid-line, emacs steps over the character after the cursor before
+        // swapping, so `ab|cd` leaves you with `abdc|`.
+        if column < view.doc.line_len_chars(line) {
+            self.move_cursor(Move::Right, false);
+        }
+        let head = self.view().sel.head;
+        let middle = self.view().grapheme_left(head);
+        let start = self.view().grapheme_left(middle);
+        if start == middle || middle == head {
+            return;
+        }
+        let swapped = format!(
+            "{}{}",
+            self.view().doc.slice_str(middle, head),
+            self.view().doc.slice_str(start, middle)
+        );
+        self.view_mut().edit_at(start, head - start, &swapped, Some(head));
     }
 
     /// `tab` in insert mode: a literal tab, or spaces to the next stop.

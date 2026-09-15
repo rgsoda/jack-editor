@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 20: indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 21: emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -71,6 +71,7 @@ Starts in normal mode, like vim.
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
+| `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -112,6 +113,16 @@ Starts in normal mode, like vim.
 | `backspace` `delete` | delete a grapheme, or the selection |
 | arrows, `home`, `end` | move (with `shift` to select) |
 | `esc` | back to normal mode |
+
+### Emacs chords (insert mode, `:set emacs`)
+
+| | |
+|---|---|
+| `^a` `^e` `^f` `^b` `^n` `^p` | motions |
+| `M-f` `M-b` | word forward, back |
+| `^k` `^u` `^w` `M-d` | kill to line end, to line start, a word back, forward |
+| `^y` `^t` `^g` | put the kill back, transpose, back to normal mode |
+| `M-/` | complete the word |
 
 ### Either mode
 
@@ -169,7 +180,8 @@ Starts in normal mode, like vim.
 - `theme.rs` — capture names and `ui.*` elements to styles, from TOML. The
   built-in theme is embedded; `$XDG_CONFIG_HOME/soda_edit/theme.toml` layers
   over it, so a short theme file can restyle keywords without losing the
-  status line.
+  status line. It also owns `config_dir()`, since the init file lives there
+  too.
 - `ui.rs` — draws the visible rows and the status line onto a `Surface`.
   Nothing here talks to the terminal.
 
@@ -366,6 +378,53 @@ visual mode without repeating anything. None of it is syntax-aware: brackets are
 counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
+
+## Emacs chords, and a config file
+
+`:set emacs` turns on the readline/emacs chords **in insert mode**:
+
+| | |
+|---|---|
+| `^a` `^e` | line start, line end |
+| `^f` `^b` `^n` `^p` | char right, left; line down, up |
+| `M-f` `M-b` | word forward, back |
+| `^d` `^h` | delete the character after, before the cursor |
+| `^k` `^u` | kill to the end of the line, to the start |
+| `^w` `M-d` `M-backspace` | kill a word back, forward, back |
+| `^y` | put the last kill back |
+| `^t` | transpose the two characters around the cursor |
+| `^g` | never mind: back to normal mode |
+| `M-/` | complete the word |
+
+Insert mode only. Normal mode is the whole point of a modal editor, and `^d`
+there already means half a page. Kills go to the unnamed register rather than a
+kill ring of their own, so `^k` then `p` in normal mode works too, and `^y` is
+just that register coming back.
+
+Half of these keys already meant something: `^t`/`^d` indent, `^y` accepts a
+completion, `^n`/`^p` open one. With `:set emacs` the emacs meaning wins, which
+is why completion moves to `M-/` — emacs calls that dabbrev-expand, which is
+very nearly what our completion is. The popup still owns `^n`, `^p` and `^y`
+while it is open, because a list in front of you is the more specific thing.
+
+So it is off by default, and typing `:set emacs` every session would be a poor
+joke. `~/.config/soda_edit/init` is read at startup: one command per line,
+written as you would type it after `:`, with `#` comments and blank lines
+ignored.
+
+```
+# how I like it
+set emacs
+set number
+set expandtab
+set shiftwidth=2
+```
+
+It stops at the first line that had anything to say — an unknown option, a file
+that would not open — and reports which line it was, because otherwise the next
+line's message would wipe the complaint off the status line before anyone read
+it. This is also the answer to where settings live, which the `:set` commands
+had been deferring.
 
 ## Indent and dedent
 

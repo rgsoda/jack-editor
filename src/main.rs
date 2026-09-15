@@ -57,6 +57,7 @@ fn restore() {
 fn main() -> Result<()> {
     let paths: Vec<String> = std::env::args().skip(1).collect();
     let mut editor = Editor::open(&paths)?;
+    editor.load_config();
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
     // screen, with no echo and no visible prompt.
