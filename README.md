@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 16: a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 17: text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -40,6 +40,7 @@ Starts in normal mode, like vim.
 | `cc` `c{motion}` | change lines / over a motion |
 | `yy` `Y` `y{motion}` | yank lines / over a motion |
 | `p` `P` | put after / before the cursor |
+| `diw` `daw` `ciw` `yiw` | an operator over a text object (see below) |
 | `v` `V` | select characters / whole lines |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
@@ -85,6 +86,7 @@ Starts in normal mode, like vim.
 |---|---|
 | any motion | drag the selection |
 | `o` | swap which end moves |
+| `iw` `a"` `i(` `ip` … | select a text object |
 | `v` `V` | switch between characters and lines, or back to normal |
 | `d` `x` | delete the selection |
 | `c` `s` | delete it and start typing |
@@ -121,6 +123,8 @@ Starts in normal mode, like vim.
   the registers, the theme, the viewport size and the status message. The
   editing commands live here because they touch both sides — `dd` cuts from a
   view and writes to a register.
+- `object.rs` — text objects: a position and a shape (`Word`, `Quote`,
+  `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
 - `history.rs` — `Change` / `Transaction` / `History`. A transaction carries its
   own pre-edit coordinates and the selection either side of it, so it can be
   inverted without the document and undo lands the cursor where you left it.
@@ -314,6 +318,41 @@ measured against, and `width` stays the terminal. Getting that wrong shows up
 as a cursor that drifts from the character it is on once a line is long enough
 to scroll.
 
+## Text objects
+
+`dw` from the middle of a word deletes half of it. `diw` deletes the word,
+wherever in it the cursor happens to be — which is almost always what you meant.
+After `d`, `c` or `y`, or on its own in visual mode, `i` or `a` takes one more
+key naming the shape to act on:
+
+| | |
+|---|---|
+| `w` `W` | the word under the cursor; `W` counts punctuation as part of it |
+| `"` `'` `` ` `` | the string on this line |
+| `(` `)` `b` | round brackets, however many lines they span |
+| `[` `]`, `{` `}` `B`, `<` `>` | the other pairs |
+| `p` | the paragraph: lines up to the next blank one |
+
+`i` is the inside, `a` is around: `di"` empties a string and `da"` removes it,
+quotes and all; `daw` takes the space after the word too, or the space before it
+when the word ends the line, so what is left still reads properly.
+
+Three rules are worth knowing because they are what vim does and not what a
+first guess would be. Quotes pair up left to right along the line — the first
+with the second, the third with the fourth — rather than by nesting, and a
+cursor before the string still finds it, so `ci"` at the start of a line works.
+Brackets do nest: the pair chosen is the innermost one the cursor is inside, and
+if it is inside none, the command does nothing rather than reaching for the next
+one. On a blank line, `ip` is the run of blank lines.
+
+`object.rs` answers one question — given a position, which char range? — and
+knows nothing about operators, modes or registers. The operator half lives in
+`keys.rs`, which is why the same five objects work under `d`, `c`, `y` and in
+visual mode without repeating anything. None of it is syntax-aware: brackets are
+counted, not parsed, so a brace inside a string or a comment still counts. That
+matters for `%` too, and the fix for both is the same one — ask the tree-sitter
+tree instead of the rope.
+
 ## Theming
 
 Drop a file at `$XDG_CONFIG_HOME/soda_edit/theme.toml` (or
@@ -439,6 +478,8 @@ was at first:
 
 ## Next
 
+- Autocomplete, starting with the words already in the buffer under `^n`/`^p`.
+- Indent and dedent: `>>`, `<<`, and `>` over a selection.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

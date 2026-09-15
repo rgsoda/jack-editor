@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
 use crate::keys::BINDINGS;
+use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
 use crate::search::{self, Search};
 use crate::stream::{self, Message, Sign};
@@ -657,6 +658,25 @@ impl Editor {
     }
 
     // --- buffers ------------------------------------------------------
+
+    /// Put the selection over the text object at the cursor, for `diw` and
+    /// friends. Outside visual mode the selection is left half-open, the way an
+    /// operator's motion leaves it; in visual mode the cursor sits on the last
+    /// character, because that is where visual mode's cursor lives.
+    pub fn select_object(&mut self, object: Object, around: bool) -> bool {
+        let view = self.view();
+        let Some((start, end)) = object::resolve(&view.doc, view.sel.head, object, around) else {
+            return false;
+        };
+        let visual = self.mode.is_visual();
+        let view = self.view_mut();
+        view.sel.anchor = start;
+        view.sel.head = match visual && end > start {
+            true => view.grapheme_left(end),
+            false => end,
+        };
+        true
+    }
 
     pub fn view(&self) -> &View {
         &self.views[self.current]

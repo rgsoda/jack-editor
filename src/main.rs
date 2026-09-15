@@ -2,6 +2,7 @@ mod buffer;
 mod editor;
 mod history;
 mod keys;
+mod object;
 mod picker;
 mod register;
 mod screen;

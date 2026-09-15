@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::{Editor, Mode};
+use crate::object;
 use crate::view::Move;
 
 /// One line of the help. These are written down rather than derived from the
@@ -39,6 +40,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "cc c{motion}", what: "change lines, over a motion", mode: "normal" },
     Binding { keys: "yy Y y{motion}", what: "yank lines, over a motion", mode: "normal" },
     Binding { keys: "p P", what: "put after, before the cursor", mode: "normal" },
+    Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
+    Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
+    Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
+    Binding { keys: "d c y + i( i[ i{ i<", what: "inside the brackets (a( takes them too)", mode: "normal" },
+    Binding { keys: "d c y + ip ap", what: "the paragraph, with the blank line after", mode: "normal" },
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
     Binding { keys: "u ^r", what: "undo, redo", mode: "normal" },
     Binding { keys: "{count}", what: "repeat the next command", mode: "normal" },
@@ -57,6 +63,7 @@ pub const BINDINGS: &[Binding] = &[
 
     Binding { keys: "any motion", what: "drag the selection", mode: "visual" },
     Binding { keys: "o", what: "swap which end moves", mode: "visual" },
+    Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
     Binding { keys: "v V", what: "characters, lines, or back to normal", mode: "visual" },
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
     Binding { keys: "c s", what: "delete it and start typing", mode: "visual" },
@@ -107,6 +114,10 @@ enum Pending {
     Leader,
     /// The `"` prefix, waiting for the register name.
     Register,
+    /// `i` or `a`, waiting for the key that names the text object. `operator`
+    /// is the key of the operator the object will be handed to, or `None` in
+    /// visual mode, where selecting it is the whole command.
+    Object { operator: Option<char>, around: bool },
 }
 
 /// Input state that outlives a single keypress: a count being typed, and any
@@ -169,6 +180,14 @@ impl Keys {
             text.push('"');
             text.push(register);
         }
+        if let Some(Pending::Object { operator, around }) = self.pending {
+            text.extend(operator);
+            text.push(match around {
+                true => 'a',
+                false => 'i',
+            });
+            return text;
+        }
         text.push_str(match self.pending {
             Some(Pending::Delete) => "d",
             Some(Pending::Change) => "c",
@@ -176,6 +195,7 @@ impl Keys {
             Some(Pending::Go) => "g",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
+            Some(Pending::Object { .. }) => unreachable!("handled above"),
             None => "",
         });
         text
@@ -244,6 +264,18 @@ impl Keys {
                 self.finish();
             }
             Some(Pending::Register) => unreachable!("handled above"),
+            Some(Pending::Object { operator, around }) => {
+                self.apply_object(editor, operator, around, key);
+                self.finish();
+            }
+            // `i` and `a` after an operator are not the insert commands: they
+            // start a text object, and the operator waits for its name.
+            Some(operator) if matches!(key.code, KeyCode::Char('i') | KeyCode::Char('a')) => {
+                self.pending = Some(Pending::Object {
+                    operator: Some(operator_key(operator)),
+                    around: key.code == KeyCode::Char('a'),
+                });
+            }
             Some(operator) => {
                 self.operator(editor, operator, key, count.unwrap_or(1));
                 self.finish();
@@ -290,6 +322,13 @@ impl Keys {
 
         let count = self.count;
         let repeat = count.unwrap_or(1);
+
+        if let Some(Pending::Object { operator, around }) = self.pending {
+            self.pending = None;
+            self.apply_object(editor, operator, around, key);
+            self.finish();
+            return;
+        }
 
         if self.pending.take() == Some(Pending::Go) {
             if key.code == KeyCode::Char('g') {
@@ -347,6 +386,13 @@ impl Keys {
                 editor.open_line_above();
             }
 
+            KeyCode::Char('i') | KeyCode::Char('a') => {
+                self.pending = Some(Pending::Object {
+                    operator: None,
+                    around: key.code == KeyCode::Char('a'),
+                });
+                return;
+            }
             KeyCode::Char('g') => {
                 self.pending = Some(Pending::Go);
                 return;
@@ -453,6 +499,33 @@ impl Keys {
 
     /// `d`/`c` followed by the motion they apply to. `dd` and `cc` act on whole
     /// lines; everything else selects across the motion and operates on that.
+    /// The second half of `diw`: `key` names the object, `operator` the thing
+    /// to do with it. In visual mode there is no operator and the object simply
+    /// becomes the selection.
+    fn apply_object(&mut self, editor: &mut Editor, operator: Option<char>, around: bool, key: KeyEvent) {
+        let KeyCode::Char(name) = key.code else {
+            return;
+        };
+        let Some(object) = object::from_key(name) else {
+            return;
+        };
+        if !editor.select_object(object, around) {
+            return;
+        }
+        match operator {
+            Some('y') => editor.yank_selection(self.register),
+            Some('c') => {
+                // An empty object - `ci(` on `()` - deletes nothing, but the
+                // point of the command is still to start typing there.
+                editor.delete_selection(self.register);
+                editor.set_mode(Mode::Insert);
+            }
+            Some(_) => editor.delete_selection(self.register),
+            // Visual mode keeps the selection it just made.
+            None => {}
+        }
+    }
+
     fn operator(&mut self, editor: &mut Editor, operator: Pending, key: KeyEvent, count: usize) {
         let doubled = matches!(
             (operator, key.code),
@@ -465,7 +538,7 @@ impl Keys {
                 Pending::Delete => editor.delete_lines(self.register, count),
                 Pending::Change => editor.change_lines(self.register, count),
                 Pending::Yank => editor.yank_lines(self.register, count),
-                Pending::Go | Pending::Register | Pending::Leader => {}
+                Pending::Go | Pending::Register | Pending::Leader | Pending::Object { .. } => {}
             }
             return;
         }
@@ -492,6 +565,15 @@ impl Keys {
         if operator == Pending::Change {
             editor.set_mode(Mode::Insert);
         }
+    }
+}
+
+/// The key that started an operator, for echoing a half-typed command back.
+fn operator_key(operator: Pending) -> char {
+    match operator {
+        Pending::Change => 'c',
+        Pending::Yank => 'y',
+        _ => 'd',
     }
 }
 
@@ -1556,6 +1638,75 @@ plain
         let mut vim = Vim::new("(abc)\n");
         vim.press("v%");
         assert_eq!(vim.editor.selection_range(), Some((0, 5)));
+    }
+
+
+    #[test]
+    fn change_inner_word_replaces_the_whole_word() {
+        let mut vim = Vim::new("let x = foo_bar(1);");
+        // `dw` from the middle of the word would leave `foo_` behind.
+        vim.press("10lciwbaz<esc>");
+        assert_eq!(vim.text(), "let x = baz(1);");
+    }
+
+    #[test]
+    fn delete_a_word_takes_the_space_with_it() {
+        let mut vim = Vim::new("one two three");
+        vim.press("5ldaw");
+        assert_eq!(vim.text(), "one three");
+    }
+
+    #[test]
+    fn delete_inside_quotes_empties_the_string() {
+        let mut vim = Vim::new("let s = \"hi\";");
+        vim.press("di\"");
+        assert_eq!(vim.text(), "let s = \"\";");
+    }
+
+    #[test]
+    fn change_inside_an_empty_pair_still_starts_typing() {
+        let mut vim = Vim::new("f()");
+        vim.press("2lci(x<esc>");
+        assert_eq!(vim.text(), "f(x)");
+    }
+
+    #[test]
+    fn an_object_in_visual_mode_becomes_the_selection() {
+        let mut vim = Vim::new("f(g(x), y)");
+        vim.press("4lvi(d");
+        assert_eq!(vim.text(), "f(g(), y)");
+
+        let mut vim = Vim::new("f(g(x), y)");
+        vim.press("4lva(d");
+        assert_eq!(vim.text(), "f(g, y)");
+    }
+
+    #[test]
+    fn an_object_obeys_the_named_register() {
+        let mut vim = Vim::new("alpha beta");
+        vim.press("\"ayiw$\"ap");
+        assert_eq!(vim.text(), "alpha betaalpha");
+    }
+
+    #[test]
+    fn delete_a_paragraph_takes_the_blank_line() {
+        let mut vim = Vim::new("one\ntwo\n\nthree\n");
+        vim.press("dap");
+        assert_eq!(vim.text(), "three\n");
+    }
+
+    #[test]
+    fn an_object_key_that_names_nothing_does_nothing() {
+        let mut vim = Vim::new("hello");
+        vim.press("diz");
+        assert_eq!(vim.text(), "hello");
+    }
+
+    #[test]
+    fn insert_keys_are_still_insert_keys_on_their_own() {
+        let mut vim = Vim::new("bc");
+        vim.press("ia<esc>llax<esc>");
+        assert_eq!(vim.text(), "abcx");
     }
 
 }
