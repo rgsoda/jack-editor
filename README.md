@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 34: `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 35: `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -79,6 +79,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
 | `"+y` `"+d` `"+p` | the same, spelled as a register |
 | `^d` `^u`, page up/down | scroll |
+| `{` `}` | paragraph back / forward — motions, so `d}` and `y{` work |
+| `zz` `zt` `zb` | this line to the middle / top / bottom of the screen |
+| `H` `M` `L` | top / middle / bottom line of the screen (`3H`, `dL`) |
+| `^e` `^y` | scroll one line down / up, leaving the cursor where it is |
 | `i` `I` `a` `A` | insert here / at first non-blank / after / at line end |
 | `o` `O` | open a line below / above |
 | `x` `D` `C` | delete character / to line end / change to line end |
@@ -499,6 +503,27 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## Moving the view
+
+`zz` `zt` `zb` put the line the cursor is on in the middle, at the top or at
+the bottom of the screen without moving the cursor off it; `^e` and `^y` scroll
+under the cursor until it would be scrolled off, when it comes along; `H` `M`
+`L` go to the top, middle or bottom line of what is showing, `3H` three lines
+in from the top. `{` and `}` walk between blank lines, and being motions rather
+than commands they work after an operator too: `d}` deletes the rest of the
+paragraph.
+
+Two things were worth getting right. The `scrolloff` margin is honoured by all
+of them - `zt` leaves three lines above rather than none, which is what vim
+does and also what stops the next redraw scrolling it straight back, since the
+frame loop calls `scroll_to_cursor` every time. And `H` and `L` drop the margin
+at the ends of the file, where there is nothing to keep in view and `H` on the
+first screen should be able to reach line one.
+
+`H`, `M` and `L` after an operator are linewise, as in vim: `dL` deletes from
+here to the bottom of the screen, through the same `operate_lines` that `dG`
+and `dgg` use.
 
 ## Substitute
 

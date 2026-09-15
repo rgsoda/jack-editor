@@ -20,7 +20,7 @@ use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers, SYSTEM};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
-use crate::view::{self, Find, Indent, Move, Selection, TAB_WIDTH, View};
+use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH, View};
 
 /// How many characters of a word bring the completion popup up on its own.
 /// Two, because one character narrows a buffer to hundreds of words and three
@@ -1560,6 +1560,39 @@ impl Editor {
     pub fn move_cursor(&mut self, m: Move, extend: bool) {
         let height = self.height;
         self.view_mut().move_cursor(m, extend, height);
+    }
+
+    /// `zt`, `zz`, `zb`: the cursor's line put at the top, middle or bottom of
+    /// the screen, without moving the cursor off it.
+    pub fn reveal(&mut self, where_to: Reveal) {
+        let height = self.height;
+        self.view_mut().reveal(where_to, height);
+    }
+
+    /// `^e` and `^y`: scroll without moving the cursor, until the cursor would
+    /// be scrolled off and has to come along.
+    pub fn scroll_lines(&mut self, down: bool, count: usize) {
+        let height = self.height;
+        self.view_mut().scroll_lines(down, count, height);
+    }
+
+    /// `H`, `M`, `L`: the line at the top, middle or bottom of what is on
+    /// screen. Zero-based, for the caller to move to or operate over.
+    pub fn screen_line(&self, which: Screen, count: usize) -> usize {
+        self.view().screen_line(which, count, self.height)
+    }
+
+    /// `H`, `M`, `L` as a motion: a jump, so `^o` comes back from it.
+    pub fn goto_screen_line(&mut self, which: Screen, count: usize, extend: bool) {
+        let line = self.screen_line(which, count);
+        if !extend {
+            self.push_jump();
+        }
+        match extend {
+            true => self.goto_line_extending(line),
+            false => self.goto_line(line),
+        }
+        self.clamp_cursor();
     }
 
     pub fn scroll_to_cursor(&mut self) {

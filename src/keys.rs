@@ -3,7 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::editor::{Editor, Mode};
 use crate::object;
 use crate::register::SYSTEM;
-use crate::view::{Find, Move, Selection};
+use crate::view::{Find, Move, Reveal, Screen, Selection};
 
 /// One line of the help. These are written down rather than derived from the
 /// match arms below, so this is a promise the tests have to keep: every key
@@ -36,6 +36,10 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
+    Binding { keys: "{ }", what: "paragraph back, forward (d} y{ too)", mode: "normal" },
+    Binding { keys: "zz zt zb", what: "this line to the middle, top, bottom", mode: "normal" },
+    Binding { keys: "H M L", what: "top, middle, bottom of the screen", mode: "normal" },
+    Binding { keys: "^e ^y", what: "scroll a line down, up, cursor still", mode: "normal" },
     Binding { keys: "pgdn pgup", what: "page down, up", mode: "normal" },
 
     Binding { keys: "i I", what: "insert here, at first non-blank", mode: "normal" },
@@ -166,6 +170,8 @@ enum Pending {
     Go { operator: Option<char> },
     /// `r`, waiting for the character to put there.
     Replace,
+    /// `z`, waiting for where to put the cursor's line: `zz`, `zt`, `zb`.
+    Reveal,
     /// The space leader, waiting for which picker to open.
     Leader,
     /// The `"` prefix, waiting for the register name.
@@ -409,6 +415,7 @@ impl Keys {
             Some(Pending::Reindent) => "=",
             Some(Pending::Go { .. }) => "g",
             Some(Pending::Replace) => "r",
+            Some(Pending::Reveal) => "z",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
             // Both are handled above, and neither is worth a panic in the
@@ -463,6 +470,10 @@ impl Keys {
                 {
                     editor.message = "not that many characters on the line".into();
                 }
+                self.finish();
+            }
+            Some(Pending::Reveal) => {
+                reveal(editor, key.code);
                 self.finish();
             }
             // An operator waiting on `g` wants a line to work to, not a jump:
@@ -612,6 +623,13 @@ impl Keys {
             return;
         }
 
+        if self.pending == Some(Pending::Reveal) {
+            self.pending = None;
+            reveal(editor, key.code);
+            self.finish();
+            return;
+        }
+
         if let Some(Pending::Go { .. }) = self.pending.take() {
             if key.code == KeyCode::Char('g') {
                 editor.goto_line_extending(count.unwrap_or(1) - 1);
@@ -673,6 +691,13 @@ impl Keys {
             }
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
             KeyCode::Char('J') => editor.join_visual(),
+            KeyCode::Char('z') => {
+                self.pending = Some(Pending::Reveal);
+                return;
+            }
+            KeyCode::Char('H') => editor.goto_screen_line(Screen::Top, repeat, true),
+            KeyCode::Char('M') => editor.goto_screen_line(Screen::Middle, repeat, true),
+            KeyCode::Char('L') => editor.goto_screen_line(Screen::Bottom, repeat, true),
             // `:` over a selection writes the range in for you, as vim does.
             KeyCode::Char(':') => {
                 editor.open_command_over_selection();
@@ -800,6 +825,19 @@ impl Keys {
 
             KeyCode::Char('v') => editor.set_mode(Mode::Visual),
             KeyCode::Char('V') => editor.set_mode(Mode::VisualLine),
+
+            // The view rather than the cursor: `z` puts the cursor's line
+            // somewhere on the screen, `^e` and `^y` scroll under it, and
+            // `H M L` jump to what is already showing.
+            KeyCode::Char('z') if !ctrl => {
+                self.pending = Some(Pending::Reveal);
+                return;
+            }
+            KeyCode::Char('e') if ctrl => editor.scroll_lines(true, repeat),
+            KeyCode::Char('y') if ctrl => editor.scroll_lines(false, repeat),
+            KeyCode::Char('H') => editor.goto_screen_line(Screen::Top, repeat, false),
+            KeyCode::Char('M') => editor.goto_screen_line(Screen::Middle, repeat, false),
+            KeyCode::Char('L') => editor.goto_screen_line(Screen::Bottom, repeat, false),
 
             // `J` joins, `~` swaps case, `r` waits for the character to put
             // where the cursor is. Small commands, all of them counted.
@@ -987,11 +1025,21 @@ impl Keys {
                 }
                 Pending::Go { .. }
                 | Pending::Replace
+                | Pending::Reveal
                 | Pending::Register
                 | Pending::Leader
                 | Pending::Find { .. }
                 | Pending::Object { .. } => {}
             }
+            return;
+        }
+
+        // `H`, `M` and `L` are lines on the screen, and an operator over one
+        // is linewise, as vim has it: `dL` deletes to the bottom of what is
+        // showing.
+        if let Some(which) = screen_for(key.code) {
+            let target = editor.screen_line(which, self.count.unwrap_or(1));
+            self.operate_lines(editor, operator_key(operator), target);
             return;
         }
 
@@ -1042,6 +1090,27 @@ fn operator_key(operator: Pending) -> char {
         Pending::Dedent => '<',
         Pending::Reindent => '=',
         _ => 'd',
+    }
+}
+
+/// The second key of a `z`: where the cursor's line should end up. Anything
+/// else is not one of these commands and does nothing, as in vim.
+fn reveal(editor: &mut Editor, code: KeyCode) {
+    match code {
+        KeyCode::Char('z') => editor.reveal(Reveal::Middle),
+        KeyCode::Char('t') => editor.reveal(Reveal::Top),
+        KeyCode::Char('b') => editor.reveal(Reveal::Bottom),
+        _ => {}
+    }
+}
+
+/// `H`, `M`, `L` as an operator's motion.
+fn screen_for(code: KeyCode) -> Option<Screen> {
+    match code {
+        KeyCode::Char('H') => Some(Screen::Top),
+        KeyCode::Char('M') => Some(Screen::Middle),
+        KeyCode::Char('L') => Some(Screen::Bottom),
+        _ => None,
     }
 }
 
@@ -1143,6 +1212,8 @@ fn motion_for(code: KeyCode, ctrl: bool) -> Option<(Move, bool)> {
         KeyCode::Char('$') | KeyCode::End => Move::LineEnd,
         KeyCode::PageUp => Move::PageUp,
         KeyCode::PageDown => Move::PageDown,
+        KeyCode::Char('{') => Move::ParagraphBack,
+        KeyCode::Char('}') => Move::ParagraphForward,
         _ => return None,
     };
     Some((motion, false))
@@ -1815,6 +1886,95 @@ mod tests {
         // goes the way the original `f` went.
         vim.press(";");
         assert_eq!(vim.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn paragraph_motions_walk_between_the_blank_lines() {
+        let mut vim = Vim::new("one\ntwo\n\nthree\nfour\n\n\nfive\n");
+        vim.press("}");
+        assert_eq!(vim.cursor(), (3, 1), "the blank line after the first block");
+        vim.press("}");
+        assert_eq!(vim.cursor(), (6, 1));
+        vim.press("{");
+        assert_eq!(vim.cursor(), (3, 1), "a run of blanks counts once");
+
+        // They are motions, so an operator takes them.
+        let mut vim = Vim::new("one\ntwo\n\nthree\n");
+        vim.press("d}");
+        assert_eq!(vim.text(), "\nthree\n");
+
+        // And they stop at the ends rather than running off.
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("{");
+        assert_eq!(vim.cursor(), (1, 1));
+        // Past the end is the last line, where `clamp_cursor` leaves anything
+        // that runs off the bottom - column one, not the final character.
+        vim.press("}}");
+        assert_eq!(vim.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn z_puts_the_cursors_line_where_you_ask() {
+        let mut vim = Vim::new(&"line\n".repeat(100));
+        vim.editor.set_viewport(80, 20);
+        vim.press("50G");
+        let line = vim.editor.cursor_coords().0;
+
+        vim.press("zt");
+        assert_eq!(vim.editor.view().scroll_top, line - 3, "scrolloff kept above");
+        vim.press("zz");
+        assert_eq!(vim.editor.view().scroll_top, line - 10);
+        vim.press("zb");
+        assert_eq!(vim.editor.view().scroll_top, line + 4 - 20);
+
+        // The cursor did not move for any of it.
+        assert_eq!(vim.editor.cursor_coords().0, line);
+    }
+
+    #[test]
+    fn h_m_l_go_to_what_is_on_the_screen() {
+        let mut vim = Vim::new(&"line\n".repeat(100));
+        vim.editor.set_viewport(80, 20);
+        vim.press("50Gzt");
+        let top = vim.editor.view().scroll_top;
+
+        vim.press("H");
+        assert_eq!(vim.editor.cursor_coords().0, top + 3, "scrolloff from the top");
+        vim.press("L");
+        assert_eq!(vim.editor.cursor_coords().0, top + 20 - 1 - 3);
+        vim.press("M");
+        assert_eq!(vim.editor.cursor_coords().0, (top + top + 19) / 2);
+
+        // A count is how far in from the edge.
+        vim.press("3H");
+        assert_eq!(vim.editor.cursor_coords().0, top + 3 + 2);
+
+        // An operator over one is linewise.
+        let mut vim = Vim::new(&"line\n".repeat(100));
+        vim.editor.set_viewport(80, 20);
+        vim.press("ggdL");
+        // Lines 1 to 17: the bottom of the screen is 20 rows less the three
+        // of scrolloff, and the range includes the line it started on.
+        assert_eq!(vim.text().lines().count(), 100 - 17, "to the bottom of the screen");
+    }
+
+    #[test]
+    fn ctrl_e_and_ctrl_y_scroll_under_the_cursor() {
+        let mut vim = Vim::new(&"line\n".repeat(100));
+        vim.editor.set_viewport(80, 20);
+        vim.press("50Gzz");
+        let (top, line) = (vim.editor.view().scroll_top, vim.editor.cursor_coords().0);
+
+        vim.press("<C-e>");
+        assert_eq!(vim.editor.view().scroll_top, top + 1);
+        assert_eq!(vim.editor.cursor_coords().0, line, "the cursor stayed put");
+
+        // Until it would be scrolled off, when it comes along.
+        vim.press("20<C-e>");
+        assert!(vim.editor.cursor_coords().0 > line);
+
+        vim.press("<C-y>");
+        assert_eq!(vim.editor.view().scroll_top, top + 20);
     }
 
     #[test]

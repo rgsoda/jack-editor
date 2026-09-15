@@ -108,6 +108,25 @@ pub enum Move {
     HalfPageDown,
     FileStart,
     FileEnd,
+    /// `{` and `}`: the blank line before or after this paragraph.
+    ParagraphBack,
+    ParagraphForward,
+}
+
+/// Where `zt`, `zz` and `zb` put the line the cursor is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Which visible line `H`, `M` and `L` mean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    Top,
+    Middle,
+    Bottom,
 }
 
 /// One open document and everything about how it is being looked at: where the
@@ -557,6 +576,8 @@ impl View {
             Move::HalfPageDown => self.vertical((height / 2).max(1) as isize),
             Move::PageUp => self.vertical(-(height as isize)),
             Move::PageDown => self.vertical(height as isize),
+            Move::ParagraphBack => self.paragraph(false),
+            Move::ParagraphForward => self.paragraph(true),
             Move::FileStart => 0,
             Move::FileEnd => self.doc.len_chars(),
         };
@@ -579,6 +600,107 @@ impl View {
             self.sel.anchor = head;
         }
     }
+    /// `{` and `}`: the next blank line either way, or the end of the buffer.
+    /// A run of blank lines counts once, so `}` on the line before a gap goes
+    /// past it rather than sitting down in the middle of it.
+    fn paragraph(&self, forward: bool) -> usize {
+        let (line, _) = self.cursor_coords();
+        // The last line with content: the empty one a trailing newline leaves
+        // behind is not somewhere `}` should stop, it is the end of the file.
+        let last = self.last_line();
+        let blank = |line: usize| self.doc.line_str(line).trim().is_empty();
+        let edge = |at: usize| match forward {
+            true => at >= last,
+            false => at == 0,
+        };
+        let step = |at: usize| match forward {
+            true => at + 1,
+            false => at - 1,
+        };
+
+        // One line, whatever it is - a motion that cannot move is no motion.
+        if edge(line) {
+            return match forward {
+                true => self.doc.len_chars(),
+                false => 0,
+            };
+        }
+        let mut at = step(line);
+        // Out of the gap this paragraph sits in, if the cursor is in one, and
+        // then along it until the next gap. A run of blank lines is one gap.
+        while blank(at) && !edge(at) {
+            at = step(at);
+        }
+        while !blank(at) && !edge(at) {
+            at = step(at);
+        }
+        match edge(at) && !blank(at) {
+            true => match forward {
+                true => self.doc.len_chars(),
+                false => 0,
+            },
+            false => self.doc.line_to_char(at),
+        }
+    }
+
+    /// `zt`, `zz`, `zb`: the view moved so the cursor's line sits where asked.
+    /// The cursor does not move; only what is around it does.
+    pub fn reveal(&mut self, where_to: Reveal, height: usize) {
+        let (line, _) = self.cursor_coords();
+        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        // The padding is honoured, as vim honours `scrolloff` here: `zt` with
+        // three lines of margin leaves three lines above, not none, or the
+        // next redraw would scroll it back anyway.
+        self.scroll_top = match where_to {
+            Reveal::Top => line.saturating_sub(pad),
+            Reveal::Middle => line.saturating_sub(height / 2),
+            Reveal::Bottom => (line + pad + 1).saturating_sub(height),
+        };
+    }
+
+    /// `^e` and `^y`: the view moved by lines, the cursor following only when
+    /// it would otherwise be scrolled off the screen.
+    pub fn scroll_lines(&mut self, down: bool, count: usize, height: usize) {
+        let last = self.doc.len_lines().saturating_sub(1);
+        self.scroll_top = match down {
+            true => (self.scroll_top + count).min(last),
+            false => self.scroll_top.saturating_sub(count),
+        };
+        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        let (line, _) = self.cursor_coords();
+        let top = self.scroll_top + pad;
+        let bottom = (self.scroll_top + height).saturating_sub(pad + 1).min(last);
+        let wanted = line.clamp(top.min(bottom), bottom);
+        if wanted != line {
+            self.goto_line(wanted);
+        }
+    }
+
+    /// `H`, `M`, `L`: which line of the screen that is, given where the view
+    /// is and how tall it is. `count` is how far in from the edge, as vim
+    /// counts it - `3H` is the third line from the top.
+    pub fn screen_line(&self, which: Screen, count: usize, height: usize) -> usize {
+        let last = self.doc.len_lines().saturating_sub(1);
+        let bottom = (self.scroll_top + height).saturating_sub(1).min(last);
+        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        // No padding at the ends of the file: there is nothing there to keep
+        // in view, and `H` on the first screen should reach line one.
+        let top_pad = match self.scroll_top == 0 {
+            true => 0,
+            false => pad,
+        };
+        let bottom_pad = match bottom == last {
+            true => 0,
+            false => pad,
+        };
+        let step = count.saturating_sub(1);
+        match which {
+            Screen::Top => (self.scroll_top + top_pad + step).min(bottom),
+            Screen::Middle => (self.scroll_top + bottom) / 2,
+            Screen::Bottom => bottom.saturating_sub(bottom_pad + step).max(self.scroll_top),
+        }
+    }
+
     /// Scroll the viewport so the cursor is visible, keeping SCROLLOFF rows of
     /// context where the buffer allows it.
     pub fn scroll_to_cursor(&mut self, width: usize, height: usize) {
