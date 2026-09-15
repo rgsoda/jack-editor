@@ -2596,6 +2596,45 @@ plain
     }
 
     #[test]
+    fn a_shift_arrow_selection_is_what_the_chords_copy() {
+        // Shift and an arrow starts visual mode in normal mode, and selects
+        // without leaving insert mode while typing. Both are selections, and
+        // `^c` takes the selection rather than the line either way.
+        let mut vim = Vim::new("hello world\n");
+        vim.press("<S-right><S-right><S-right><S-right><C-c>");
+        // Visual mode covers the character under the cursor, so four steps
+        // right is five characters.
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("hello"));
+
+        let mut vim = Vim::new("hello world\n");
+        vim.press("i<S-right><S-right><S-right><S-right><S-right><C-c>");
+        assert_eq!(crate::clipboard::paste().as_deref(), Some("hello"));
+        assert_eq!(vim.editor.mode, Mode::Insert);
+        // Copying while typing leaves the cursor where it was, so you can go
+        // on typing from there.
+        assert_eq!(vim.editor.cursor_coords(), (0, 5));
+    }
+
+    #[test]
+    fn ctrl_x_while_typing_cuts_the_selection_and_ctrl_v_puts_it_back() {
+        let mut vim = Vim::new("hello world\n");
+        vim.press("A<S-left><S-left><S-left><S-left><S-left><C-x>");
+        assert_eq!(vim.text(), "hello \n");
+        assert_eq!(vim.editor.mode, Mode::Insert);
+        // And back in at the cursor, not as a line.
+        vim.press("<C-v>");
+        assert_eq!(vim.text(), "hello world\n");
+    }
+
+    #[test]
+    fn pasting_over_a_selection_while_typing_replaces_it() {
+        let mut vim = Vim::new("hello world\n");
+        crate::clipboard::copy("there");
+        vim.press("A<S-left><S-left><S-left><S-left><S-left><C-v>");
+        assert_eq!(vim.text(), "hello there\n");
+    }
+
+    #[test]
     fn ctrl_x_cuts_the_line() {
         let mut vim = Vim::new("one\ntwo\nthree\n");
         vim.press("j<C-x>");

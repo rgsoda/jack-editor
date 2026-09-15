@@ -1861,10 +1861,29 @@ impl Editor {
                 self.yank_visual(Some(SYSTEM));
                 self.set_mode(Mode::Normal);
             }
+            // Shift and an arrow leaves a selection without leaving insert
+            // mode, and that is a selection like any other. A yank collapses
+            // to the start of what it took; while typing, the cursor belongs
+            // where it was, so that copying does not move you.
+            _ if self.has_selection() => {
+                let head = self.view().sel.head;
+                self.yank_selection(Some(SYSTEM));
+                if self.mode == Mode::Insert {
+                    self.view_mut().sel = Selection::point(head);
+                }
+            }
             _ => self.yank_lines(Some(SYSTEM), 1),
         }
         self.push_clipboard();
         self.message = "copied".into();
+    }
+
+    /// True when something is selected outside visual mode - what shift and an
+    /// arrow leave behind while typing. Visual mode has its own range, which
+    /// covers the character under the cursor as well.
+    fn has_selection(&self) -> bool {
+        let sel = self.view().sel;
+        sel.anchor != sel.head
     }
 
     /// `^x`, the same rule: the selection, or the line.
@@ -1874,6 +1893,7 @@ impl Editor {
                 self.delete_visual(Some(SYSTEM));
                 self.set_mode(Mode::Normal);
             }
+            _ if self.has_selection() => self.delete_selection(Some(SYSTEM)),
             _ => self.delete_lines(Some(SYSTEM), 1),
         }
         self.push_clipboard();

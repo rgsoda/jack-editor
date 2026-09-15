@@ -683,10 +683,14 @@ what is worth having before one.
 ## The system clipboard
 
 `^c` copies, `^x` cuts, `^v` pastes — the selection when there is one, and the
-whole line when there is not, which is what every editor with these keys does
-and what makes `^c^v` a way to duplicate a line without selecting it first. In
-insert mode `^v` puts the text in at the cursor, as typing it would; in normal
-mode it is a put, so a copied line lands on a line of its own.
+whole line when there is not. A selection is visual mode's, or the one shift
+and an arrow leaves behind while typing, which never leaves insert mode and is
+a selection just the same; copying one leaves the cursor where it was, so you
+can go on typing. The line is the fallback, which is what every editor with
+these keys does and what makes `^c^v` a way to duplicate a line without
+selecting it first. In insert mode `^v` puts the text in at the cursor, as
+typing it would — over the selection when there is one; in normal mode it is a
+put, so a copied line lands on a line of its own.
 
 Inside the editor this is the `+` register and nothing new: the same yank and
 put that `y` and `p` use, named. What is new is the two ends of it. Copying
