@@ -420,10 +420,13 @@ dog sitting down. One extra wake-up after the last key of a burst, and none at
 all while the editor is idle — the loop goes back to blocking for ever once the
 dog is sitting.
 
-It runs in a twelve-cell lane centred on the screen rather than the whole way
-across, so it stays where the eye expects it, and it is drawn only if the gap
-between the two sides of the status line has room: a long file name or a
-message pushes the dog out rather than being drawn over. Both glyphs are
+Its lane is the whole gap — everything between what the left side has written
+and where the right side begins — so it has the run of the line rather than a
+few cells of it. A long file name or a message shortens the lane from the left
+rather than being drawn over, and a gap too narrow to run in gets no dog at
+all. Sitting, it wants the middle of the screen, which is where it was asked to
+sit; the middle of the gap when the line is too lopsided for the screen's
+middle to be in it. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
 

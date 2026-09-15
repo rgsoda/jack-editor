@@ -47,9 +47,9 @@ pub struct Glyphs {
 /// icons, so they need the patched font the rest of the pretty glyphs do.
 pub const DOG_RUNNING: char = '\u{f0a44}';
 pub const DOG_SITTING: char = '\u{f0a43}';
-/// How far the dog runs before it comes back around, in cells. Wide enough to
-/// read as running, narrow enough to stay out of a message's way.
-pub const DOG_LANE: usize = 12;
+/// The narrowest gap worth letting a dog into: any less and it is not running,
+/// it is stuck between the file name and the line number.
+pub const DOG_ROOM: usize = 4;
 
 /// Nerd Font code points, all from the Powerline and Devicons ranges.
 pub const NERD: Glyphs = Glyphs {

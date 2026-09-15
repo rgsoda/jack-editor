@@ -425,24 +425,31 @@ fn draw_line(
     }
 }
 
-/// The dog, in the gap the status line leaves in the middle: running while
-/// you type and sitting when you stop.
+/// The dog, in the gap the status line leaves in the middle: running while you
+/// type and sitting when you stop.
 ///
-/// It runs in a lane centred on the screen rather than from one side to the
-/// other, so that it stays where the eye expects it and a long file name or a
-/// message pushes it out of the way instead of being drawn over.
+/// The lane is the whole gap - everything between what the left side has
+/// written and where the right side starts - so the dog has the run of the
+/// line rather than a few cells of it. A long file name or a message shortens
+/// the lane from the left rather than being drawn over, and a gap too small to
+/// run in gets no dog at all.
 fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize>, bar: Style) {
     let (width, _) = surface.size();
-    let centre = width / 2;
-    let lane = centre.saturating_sub(status::DOG_LANE / 2)..centre + status::DOG_LANE / 2;
-    // Nowhere to run: the sides have taken the middle of the line.
-    if gap.start > lane.start || gap.end <= lane.end {
+    let lane = gap.end.saturating_sub(gap.start);
+    if lane < status::DOG_ROOM {
         return;
     }
 
     let (dog, x) = match editor.dog.running {
-        true => (status::DOG_RUNNING, lane.start + editor.dog.steps % status::DOG_LANE),
-        false => (status::DOG_SITTING, centre),
+        true => (status::DOG_RUNNING, gap.start + editor.dog.steps % lane),
+        // Sitting, it wants the middle of the screen rather than the middle of
+        // the gap - that is where it was asked to sit, and where the eye goes
+        // looking for it. The gap's own middle when the line is too lopsided
+        // for the screen's to be in it.
+        false => match gap.contains(&(width / 2)) {
+            true => (status::DOG_SITTING, width / 2),
+            false => (status::DOG_SITTING, gap.start + lane / 2),
+        },
     };
     surface.put(x, row, dog, 1, bar);
 }
@@ -770,15 +777,21 @@ mod tests {
         assert!(at.is_some(), "the dog is somewhere on the line");
 
         // It keeps going while the keys keep coming, and comes back around
-        // rather than running off the end of its lane.
+        // rather than running off the end of its lane. The lane is the whole
+        // gap the status line leaves, so a lap reaches both sides of it.
         let mut seen = vec![at.unwrap()];
-        for _ in 0..status::DOG_LANE {
+        for _ in 0..80 {
             editor.dog_runs();
             let row: Vec<char> = status_row(&editor, &keys).chars().collect();
             seen.push(row.iter().position(|c| *c == status::DOG_RUNNING).unwrap());
         }
-        assert_eq!(seen.first(), seen.last(), "a lap of the lane");
-        assert!(seen.iter().all(|x| x.abs_diff(middle) <= status::DOG_LANE));
+        let (first, last) = (*seen.iter().min().unwrap(), *seen.iter().max().unwrap());
+        assert!(first < middle && last > middle, "the whole gap: {first}..{last}");
+        // And the lap is the gap itself: every cell of it, and no cell twice
+        // in a row.
+        let lap = last - first + 1;
+        assert_eq!(seen.len().min(lap * 2), lap * 2, "at least two laps");
+        assert!(seen.windows(2).all(|w| w[0] != w[1]));
 
         // And it sits back down where it started.
         editor.dog_rests();
