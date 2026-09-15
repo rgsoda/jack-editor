@@ -1,10 +1,12 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::ops::Range;
 use unicode_segmentation::GraphemeCursor;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Document;
 use crate::history::{Change, History, Transaction};
+use crate::stream::Sign;
 use crate::syntax::{Highlights, Syntax, language_for_path};
 use crate::theme::Theme;
 
@@ -78,6 +80,9 @@ pub struct View {
     pub scroll_left: usize,
     history: History,
     syntax: Option<Syntax>,
+    /// Per-line git signs, and the revision they were computed for.
+    pub signs: HashMap<usize, Sign>,
+    pub signs_revision: Option<(usize, usize)>,
 }
 
 impl View {
@@ -90,6 +95,8 @@ impl View {
             scroll_left: 0,
             history: History::new(),
             syntax: None,
+            signs: HashMap::new(),
+            signs_revision: None,
         }
     }
 
@@ -112,6 +119,51 @@ impl View {
             Some(syntax) => syntax.highlights(&self.doc.text, range, theme),
             None => Highlights::none(),
         }
+    }
+
+    /// Strip trailing whitespace from every line, as one undoable transaction,
+    /// and say how many lines changed. The cursor comes back to where it was,
+    /// or to the end of its line if it was sitting in the spaces that went.
+    pub fn trim_trailing_whitespace(&mut self) -> usize {
+        let mut changes = Vec::new();
+        for line in 0..self.doc.len_lines() {
+            let text = self.doc.line_str(line);
+            let trimmed = text.trim_end_matches([' ', '\t']);
+            if trimmed.len() == text.len() {
+                continue;
+            }
+            let base = self.doc.line_to_char(line);
+            let start = base + trimmed.chars().count();
+            let removed: String = text.chars().skip(trimmed.chars().count()).collect();
+            // Ascending, in pre-transaction coordinates, which is what a
+            // transaction expects of its changes.
+            changes.push(Change { pos: start, removed, inserted: String::new() });
+        }
+        if changes.is_empty() {
+            return 0;
+        }
+
+        let head = self.sel.head;
+        let mut moved = head;
+        for change in &changes {
+            let end = change.pos + change.removed.chars().count();
+            if head >= end {
+                moved -= change.removed.chars().count();
+            } else if head > change.pos {
+                moved -= head - change.pos;
+            }
+        }
+
+        let count = changes.len();
+        let tx = Transaction::new(changes, self.sel, Selection::point(moved));
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        self.sel = tx.sel_after;
+        self.goal_col = None;
+        self.history.push(tx);
+        count
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -459,6 +511,48 @@ impl View {
         self.sel = Selection::point(self.doc.line_to_char(line));
         self.move_cursor(Move::FirstNonBlank, false, 0);
     }
+    /// The bracket matching the one at `at`, if there is a bracket there.
+    ///
+    /// A plain nesting count over the rope: it does not know that a brace
+    /// inside a string or a comment is not structure. Tree-sitter could tell
+    /// it, which is worth doing when `%` starts being wrong often enough to
+    /// notice.
+    pub fn matching_bracket(&self, at: usize) -> Option<usize> {
+        if at >= self.doc.len_chars() {
+            return None;
+        }
+        let ch = self.doc.text.char(at);
+        let (mate, forward) = match ch {
+            '(' => (')', true),
+            '[' => (']', true),
+            '{' => ('}', true),
+            ')' => ('(', false),
+            ']' => ('[', false),
+            '}' => ('{', false),
+            _ => return None,
+        };
+
+        let mut depth = 0usize;
+        let total = self.doc.len_chars();
+        let mut i = at;
+        loop {
+            let c = self.doc.text.char(i);
+            if c == ch {
+                depth += 1;
+            } else if c == mate {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            match forward {
+                true if i + 1 < total => i += 1,
+                false if i > 0 => i -= 1,
+                _ => return None,
+            }
+        }
+    }
+
     /// The word the cursor is on, if it is on one.
     pub fn word_under_cursor(&self) -> Option<String> {
         let (line, column) = self.cursor_coords();
@@ -470,6 +564,12 @@ impl View {
         let start = (0..column).rev().take_while(|&i| is_word(chars[i])).last().unwrap_or(column);
         let end = (column..chars.len()).take_while(|&i| is_word(chars[i])).last().unwrap_or(column);
         Some(chars[start..=end].iter().collect())
+    }
+
+    /// Cheap fingerprint of the document's state: how many edits deep it is
+    /// and how long it is. Equal fingerprints mean nothing worth re-diffing.
+    pub fn revision(&self) -> (usize, usize) {
+        (self.history.depth(), self.doc.len_chars())
     }
 
     pub fn is_modified(&self) -> bool {

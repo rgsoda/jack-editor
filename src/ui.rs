@@ -5,6 +5,7 @@ use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
 use crate::screen::{Style, Surface};
+use crate::stream::Sign;
 use crate::syntax::Highlights;
 
 /// Draw a whole frame. Nothing here talks to the terminal; `Screen` works out
@@ -24,6 +25,7 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
     let highlights = editor.highlights(first_byte..last_byte);
 
     let gutter = editor.gutter_width();
+    let signs = editor.sign_width();
     let (cursor_line, _) = editor.cursor_coords();
     let number_style = editor.theme.style("ui.linenr");
     let current_style = editor.theme.style("ui.linenr.selected");
@@ -39,6 +41,10 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         false => Vec::new(),
     };
 
+    // The bracket under the cursor and its mate, so a pair can be seen at a
+    // glance rather than counted.
+    let brackets = editor.bracket_pair();
+
     let selection = editor.selection_range();
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
     let styling = LineStyling {
@@ -48,6 +54,8 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         left: gutter,
         matches: &matches,
         match_style: editor.theme.style("ui.search.match"),
+        brackets,
+        bracket_style: editor.theme.style("ui.bracket.match"),
     };
 
     for row in 0..editor.height {
@@ -62,14 +70,24 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             continue;
         }
 
+        if signs > 0 {
+            let (ch, key) = match editor.view().signs.get(&line) {
+                Some(Sign::Added) => ('+', "ui.gutter.added"),
+                Some(Sign::Modified) => ('~', "ui.gutter.modified"),
+                Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
+                None => (' ', "ui.linenr"),
+            };
+            surface.put(0, row, ch, 1, editor.theme.style(key));
+        }
+
         if let Some(number) = editor.numbers.label(line, cursor_line) {
             let style = match line == cursor_line {
                 true => current_style,
                 false => number_style,
             };
             // Right-aligned, with the space either side the width allows for.
-            let text = format!("{number:>width$} ", width = gutter - 1);
-            put_str(surface, 0, row, &text, style, gutter);
+            let text = format!("{number:>width$} ", width = gutter - signs - 1);
+            put_str(surface, signs, row, &text, style, gutter);
         }
 
         let text = editor.view().doc.line_str(line);
@@ -199,6 +217,8 @@ struct LineStyling<'a> {
     /// Search matches on screen, as absolute character ranges.
     matches: &'a [(usize, usize)],
     match_style: Style,
+    brackets: Option<(usize, usize)>,
+    bracket_style: Style,
 }
 
 fn draw_line(
@@ -237,6 +257,9 @@ fn draw_line(
         let at = line_start + char_idx;
         if styling.matches.iter().any(|&(s, e)| at >= s && at < e) {
             style = style.patch(styling.match_style);
+        }
+        if styling.brackets.is_some_and(|(a, b)| at == a || at == b) {
+            style = style.patch(styling.bracket_style);
         }
         if sel.is_some_and(|(s, e)| char_idx >= s && char_idx < e) {
             style = style.patch(styling.selection);
@@ -357,6 +380,7 @@ mod tests {
     fn cost_of_a_cursor_move(numbers: Numbers) -> usize {
         let mut editor = editor_with_lines(500);
         editor.numbers = numbers;
+        editor.signs_enabled = false;
         let keys = Keys::default();
         let mut screen = Screen::new();
 
@@ -383,6 +407,7 @@ mod tests {
     fn the_gutter_is_sized_for_the_whole_buffer_not_the_screen() {
         let mut editor = editor_with_lines(1200);
         editor.numbers = Numbers::Absolute;
+        editor.signs_enabled = false;
         // Four digits plus a space either side, whatever is on screen.
         assert_eq!(editor.gutter_width(), 6);
         assert_eq!(editor.text_width(), 74);
@@ -395,6 +420,11 @@ mod tests {
     fn turning_numbers_off_gives_the_columns_back() {
         let mut editor = editor_with_lines(10);
         editor.numbers = Numbers::Off;
+        // The sign column is still there, and is one wide.
+        assert_eq!(editor.gutter_width(), 1);
+        assert_eq!(editor.cursor_screen(), (1, 0));
+
+        editor.signs_enabled = false;
         assert_eq!(editor.gutter_width(), 0);
         assert_eq!(editor.text_width(), 80);
         assert_eq!(editor.cursor_screen(), (0, 0));
@@ -404,10 +434,15 @@ mod tests {
     fn the_cursor_sits_past_the_gutter() {
         let mut editor = editor_with_lines(10);
         editor.numbers = Numbers::Absolute;
+        editor.signs_enabled = false;
         // Two-digit buffer: a two-wide number with a space either side.
         assert_eq!(editor.gutter_width(), 4);
         assert_eq!(editor.cursor_screen(), (4, 0));
         editor.move_cursor(Move::Right, false);
         assert_eq!(editor.cursor_screen(), (5, 0));
+
+        // With signs, everything shifts one further right.
+        editor.signs_enabled = true;
+        assert_eq!(editor.cursor_screen(), (6, 0));
     }
 }

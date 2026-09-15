@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 15: in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 16: a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -26,6 +26,8 @@ Starts in normal mode, like vim.
 | `/` `?` | search forward / backward |
 | `n` `N` | repeat the search / reverse it |
 | `*` | search for the word under the cursor |
+| `%` | jump to the matching bracket |
+| `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>?` | every key, searchable |
@@ -54,6 +56,19 @@ Starts in normal mode, like vim.
 | `enter` | choose |
 | `backspace` `^w` `^u` | delete a character / a word / the query |
 | `esc` `^c` | close |
+
+### Commands
+
+| | |
+|---|---|
+| `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
+| `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
+| `:e path` `:e!` | open a file, reload this one from disk |
+| `:set number` | `nonumber`, `relativenumber`, `hybrid` |
+| `:set trim` `:set signs` | `notrim`, `nosigns` |
+| `:set` | show what everything is set to |
+| `:noh` | stop highlighting matches |
+| `:{n}` | go to line n |
 
 ### Search prompt
 
@@ -236,6 +251,53 @@ Two things this got wrong to begin with, both worth knowing:
 Searching does not yet work from visual mode to extend a selection to a match,
 which is a real vim idiom: the prompt would have to know to extend rather than
 jump.
+
+## Commands, and where settings live
+
+`:` opens the same prompt search does, so the command line cost almost nothing
+once search existed. It is also the answer to a question deferred twice: there
+is still no config file, but `:set` is now a real place for settings to live,
+and adding one is a line in `set_option` rather than a new subsystem.
+
+`:w` refuses to write a file that has changed on disk since it was read, and
+`:e` refuses to throw away unsaved changes. Both take `!` to mean "I know".
+What counts as changed is the file's modification time and length, checked
+against what they were when it was last read or written - not a hash, because
+this runs on every save. A file that has been *deleted* counts as changed too:
+recreating it silently is the same surprise.
+
+## Trailing whitespace
+
+Stripped on save, as one transaction, so a single undo puts every line back. It
+is never silent: the save says `wrote main.rs, trimmed 3 lines`. `:set notrim`
+turns it off. If the cursor was sitting in the spaces that went, it lands on the
+last character that is left rather than off the end of the line.
+
+## Git signs
+
+The first gutter column marks lines that differ from the last commit: `+` added,
+`~` modified, `_` where something was deleted. It shells out to `git show
+HEAD:./file` on a background thread and diffs with `similar` - one file's worth
+of bytes is the whole of the API this needs, which is not worth a git library.
+
+The diff re-runs when the buffer has actually changed and never while you are
+mid-keystroke in insert mode: the run loop compares a cheap revision - how many
+undo steps deep the document is, and how long it is - and does nothing when it
+matches. Leaving insert mode is what triggers the refresh after typing.
+
+Deletions and insertions that meet are paired one for one, so two lines changed
+in a row are two modifications rather than a modification and an addition. Three
+lines replacing one is one modification and two additions.
+
+## Matching brackets
+
+`%` jumps between `()`, `[]` and `{}`, and the pair under the cursor is
+underlined so it can be seen rather than counted. In visual mode `%` drags the
+selection to the match, which is how you select a whole block.
+
+It is a nesting count over the rope, so it does not know that a brace inside a
+string or a comment is not structure. Tree-sitter could tell it; that is worth
+doing when `%` starts being wrong often enough to notice, and not before.
 
 ## Line numbers
 

@@ -40,3 +40,7 @@
 "ui.linenr" = { fg = "#6272a4" }
 "ui.linenr.selected" = { fg = "#f8f8f2", bold = true }
 "ui.search.match" = { fg = "#282a36", bg = "#f1fa8c" }
+"ui.bracket.match" = { fg = "#ff79c6", bold = true, underline = true }
+"ui.gutter.added" = { fg = "#50fa7b" }
+"ui.gutter.modified" = { fg = "#ffb86c" }
+"ui.gutter.deleted" = { fg = "#ff5555" }

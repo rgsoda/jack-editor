@@ -85,6 +85,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         // One row goes to the status line.
         editor.set_viewport(cols, rows - 1);
         editor.scroll_to_cursor();
+        // Cheap when nothing has changed: it compares a revision first.
+        editor.refresh_signs();
 
         ui::draw(editor, &keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
@@ -118,8 +120,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
 
                 match keys.handle(editor, key) {
                     Action::Continue => {}
-                    Action::Quit => {
-                        if was_armed || !editor.any_modified() {
+                    Action::Quit { force } => {
+                        if force || was_armed || !editor.any_modified() {
                             return Ok(());
                         }
                         editor.message = "unsaved changes - press ^Q again to quit".into();
@@ -135,6 +137,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
                 streamed_done = done;
             } else if let Message::Failed { token, error } = message {
                 editor.job_failed(token, error);
+            } else if let Message::Signs { token, signs } = message {
+                editor.set_signs(token, signs);
             }
             // Resize needs nothing: the next frame re-reads the terminal size.
 

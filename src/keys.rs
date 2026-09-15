@@ -22,8 +22,10 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "0 ^ $", what: "line start, first non-blank, line end", mode: "normal" },
     Binding { keys: "gg G", what: "first line, last line", mode: "normal" },
     Binding { keys: "/ ?", what: "search forward, backward", mode: "normal" },
+    Binding { keys: ":", what: "a command: w q e set noh, or a line number", mode: "normal" },
     Binding { keys: "n N", what: "repeat the search, reverse it", mode: "normal" },
     Binding { keys: "*", what: "search for the word under the cursor", mode: "normal" },
+    Binding { keys: "%", what: "jump to the matching bracket", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
     Binding { keys: "pgdn pgup", what: "page down, up", mode: "normal" },
@@ -68,6 +70,14 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
     Binding { keys: "enter", what: "split the line, keeping the indent", mode: "insert" },
 
+    Binding { keys: ":w [path] :w!", what: "write, or write over a changed file", mode: "command" },
+    Binding { keys: ":q :q! :wq :x", what: "quit, discard changes, write and quit", mode: "command" },
+    Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
+    Binding { keys: ":set number", what: "nonumber, relativenumber, hybrid", mode: "command" },
+    Binding { keys: ":set trim", what: "notrim: strip trailing space on save", mode: "command" },
+    Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
+    Binding { keys: ":{n}", what: "go to line n", mode: "command" },
+
     Binding { keys: "enter esc", what: "accept, cancel the search", mode: "prompt" },
     Binding { keys: "backspace ^w ^u", what: "delete a character, word, all", mode: "prompt" },
 
@@ -80,7 +90,8 @@ pub const BINDINGS: &[Binding] = &[
 
 pub enum Action {
     Continue,
-    Quit,
+    /// `force` is `:q!`: leave even with unsaved changes.
+    Quit { force: bool },
 }
 
 /// What a half-typed command is waiting for.
@@ -120,13 +131,18 @@ impl Keys {
         }
         if editor.prompt.is_some() {
             editor.prompt_input(key);
-            return Action::Continue;
+            // `:q` has to reach the run loop, which is the only thing that can
+            // actually stop.
+            return match editor.quit.take() {
+                Some(force) => Action::Quit { force },
+                None => Action::Continue,
+            };
         }
 
         // Chords that mean the same thing in either mode.
         if ctrl {
             match key.code {
-                KeyCode::Char('q') => return Action::Quit,
+                KeyCode::Char('q') => return Action::Quit { force: false },
                 KeyCode::Char('s') => {
                     editor.save();
                     return Action::Continue;
@@ -304,6 +320,7 @@ impl Keys {
                 _ => Mode::VisualLine,
             }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
+            KeyCode::Char('%') => editor.jump_to_matching_bracket(),
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
                 editor.delete_visual(self.register)
@@ -408,11 +425,13 @@ impl Keys {
             KeyCode::Char('v') => editor.set_mode(Mode::Visual),
             KeyCode::Char('V') => editor.set_mode(Mode::VisualLine),
 
+            KeyCode::Char(':') => editor.open_command(),
             KeyCode::Char('/') => editor.open_search(false),
             KeyCode::Char('?') => editor.open_search(true),
             KeyCode::Char('n') => editor.search_repeat(false, repeat),
             KeyCode::Char('N') => editor.search_repeat(true, repeat),
             KeyCode::Char('*') => editor.search_word_under_cursor(),
+            KeyCode::Char('%') => editor.jump_to_matching_bracket(),
 
             KeyCode::Char('u') => editor.undo(),
             KeyCode::Char('r') if ctrl => editor.redo(),
@@ -1445,6 +1464,98 @@ plain
         assert_eq!(vim.editor.cursor_coords(), (0, 6));
         vim.press("/<cr>");
         assert_eq!(vim.editor.cursor_coords(), (0, 12));
+    }
+
+
+    #[test]
+    fn colon_opens_a_command_line_that_does_not_preview() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press(":3");
+        // A command waits to be accepted; only a search moves as you type.
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+        vim.press("<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (2, 0));
+    }
+
+    #[test]
+    fn set_changes_an_option_and_says_so_when_it_cannot() {
+        let mut vim = Vim::new("hello\n");
+        vim.press(":set relativenumber<cr>");
+        assert_eq!(vim.editor.numbers.name(), "relative");
+        vim.press(":set nonumber<cr>");
+        assert_eq!(vim.editor.numbers.name(), "off");
+        vim.press(":set notrim<cr>");
+        assert!(!vim.editor.trim_on_save);
+
+        vim.press(":set wibble<cr>");
+        assert_eq!(vim.editor.message, "not an option: wibble");
+    }
+
+    #[test]
+    fn an_unknown_command_says_so() {
+        let mut vim = Vim::new("hello\n");
+        vim.press(":frobnicate<cr>");
+        assert_eq!(vim.editor.message, "not a command: frobnicate");
+    }
+
+    #[test]
+    fn noh_stops_highlighting_without_losing_the_pattern() {
+        let mut vim = Vim::new("one two\n");
+        vim.press("/two<cr>");
+        assert!(vim.editor.search.highlight);
+        vim.press(":noh<cr>");
+        assert!(!vim.editor.search.highlight);
+        assert_eq!(vim.editor.search.pattern, "two");
+    }
+
+    #[test]
+    fn a_cancelled_command_leaves_everything_alone() {
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press(":set nonumber<esc>");
+        assert!(vim.editor.prompt.is_none());
+        assert_eq!(vim.editor.numbers.name(), "absolute");
+    }
+
+    #[test]
+    fn percent_jumps_between_matching_brackets() {
+        let mut vim = Vim::new("fn main() { let x = (1 + 2); }\n");
+        vim.press("10l");                       // onto the `{`
+        assert_eq!(vim.editor.cursor_coords(), (0, 10));
+        vim.press("%");
+        assert_eq!(vim.editor.cursor_coords(), (0, 29));
+        vim.press("%");
+        assert_eq!(vim.editor.cursor_coords(), (0, 10));
+
+        // The inner pair is matched from inside the outer one.
+        vim.press("10l");
+        assert_eq!(vim.editor.cursor_coords(), (0, 20));
+        vim.press("%");
+        assert_eq!(vim.editor.cursor_coords(), (0, 26));
+    }
+
+    #[test]
+    fn percent_nests() {
+        let mut vim = Vim::new("((()))\n");
+        vim.press("%");
+        assert_eq!(vim.editor.cursor_coords(), (0, 5));
+        // The next one in is a pair of its own, not the same one again.
+        vim.press("h%");
+        assert_eq!(vim.editor.cursor_coords(), (0, 1));
+    }
+
+    #[test]
+    fn percent_off_a_bracket_says_so() {
+        let mut vim = Vim::new("hello\n");
+        vim.press("%");
+        assert_eq!(vim.editor.message, "no bracket under the cursor");
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+    }
+
+    #[test]
+    fn percent_extends_a_visual_selection() {
+        let mut vim = Vim::new("(abc)\n");
+        vim.press("v%");
+        assert_eq!(vim.editor.selection_range(), Some((0, 5)));
     }
 
 }

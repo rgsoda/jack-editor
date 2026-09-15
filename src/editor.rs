@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -9,7 +9,7 @@ use crate::buffer::Document;
 use crate::keys::BINDINGS;
 use crate::picker::{Item, Outcome, Picker, Source};
 use crate::search::{self, Search};
-use crate::stream::{self, Message};
+use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
@@ -17,8 +17,16 @@ use crate::view::{Move, Selection, View};
 
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// `/` and `?`: a pattern, previewed as it is typed.
+    Search { backward: bool },
+    /// `:`: a command, run when it is accepted.
+    Command,
+}
+
 pub struct Prompt {
-    pub backward: bool,
+    pub kind: PromptKind,
     pub input: String,
     /// Where the cursor and viewport were when it opened, so cancelling can
     /// put them back after the incremental preview has moved them.
@@ -29,10 +37,19 @@ impl Prompt {
     /// The character the prompt starts with, which is also how you can tell
     /// which way the search is going.
     pub fn sigil(&self) -> char {
-        match self.backward {
-            true => '?',
-            false => '/',
+        match self.kind {
+            PromptKind::Search { backward: true } => '?',
+            PromptKind::Search { backward: false } => '/',
+            PromptKind::Command => ':',
         }
+    }
+
+    fn backward(&self) -> bool {
+        matches!(self.kind, PromptKind::Search { backward: true })
+    }
+
+    fn is_search(&self) -> bool {
+        matches!(self.kind, PromptKind::Search { .. })
     }
 }
 
@@ -128,6 +145,16 @@ pub struct Editor {
     pub registers: Registers,
     pub theme: Theme,
     pub numbers: Numbers,
+    /// Strip trailing whitespace when writing. On by default, and every save
+    /// says how many lines it touched, so it is never silent.
+    pub trim_on_save: bool,
+    /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
+    pub quit: Option<bool>,
+    /// Show git signs in the gutter.
+    pub signs_enabled: bool,
+    /// The diff we are waiting on: which request, and which view asked.
+    signs_token: u64,
+    signs_for: usize,
     /// Transient status-line text, cleared on the next keypress.
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
@@ -174,6 +201,11 @@ impl Editor {
             mode: Mode::default(),
             registers: Registers::default(),
             numbers: Numbers::default(),
+            trim_on_save: true,
+            quit: None,
+            signs_enabled: true,
+            signs_token: 0,
+            signs_for: 0,
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
@@ -194,9 +226,17 @@ impl Editor {
     // --- search -------------------------------------------------------
 
     pub fn open_search(&mut self, backward: bool) {
+        self.open_prompt(PromptKind::Search { backward });
+    }
+
+    pub fn open_command(&mut self) {
+        self.open_prompt(PromptKind::Command);
+    }
+
+    fn open_prompt(&mut self, kind: PromptKind) {
         let view = self.view();
         self.prompt = Some(Prompt {
-            backward,
+            kind,
             input: String::new(),
             origin: (view.sel.head, view.scroll_top),
         });
@@ -231,7 +271,10 @@ impl Editor {
             KeyCode::Char(c) if !ctrl => prompt.input.push(c),
             _ => return,
         }
-        self.preview_search();
+        // Only a search shows its answer as you type; a command waits.
+        if self.prompt.as_ref().is_some_and(Prompt::is_search) {
+            self.preview_search();
+        }
     }
 
     /// Show where the pattern typed so far would take you, without committing.
@@ -239,7 +282,7 @@ impl Editor {
         let Some(prompt) = self.prompt.as_ref() else {
             return;
         };
-        let (pattern, backward, origin) = (prompt.input.clone(), prompt.backward, prompt.origin);
+        let (pattern, backward, origin) = (prompt.input.clone(), prompt.backward(), prompt.origin);
 
         if let Err(err) = self.search.set_pattern(&pattern) {
             self.message = err;
@@ -261,23 +304,30 @@ impl Editor {
         let Some(prompt) = self.prompt.take() else {
             return;
         };
+        if prompt.kind == PromptKind::Command {
+            return self.run_command(&prompt.input.clone());
+        }
         if prompt.input.is_empty() {
             // A bare `/` repeats the last search, as vim does.
-            self.search.backward = prompt.backward;
-            self.search_again(prompt.backward, 1);
+            self.search.backward = prompt.backward();
+            self.search_again(prompt.backward(), 1);
             return;
         }
-        if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward).is_none() {
+        if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward()).is_none() {
             self.restore_origin(prompt.origin);
             self.message = format!("pattern not found: {}", prompt.input);
         }
     }
 
     fn cancel_prompt(&mut self) {
-        if let Some(prompt) = self.prompt.take() {
-            self.restore_origin(prompt.origin);
+        match self.prompt.take() {
+            // A cancelled search puts back what its preview moved.
+            Some(prompt) if prompt.is_search() => {
+                self.restore_origin(prompt.origin);
+                self.search.highlight = false;
+            }
+            _ => {}
         }
-        self.search.highlight = false;
         self.message.clear();
     }
 
@@ -341,6 +391,95 @@ impl Editor {
         self.search.highlight = true;
         self.search.backward = false;
         self.search_again(false, 1);
+    }
+
+    /// Run a `:` command. Unknown commands say so rather than doing nothing,
+    /// which is the difference between a typo and a missing feature.
+    pub fn run_command(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let (name, argument) = match line.split_once(char::is_whitespace) {
+            Some((name, rest)) => (name, rest.trim()),
+            None => (line, ""),
+        };
+        // `:42` goes to line 42, as it does everywhere.
+        if let Ok(number) = name.parse::<usize>() {
+            self.goto_line(number.saturating_sub(1));
+            self.clamp_cursor();
+            return;
+        }
+
+        let force = name.ends_with('!');
+        match (name.trim_end_matches('!'), argument) {
+            ("w" | "write", "") => self.write(None, force),
+            ("w" | "write", path) => self.write(Some(path.into()), force),
+            ("q" | "quit", _) => self.quit = Some(force),
+            ("wq" | "x", _) => {
+                self.write(None, force);
+                if self.message.starts_with("wrote") {
+                    self.quit = Some(force);
+                }
+            }
+            ("e" | "edit", "") => self.reload(force),
+            ("e" | "edit", path) => {
+                if let Err(err) = self.open_file(path) {
+                    self.message = format!("{err:#}");
+                }
+            }
+            ("set", option) => self.set_option(option),
+            ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
+            (other, _) => self.message = format!("not a command: {other}"),
+        }
+    }
+
+    fn set_option(&mut self, option: &str) {
+        match option {
+            "number" | "nu" => self.numbers = Numbers::Absolute,
+            "nonumber" | "nonu" => self.numbers = Numbers::Off,
+            "relativenumber" | "rnu" => self.numbers = Numbers::Relative,
+            "hybrid" => self.numbers = Numbers::Hybrid,
+            "trim" => self.trim_on_save = true,
+            "notrim" => self.trim_on_save = false,
+            "signs" => self.signs_enabled = true,
+            "nosigns" => {
+                self.signs_enabled = false;
+                self.view_mut().signs.clear();
+            }
+            "" => {
+                self.message = format!(
+                    "number={} trim={} signs={}",
+                    self.numbers.name(),
+                    self.trim_on_save,
+                    self.signs_enabled
+                );
+            }
+            other => self.message = format!("not an option: {other}"),
+        }
+    }
+
+    /// `%`: jump to the bracket matching the one under the cursor.
+    pub fn jump_to_matching_bracket(&mut self) {
+        let head = self.view().sel.head;
+        match self.view().matching_bracket(head) {
+            Some(at) => {
+                let extend = self.mode.is_visual();
+                let view = self.view_mut();
+                match extend {
+                    true => view.sel.head = at,
+                    false => view.sel = Selection::point(at),
+                }
+                self.clamp_cursor();
+            }
+            None => self.message = "no bracket under the cursor".into(),
+        }
+    }
+
+    /// The pair to paint: the bracket under the cursor and the one it matches.
+    pub fn bracket_pair(&self) -> Option<(usize, usize)> {
+        let head = self.view().sel.head;
+        self.view().matching_bracket(head).map(|other| (head, other))
     }
 
     /// `esc` in normal mode stops painting the matches.
@@ -588,6 +727,34 @@ impl Editor {
         self.height = height.max(1);
     }
 
+    /// Ask git how the current buffer differs from the last commit, but only
+    /// when something has actually changed since the last time we asked, and
+    /// never mid-keystroke while typing.
+    pub fn refresh_signs(&mut self) {
+        if !self.signs_enabled || self.mode == Mode::Insert {
+            return;
+        }
+        let revision = self.view().revision();
+        if self.view().signs_revision == Some(revision) {
+            return;
+        }
+        self.view_mut().signs_revision = Some(revision);
+
+        let (Some(path), Some(jobs)) = (self.view().doc.path.clone(), self.jobs.clone()) else {
+            return;
+        };
+        self.signs_token += 1;
+        self.signs_for = self.current;
+        let text = self.view().doc.text.to_string();
+        stream::spawn_git_diff(path, text, self.signs_token, jobs);
+    }
+
+    pub fn set_signs(&mut self, token: u64, signs: Vec<(usize, Sign)>) {
+        if token == self.signs_token {
+            self.views[self.signs_for].signs = signs.into_iter().collect();
+        }
+    }
+
     pub fn cycle_numbers(&mut self) {
         self.numbers = self.numbers.next();
         self.message = format!("line numbers: {}", self.numbers.name());
@@ -595,13 +762,18 @@ impl Editor {
 
     /// Columns the gutter takes. Sized from the whole buffer rather than what
     /// is on screen, so it does not twitch between 99 and 100 while scrolling.
+    /// One column for the git sign, if signs are on, then the numbers.
+    pub fn sign_width(&self) -> usize {
+        usize::from(self.signs_enabled)
+    }
+
     pub fn gutter_width(&self) -> usize {
-        if self.numbers == Numbers::Off {
-            return 0;
-        }
-        let digits = (self.view().doc.len_lines()).max(1).to_string().len();
-        // A space either side of the number.
-        digits.max(2) + 2
+        let numbers = match self.numbers {
+            Numbers::Off => 0,
+            // A space either side of the number.
+            _ => (self.view().doc.len_lines()).max(1).to_string().len().max(2) + 2,
+        };
+        self.sign_width() + numbers
     }
 
     /// What is left for text once the gutter has taken its columns.
@@ -776,11 +948,55 @@ impl Editor {
     }
 
     pub fn save(&mut self) {
+        self.write(None, false);
+    }
+
+    /// Write the buffer, optionally to a new path. `force` overrides the guard
+    /// against overwriting a file that has changed behind our back.
+    pub fn write(&mut self, path: Option<PathBuf>, force: bool) {
+        if let Some(path) = path {
+            self.view_mut().doc.set_path(path);
+        }
+        if !force && self.view().doc.changed_on_disk() {
+            self.message = format!(
+                "{} changed on disk - :w! to overwrite, :e! to reload",
+                self.view().doc.display_name()
+            );
+            return;
+        }
+
+        let trimmed = match self.trim_on_save {
+            true => self.view_mut().trim_trailing_whitespace(),
+            false => 0,
+        };
+        // The cursor may have been sitting in the spaces that just went.
+        self.clamp_cursor();
         let name = self.view().doc.display_name().to_string();
         match self.view_mut().save() {
-            Ok(()) => self.message = format!("wrote {name}"),
+            Ok(()) => {
+                self.message = match trimmed {
+                    0 => format!("wrote {name}"),
+                    1 => format!("wrote {name}, trimmed 1 line"),
+                    n => format!("wrote {name}, trimmed {n} lines"),
+                }
+            }
             Err(err) => self.message = format!("{err:#}"),
         }
+    }
+
+    /// `:e` with no argument: read the file again. Refuses to throw away
+    /// unsaved changes unless told twice.
+    pub fn reload(&mut self, force: bool) {
+        if !force && self.is_modified() {
+            self.message = "unsaved changes - :e! to reload anyway".into();
+            return;
+        }
+        let name = self.view().doc.display_name().to_string();
+        match self.view_mut().doc.reload() {
+            Ok(()) => self.message = format!("reloaded {name}"),
+            Err(err) => self.message = format!("{err:#}"),
+        }
+        self.clamp_cursor();
     }
 
     // --- commands that touch both a view and the registers -------------
@@ -1442,8 +1658,8 @@ mod tests {
 
     #[test]
     fn a_grep_hit_keeps_the_colons_in_the_matched_line() {
-        let item = grep_item("src/main.rs:7:use std::path::Path;".into());
-        assert_eq!(item.text, "use std::path::Path;");
+        let item = grep_item("src/main.rs:7:use std::path::{Path, PathBuf};".into());
+        assert_eq!(item.text, "use std::path::{Path, PathBuf};");
         assert_eq!(item.id, 7);
     }
 
@@ -1480,5 +1696,123 @@ mod tests {
         e.picker_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         e.job_failed(stale, "bad pattern: unclosed group".into());
         assert_eq!(e.message, "");
+    }
+
+    #[test]
+    fn writing_refuses_to_overwrite_a_file_that_changed_underneath() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "original\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_mode(Mode::Insert);
+        e.insert("mine ");
+        e.set_mode(Mode::Normal);
+
+        // Something else writes the file while we are editing it.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&path, "theirs\n").unwrap();
+
+        e.write(None, false);
+        assert!(e.message.contains("changed on disk"), "{}", e.message);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+
+        // Told twice, it writes.
+        e.write(None, true);
+        assert!(e.message.starts_with("wrote"), "{}", e.message);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine original\n");
+    }
+
+    #[test]
+    fn reloading_refuses_to_throw_away_unsaved_changes() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "original\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_mode(Mode::Insert);
+        e.insert("mine ");
+        e.set_mode(Mode::Normal);
+        std::fs::write(&path, "theirs\n").unwrap();
+
+        e.reload(false);
+        assert!(e.message.contains(":e! to reload"), "{}", e.message);
+        assert_eq!(e.view().doc.text.to_string(), "mine original\n");
+
+        e.reload(true);
+        assert_eq!(e.view().doc.text.to_string(), "theirs\n");
+        // And the file is no longer considered changed underneath us.
+        e.write(None, false);
+        assert!(e.message.starts_with("wrote"), "{}", e.message);
+    }
+
+    #[test]
+    fn saving_trims_trailing_whitespace_and_says_how_much() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "one   \ntwo\nthree\t\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+
+        e.save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\nthree\n");
+        assert!(e.message.contains("trimmed 2 lines"), "{}", e.message);
+
+        // One undo puts every trimmed line back.
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "one   \ntwo\nthree\t\n");
+    }
+
+    #[test]
+    fn trimming_can_be_turned_off() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "one   \n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.run_command("set notrim");
+        e.save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one   \n");
+        assert_eq!(e.message, "wrote one.txt");
+    }
+
+    #[test]
+    fn trimming_keeps_the_cursor_on_its_line() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "one   \ntwo   \nthree\n");
+        let mut e = Editor::open(&[path]).unwrap();
+        e.goto_line(1);
+        e.move_cursor(Move::LineEnd, false);
+        e.clamp_cursor();
+        assert_eq!(e.cursor_coords(), (1, 5));
+
+        e.save();
+        // It was sitting in the spaces that went, so it lands on the last
+        // character that is left - still on line 1.
+        assert_eq!(e.cursor_coords(), (1, 2));
+    }
+
+    #[test]
+    fn write_with_a_name_writes_somewhere_else() {
+        let dir = tempdir();
+        let path = write_file(&dir, "one.txt", "hello\n");
+        let other = dir.join("copy.txt");
+
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.run_command(&format!("w {}", other.to_string_lossy()));
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "hello\n");
+        // The buffer now belongs to the new path.
+        assert_eq!(e.view().doc.display_name(), "copy.txt");
+    }
+
+    #[test]
+    fn quit_commands_reach_the_run_loop() {
+        let mut e = Editor::scratch();
+        e.run_command("q");
+        assert_eq!(e.quit, Some(false));
+        e.quit = None;
+        e.run_command("q!");
+        assert_eq!(e.quit, Some(true));
+    }
+
+    #[test]
+    fn write_and_quit_does_not_quit_if_the_write_failed() {
+        let mut e = Editor::scratch();
+        // A scratch buffer has no file name to write to.
+        e.run_command("wq");
+        assert_eq!(e.quit, None);
+        assert!(e.message.contains("no file name"), "{}", e.message);
     }
 }

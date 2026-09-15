@@ -132,6 +132,12 @@ impl History {
         Some(tx)
     }
 
+    /// How many undo steps deep the document is. Cheap evidence that it has
+    /// changed since something else last looked.
+    pub fn depth(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn is_modified(&self) -> bool {
         self.saved_depth != Some(self.undo.len())
     }

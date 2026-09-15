@@ -1,5 +1,6 @@
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -10,6 +11,9 @@ use std::thread;
 pub enum Message {
     Key(KeyEvent),
     Resize,
+    /// How the current buffer differs from what git has, as one sign per
+    /// changed line. `token` identifies the view that asked.
+    Signs { token: u64, signs: Vec<(usize, Sign)> },
     /// A background job could not run - a search pattern that is not a valid
     /// regex, most often.
     Failed { token: u64, error: String },
@@ -24,6 +28,16 @@ pub enum Message {
         items: Vec<String>,
         done: bool,
     },
+}
+
+/// What happened to one line since the last commit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sign {
+    Added,
+    Modified,
+    /// Something was deleted *above* this line, which is the only way to show
+    /// a deletion in a gutter that has no row for it.
+    Deleted,
 }
 
 /// A search stops here. Past a few thousand hits the answer is "refine the
@@ -185,6 +199,84 @@ fn brief(text: &str) -> String {
         }
     }
     text.lines().next().unwrap_or(text).trim().to_string()
+}
+
+/// Diff a buffer against the version git has committed, off the main thread.
+/// Shells out to git rather than taking a git library: this needs one file's
+/// worth of bytes, and `git show` is the whole of the API for that.
+pub fn spawn_git_diff(path: PathBuf, text: String, token: u64, tx: Sender<Message>) {
+    thread::spawn(move || {
+        let Some(head) = git_show_head(&path) else {
+            // Not a repository, not tracked, or no commits yet: no signs, and
+            // nothing worth complaining about.
+            let _ = tx.send(Message::Signs { token, signs: Vec::new() });
+            return;
+        };
+        let _ = tx.send(Message::Signs { token, signs: diff_lines(&head, &text) });
+    });
+}
+
+fn git_show_head(path: &Path) -> Option<String> {
+    // A bare file name has an empty parent, which is not a directory git can
+    // be run in. `HEAD:./name` is then resolved relative to that directory,
+    // so this works from a subdirectory of the repository too.
+    let directory = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let name = path.file_name()?;
+    let output = Command::new("git")
+        .current_dir(directory)
+        .arg("show")
+        .arg(format!("HEAD:./{}", name.to_string_lossy()))
+        .output()
+        .ok()?;
+    match output.status.success() {
+        true => String::from_utf8(output.stdout).ok(),
+        false => None,
+    }
+}
+
+/// Line signs from a diff of `before` against `after`.
+fn diff_lines(before: &str, after: &str) -> Vec<(usize, Sign)> {
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines(before, after);
+    let mut signs = Vec::new();
+    // Deletions immediately followed by insertions are lines that changed
+    // rather than lines that came and went - but only as many of them as were
+    // deleted. Three lines replacing one is one modification and two additions.
+    let mut unmatched_deletes = 0usize;
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Delete => unmatched_deletes += 1,
+            ChangeTag::Insert => {
+                let line = change.new_index().unwrap_or(0);
+                let sign = match unmatched_deletes > 0 {
+                    true => {
+                        unmatched_deletes -= 1;
+                        Sign::Modified
+                    }
+                    false => Sign::Added,
+                };
+                signs.push((line, sign));
+            }
+            ChangeTag::Equal => {
+                if unmatched_deletes > 0 {
+                    // Lines went and nothing replaced them; mark where they were.
+                    let line = change.new_index().unwrap_or(0);
+                    signs.push((line, Sign::Deleted));
+                    unmatched_deletes = 0;
+                }
+            }
+        }
+    }
+    if unmatched_deletes > 0 {
+        let last = after.lines().count().saturating_sub(1);
+        signs.push((last, Sign::Deleted));
+    }
+    signs
 }
 
 #[cfg(test)]
@@ -354,6 +446,58 @@ mod tests {
         spawn_grep(dir.clone(), "FN".into(), 1, Arc::new(AtomicU64::new(1)), tx);
         let (items, _) = collect(&rx);
         assert_eq!(items, ["src/three.rs:1:FN THREE"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn a_diff_marks_added_modified_and_deleted_lines() {
+        let before = "one\ntwo\nthree\n";
+
+        // A line changed in place is modified, not added-and-deleted.
+        assert_eq!(diff_lines(before, "one\nTWO\nthree\n"), [(1, Sign::Modified)]);
+        // A new line is added.
+        assert_eq!(diff_lines(before, "one\ntwo\nextra\nthree\n"), [(2, Sign::Added)]);
+        // A line that went leaves a mark where it was.
+        assert_eq!(diff_lines(before, "one\nthree\n"), [(1, Sign::Deleted)]);
+        // Nothing changed, nothing marked.
+        assert_eq!(diff_lines(before, before), []);
+
+        // Two lines changed in a row are two modifications, not a
+        // modification and an addition.
+        assert_eq!(
+            diff_lines(before, "ONE\nTWO\nthree\n"),
+            [(0, Sign::Modified), (1, Sign::Modified)]
+        );
+        // More lines than were replaced: the extras are additions.
+        assert_eq!(
+            diff_lines(before, "one\nTWO\nEXTRA\nthree\n"),
+            [(1, Sign::Modified), (2, Sign::Added)]
+        );
+    }
+
+    #[test]
+    fn a_deletion_at_the_end_still_gets_a_mark() {
+        // The lines are gone, so the mark goes on the last line that is left -
+        // there is no row of its own to put it on.
+        let signs = diff_lines("one\ntwo\nthree\n", "one\n");
+        assert_eq!(signs, [(0, Sign::Deleted)]);
+    }
+
+    #[test]
+    fn a_file_git_does_not_know_about_gets_no_signs() {
+        let dir = std::env::temp_dir().join(format!("soda_edit_nogit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("loose.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+
+        let (tx, rx) = channels();
+        spawn_git_diff(path, "hello\nworld\n".into(), 1, tx);
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Message::Signs { signs, .. }) => assert!(signs.is_empty()),
+            _ => panic!("expected an empty set of signs"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
