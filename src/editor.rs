@@ -93,6 +93,16 @@ pub struct Dog {
     pub running: bool,
 }
 
+/// A case conversion that stays one character long. `ß` upper-cases to `SS`,
+/// which is two, and `~` would rather leave it alone than move every column
+/// after it.
+fn one(mut cased: impl Iterator<Item = char>) -> Option<char> {
+    match (cased.next(), cased.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Semicolon {
     /// Vim's: repeat the last find, with `,` reversing it.
@@ -264,6 +274,8 @@ pub struct Editor {
     /// terminal whose font has not been patched.
     pub glyphs: bool,
     /// Tint the row the cursor is on, the whole width of the screen.
+    /// What visual mode was last left with, for `gv` to bring back.
+    last_visual: Option<(Selection, Mode)>,
     pub cursorline: bool,
     /// The dog in the status line: whether to draw one, and what it is doing.
     pub show_dog: bool,
@@ -341,6 +353,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            last_visual: None,
             cursorline: true,
             show_dog: true,
             dog: Dog::default(),
@@ -1784,6 +1797,11 @@ impl Editor {
         // whatever was selected - either way the selection collapses onto the
         // cursor. Switching between `v` and `V` keeps it.
         if self.mode.is_visual() != mode.is_visual() {
+            // On the way out it is worth keeping: `gv` is the only way back to
+            // a selection, and whatever happens next usually destroys it.
+            if self.mode.is_visual() {
+                self.last_visual = Some((self.view().sel, self.mode));
+            }
             let head = self.view().sel.head;
             self.view_mut().sel = Selection::point(head);
         }
@@ -1948,6 +1966,131 @@ impl Editor {
     /// written to it - which is what a `"+y` has to notice.
     pub fn system_register(&self) -> RegisterValue {
         self.registers.get(Some(SYSTEM))
+    }
+
+    /// `J`: the next line pulled up onto this one with a single space where
+    /// the newline was. `J` and `2J` both join one newline - vim counts the
+    /// lines taking part, not the joins - and `3J` joins three lines into one.
+    pub fn join_lines(&mut self, count: usize) {
+        for _ in 0..count.max(2) - 1 {
+            if !self.join_once() {
+                self.message = "no line below to join".into();
+                break;
+            }
+        }
+    }
+
+    /// Every line of the selection onto one, which is `J` in visual mode.
+    pub fn join_visual(&mut self) {
+        // The lines the two ends are on, rather than the character range: in
+        // line mode the head sits at the start of the last line, and a range
+        // would stop one line short of it.
+        let sel = self.view().sel;
+        let doc = &self.view().doc;
+        let (first, last) = (doc.char_to_line(sel.anchor), doc.char_to_line(sel.head));
+        let (first, last) = (first.min(last), first.max(last));
+        self.set_mode(Mode::Normal);
+        self.goto_line(first);
+        // One join per newline inside the selection, and at least one, so `J`
+        // on a single line does what it does in normal mode.
+        self.join_lines(last.saturating_sub(first) + 1);
+    }
+
+    /// One join. False when there is no line below to join, which is where a
+    /// count runs out.
+    fn join_once(&mut self) -> bool {
+        let view = self.view_mut();
+        let (line, _) = view.cursor_coords();
+        if line >= view.last_line() {
+            return false;
+        }
+        let start = view.doc.line_to_char(line);
+        let text = view.doc.line_str(line);
+        let content = text.trim_end_matches('\n');
+        let at = start + content.chars().count();
+
+        let next = view.doc.line_str(line + 1);
+        let blank = next.chars().take_while(|c| matches!(c, ' ' | '\t')).count();
+        let end = view.doc.line_to_char(line + 1) + blank;
+        let rest = next.trim_start_matches([' ', '\t']);
+
+        // A space, except where vim does not add one: an empty line either
+        // side of the join, one that already ends in space, and a closing
+        // bracket, which wants to sit against what it closes.
+        let space = match content.is_empty()
+            || content.ends_with([' ', '\t'])
+            || rest.trim_end_matches('\n').is_empty()
+            || rest.starts_with(')')
+        {
+            true => "",
+            false => " ",
+        };
+        view.edit_at(at, end - at, space, Some(at));
+        true
+    }
+
+    /// `r`: the character under the cursor becomes another one, `count` of them
+    /// at once. False - and nothing changed - when the line is too short for
+    /// the count, as vim refuses rather than replacing what it can.
+    pub fn replace_char(&mut self, c: char, count: usize) -> bool {
+        let view = self.view_mut();
+        let at = view.sel.head;
+        let (line, column) = view.cursor_coords();
+        let room = view.doc.line_str(line).trim_end_matches('\n').chars().count();
+        if column + count > room {
+            return false;
+        }
+        let text: String = std::iter::repeat_n(c, count).collect();
+        // The cursor ends on the last character replaced, not past it.
+        view.edit_at(at, count, &text, Some(at + count - 1));
+        true
+    }
+
+    /// `~`: the case of the character under the cursor swapped, and on to the
+    /// next one. Characters whose case is more than one character long - `ß`
+    /// upper-cases to `SS` - are left alone rather than changing the length of
+    /// the line under a cursor that is counting columns.
+    pub fn toggle_case(&mut self, count: usize) {
+        let view = self.view_mut();
+        let at = view.sel.head;
+        let (line, column) = view.cursor_coords();
+        let text = view.doc.line_str(line);
+        let content = text.trim_end_matches('\n');
+        let room = content.chars().count().saturating_sub(column).min(count);
+        if room == 0 {
+            return;
+        }
+        let swapped: String = content
+            .chars()
+            .skip(column)
+            .take(room)
+            .map(|c| match (c.is_lowercase(), c.is_uppercase()) {
+                (true, _) => one(c.to_uppercase()).unwrap_or(c),
+                (_, true) => one(c.to_lowercase()).unwrap_or(c),
+                _ => c,
+            })
+            .collect();
+        // Vim leaves the cursor after the last character it changed, clamped
+        // back onto the line by normal mode.
+        view.edit_at(at, room, &swapped, Some(at + room));
+        self.clamp_cursor();
+    }
+
+    /// `gv`: the last visual selection, back again. Set when visual mode is
+    /// left, so it survives the editing that usually follows.
+    pub fn reselect(&mut self) {
+        let Some((sel, mode)) = self.last_visual else {
+            self.message = "no previous selection".into();
+            return;
+        };
+        let last = self.view().doc.len_chars();
+        // The buffer may be shorter than it was when the selection was made.
+        self.view_mut().sel = Selection {
+            anchor: sel.anchor.min(last),
+            head: sel.head.min(last),
+        };
+        self.mode = mode;
+        self.clamp_cursor();
     }
 
     /// Where the cursor is, in a form that can be compared before and after a

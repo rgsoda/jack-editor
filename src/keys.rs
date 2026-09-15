@@ -3,7 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::editor::{Editor, Mode};
 use crate::object;
 use crate::register::SYSTEM;
-use crate::view::{Find, Move};
+use crate::view::{Find, Move, Selection};
 
 /// One line of the help. These are written down rather than derived from the
 /// match arms below, so this is a promise the tests have to keep: every key
@@ -42,8 +42,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "a A", what: "insert after cursor, at line end", mode: "normal" },
     Binding { keys: "o O", what: "open a line below, above", mode: "normal" },
     Binding { keys: "x", what: "delete character", mode: "normal" },
+    Binding { keys: "r{c} ~", what: "replace the character, swap its case", mode: "normal" },
+    Binding { keys: "J", what: "join the line below onto this one", mode: "normal" },
     Binding { keys: "D C", what: "delete, change to line end", mode: "normal" },
     Binding { keys: "dd d{motion}", what: "delete lines, over a motion", mode: "normal" },
+    Binding { keys: "dG dgg d{n}G", what: "over lines, to the ends of the file", mode: "normal" },
     Binding { keys: "cc c{motion}", what: "change lines, over a motion", mode: "normal" },
     Binding { keys: "yy Y y{motion}", what: "yank lines, over a motion", mode: "normal" },
     Binding { keys: "p P", what: "put after, before the cursor", mode: "normal" },
@@ -61,6 +64,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "esc", what: "abandon a command, stop highlighting matches", mode: "normal" },
 
     Binding { keys: "v V", what: "select characters, whole lines", mode: "normal" },
+    Binding { keys: "gv", what: "select what was selected last", mode: "normal" },
     Binding { keys: "shift+arrows", what: "select, entering visual mode", mode: "normal" },
     Binding { keys: "gn gp", what: "next, previous buffer", mode: "normal" },
     Binding { keys: "{n}gn", what: "go to buffer n", mode: "normal" },
@@ -79,6 +83,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
     Binding { keys: "v V", what: "characters, lines, or back to normal", mode: "visual" },
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
+    Binding { keys: "J", what: "join the selected lines", mode: "visual" },
     Binding { keys: "c s", what: "delete it and start typing", mode: "visual" },
     Binding { keys: "y", what: "yank the selection", mode: "visual" },
     Binding { keys: "> <", what: "indent, dedent the lines ({n} steps)", mode: "visual" },
@@ -150,8 +155,12 @@ enum Pending {
     Dedent,
     /// `=`, which asks the grammar where the lines belong.
     Reindent,
-    /// The `g` prefix, waiting for `gg`.
-    Go,
+    /// The `g` prefix, waiting for `gg` and the rest. `operator` is the key of
+    /// the operator waiting for it - `dgg` deletes to the top of the file -
+    /// or `None` when the `g` command is the whole of it.
+    Go { operator: Option<char> },
+    /// `r`, waiting for the character to put there.
+    Replace,
     /// The space leader, waiting for which picker to open.
     Leader,
     /// The `"` prefix, waiting for the register name.
@@ -267,7 +276,8 @@ impl Keys {
             Some(Pending::Indent) => ">",
             Some(Pending::Dedent) => "<",
             Some(Pending::Reindent) => "=",
-            Some(Pending::Go) => "g",
+            Some(Pending::Go { .. }) => "g",
+            Some(Pending::Replace) => "r",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
             // Both are handled above, and neither is worth a panic in the
@@ -313,13 +323,33 @@ impl Keys {
 
         let count = self.count;
         match self.pending.take() {
-            Some(Pending::Go) => {
+            // `r` is the only command that takes a bare character, so this
+            // comes before anything that reads keys as commands.
+            Some(Pending::Replace) => {
+                if let KeyCode::Char(c) = key.code
+                    && !ctrl
+                    && !editor.replace_char(c, count.unwrap_or(1))
+                {
+                    editor.message = "not that many characters on the line".into();
+                }
+                self.finish();
+            }
+            // An operator waiting on `g` wants a line to work to, not a jump:
+            // `dgg` deletes from here to the top of the file.
+            Some(Pending::Go { operator: Some(operator) }) => {
+                if key.code == KeyCode::Char('g') {
+                    self.operate_lines(editor, operator, count.unwrap_or(1) - 1);
+                }
+                self.finish();
+            }
+            Some(Pending::Go { operator: None }) => {
                 match key.code {
                     KeyCode::Char('g') => {
                         editor.push_jump();
                         editor.goto_line(count.unwrap_or(1) - 1);
                         editor.clamp_cursor();
                     }
+                    KeyCode::Char('v') => editor.reselect(),
                     KeyCode::Char('d') => editor.goto_definition(true),
                     KeyCode::Char('D') => editor.goto_definition(false),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
@@ -376,6 +406,11 @@ impl Keys {
                     self.operate(editor, Some(operator_key(operator)));
                 }
                 self.finish();
+            }
+            // `g` after an operator is `gg`, which is a motion to a line
+            // rather than a jump: the operator waits for the second `g`.
+            Some(operator) if key.code == KeyCode::Char('g') && !ctrl => {
+                self.pending = Some(Pending::Go { operator: Some(operator_key(operator)) });
             }
             // `i` and `a` after an operator are not the insert commands: they
             // start a text object, and the operator waits for its name.
@@ -446,7 +481,7 @@ impl Keys {
             return;
         }
 
-        if self.pending.take() == Some(Pending::Go) {
+        if let Some(Pending::Go { .. }) = self.pending.take() {
             if key.code == KeyCode::Char('g') {
                 editor.goto_line_extending(count.unwrap_or(1) - 1);
             }
@@ -506,6 +541,7 @@ impl Keys {
                 editor.set_mode(Mode::Normal);
             }
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
+            KeyCode::Char('J') => editor.join_visual(),
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
                 editor.delete_visual(self.register)
@@ -540,7 +576,7 @@ impl Keys {
                 return;
             }
             KeyCode::Char('g') => {
-                self.pending = Some(Pending::Go);
+                self.pending = Some(Pending::Go { operator: None });
                 return;
             }
             KeyCode::Char('G') => {
@@ -629,6 +665,17 @@ impl Keys {
             KeyCode::Char('v') => editor.set_mode(Mode::Visual),
             KeyCode::Char('V') => editor.set_mode(Mode::VisualLine),
 
+            // `J` joins, `~` swaps case, `r` waits for the character to put
+            // where the cursor is. Small commands, all of them counted.
+            KeyCode::Char('J') => editor.join_lines(repeat),
+            KeyCode::Char('~') => editor.toggle_case(repeat),
+            // `^r` is redo, and lives further down: a chord is not the
+            // character `r` is waiting for.
+            KeyCode::Char('r') if !ctrl => {
+                self.pending = Some(Pending::Replace);
+                return;
+            }
+
             KeyCode::Char(':') => editor.open_command(),
             KeyCode::Char('/') => editor.open_search(false),
             KeyCode::Char('?') => editor.open_search(true),
@@ -654,7 +701,7 @@ impl Keys {
             KeyCode::Char('>') => self.pending = Some(Pending::Indent),
             KeyCode::Char('<') => self.pending = Some(Pending::Dedent),
             KeyCode::Char('=') => self.pending = Some(Pending::Reindent),
-            KeyCode::Char('g') => self.pending = Some(Pending::Go),
+            KeyCode::Char('g') => self.pending = Some(Pending::Go { operator: None }),
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
             _ if find_for(key.code, ctrl).is_some() => {
                 let (till, backward) = find_for(key.code, ctrl).expect("checked above");
@@ -716,6 +763,35 @@ impl Keys {
         }
     }
 
+    /// `dG`, `=gg`, `y5G`: an operator over whole lines, from the line the
+    /// cursor is on to another one. Linewise whichever way it runs, which is
+    /// what vim does with the motions that cross the file.
+    fn operate_lines(&mut self, editor: &mut Editor, operator: char, target: usize) {
+        let target = target.min(editor.last_line());
+        let (line, _) = editor.cursor_coords();
+        let (first, last) = (line.min(target), line.max(target));
+        let count = last - first + 1;
+        let at = editor.view().sel.head;
+        editor.goto_line(first);
+        match operator {
+            // A yank leaves the cursor where it was, unlike the rest: nothing
+            // was taken away for it to fall into.
+            'y' => {
+                editor.yank_lines(self.register, count);
+                editor.view_mut().sel = Selection::point(at);
+                editor.clamp_cursor();
+            }
+            'c' => {
+                editor.change_lines(self.register, count);
+                editor.set_mode(Mode::Insert);
+            }
+            '>' => editor.shift_count(true, count),
+            '<' => editor.shift_count(false, count),
+            '=' => editor.reindent_lines(first, last),
+            _ => editor.delete_lines(self.register, count),
+        }
+    }
+
     /// Hand a selection - a text object's, or a find's - to the operator that
     /// asked for it.
     fn operate(&mut self, editor: &mut Editor, operator: Option<char>) {
@@ -763,12 +839,22 @@ impl Keys {
                     let (line, _) = editor.view().cursor_coords();
                     editor.reindent_lines(line, line + count - 1);
                 }
-                Pending::Go
+                Pending::Go { .. }
+                | Pending::Replace
                 | Pending::Register
                 | Pending::Leader
                 | Pending::Find { .. }
                 | Pending::Object { .. } => {}
             }
+            return;
+        }
+
+        // `G` is a line, not a motion: `dG` deletes to the end of the file and
+        // `d5G` to line five, both linewise. The raw count is what tells them
+        // apart, so it is read here rather than taken as a repeat.
+        if key.code == KeyCode::Char('G') {
+            let target = self.count.map_or(editor.last_line(), |n| n - 1);
+            self.operate_lines(editor, operator_key(operator), target);
             return;
         }
 
@@ -1583,6 +1669,106 @@ mod tests {
         // goes the way the original `f` went.
         vim.press(";");
         assert_eq!(vim.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn j_joins_the_line_below_onto_this_one() {
+        let mut vim = Vim::new("one\n    two\nthree\nfour\n");
+        vim.press("J");
+        assert_eq!(vim.text(), "one two\nthree\nfour\n", "the indent goes with it");
+        // The count is the lines taking part, not the joins: `3J` makes one
+        // line out of three.
+        vim.press("3J");
+        assert_eq!(vim.text(), "one two three four\n");
+
+        // Nothing below to join, and it says so rather than eating the line.
+        let mut vim = Vim::new("only\n");
+        vim.press("J");
+        assert_eq!(vim.text(), "only\n");
+        assert!(!vim.editor.message.is_empty());
+
+        // A closing bracket sits against what it closes, and a line that
+        // already ends in a space does not get another.
+        let mut vim = Vim::new("call(a,\n    )\n");
+        vim.press("J");
+        assert_eq!(vim.text(), "call(a,)\n");
+    }
+
+    #[test]
+    fn visual_j_joins_everything_selected() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\n");
+        vim.press("Vjj");
+        vim.press("J");
+        assert_eq!(vim.text(), "one two three\nfour\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn r_replaces_characters_and_tilde_swaps_their_case() {
+        let mut vim = Vim::new("hello\n");
+        vim.press("rj");
+        assert_eq!(vim.text(), "jello\n");
+        vim.press("3rx");
+        assert_eq!(vim.text(), "xxxlo\n");
+        // The cursor sits on the last one replaced, so `~` carries on from
+        // there rather than from where the command started.
+        vim.press("~");
+        assert_eq!(vim.text(), "xxXlo\n");
+
+        // More than the line has left is refused outright, not done in part.
+        let mut vim = Vim::new("ab\n");
+        vim.press("5rz");
+        assert_eq!(vim.text(), "ab\n");
+        assert!(!vim.editor.message.is_empty());
+
+        // `~` takes a count too, and stops at the end of the line.
+        let mut vim = Vim::new("abc\n");
+        vim.press("9~");
+        assert_eq!(vim.text(), "ABC\n");
+    }
+
+    #[test]
+    fn gv_brings_back_the_last_selection() {
+        let mut vim = Vim::new("one two three\n");
+        vim.press("vee");
+        vim.press("<esc>");
+        vim.press("gv");
+        assert_eq!(vim.editor.mode, Mode::Visual);
+        vim.press("d");
+        assert_eq!(vim.text(), " three\n");
+
+        // Nothing selected yet says so rather than selecting something.
+        let mut vim = Vim::new("one\n");
+        vim.press("gv");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+        assert!(!vim.editor.message.is_empty());
+    }
+
+    #[test]
+    fn an_operator_reaches_the_ends_of_the_file() {
+        // `dG` and `dgg` are linewise, and take the line the cursor is on.
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\n");
+        vim.press("jdG");
+        assert_eq!(vim.text(), "one\n");
+
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\n");
+        vim.press("jjdgg");
+        assert_eq!(vim.text(), "four\n");
+
+        // A count is a line number for both of them.
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\n");
+        vim.press("d2G");
+        assert_eq!(vim.text(), "three\nfour\n");
+
+        // Every operator, not just `d`.
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press("yG");
+        assert_eq!(vim.editor.registers.get(None).text, "one\ntwo\nthree\n");
+        assert_eq!(vim.cursor(), (1, 1), "a yank leaves the cursor alone");
+
+        let mut vim = Vim::new("fn a() {\nlet x = 1;\n}\n");
+        vim.press("gg=G");
+        assert_eq!(vim.text(), "fn a() {\nlet x = 1;\n}\n", "no grammar, no change");
     }
 
     #[test]

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 30: nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 31: `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -82,7 +82,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `i` `I` `a` `A` | insert here / at first non-blank / after / at line end |
 | `o` `O` | open a line below / above |
 | `x` `D` `C` | delete character / to line end / change to line end |
+| `r{c}` `~` | replace the character under the cursor / swap its case |
+| `J` | join the line below onto this one (`{n}J` joins n lines) |
 | `dd` `d{motion}` | delete lines / over a motion |
+| `dG` `dgg` `d{n}G` | an operator over lines, to either end of the file |
 | `cc` `c{motion}` | change lines / over a motion |
 | `yy` `Y` `y{motion}` | yank lines / over a motion |
 | `p` `P` | put after / before the cursor |
@@ -90,6 +93,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `==` `={motion}` | re-indent: ask the grammar where the lines go |
 | `v` `V` | select characters / whole lines |
+| `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
 | `u` `^r` | undo / redo |
