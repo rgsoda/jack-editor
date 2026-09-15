@@ -619,6 +619,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "regex",
  "ropey",
  "serde",
  "streaming-iterator",

@@ -28,6 +28,17 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
     let number_style = editor.theme.style("ui.linenr");
     let current_style = editor.theme.style("ui.linenr.selected");
 
+    // Matches are painted only while a search is live, and only for the rows
+    // on screen - the pattern is run over the viewport, not the buffer.
+    let matches = match editor.search.highlight {
+        true => editor.search.matches_in_lines(
+            &editor.view().doc,
+            editor.view().scroll_top,
+            last_row,
+        ),
+        false => Vec::new(),
+    };
+
     let selection = editor.selection_range();
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
     let styling = LineStyling {
@@ -35,6 +46,8 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         selection: editor.theme.style("ui.selection"),
         scroll_left: editor.view().scroll_left,
         left: gutter,
+        matches: &matches,
+        match_style: editor.theme.style("ui.search.match"),
     };
 
     for row in 0..editor.height {
@@ -73,7 +86,15 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             None
         };
 
-        draw_line(surface, row, &text, editor.view().doc.line_to_byte(line), sel, &styling);
+        draw_line(
+            surface,
+            row,
+            &text,
+            editor.view().doc.line_to_byte(line),
+            line_start,
+            sel,
+            &styling,
+        );
     }
 
     if let Some(picker) = editor.picker.as_ref() {
@@ -175,6 +196,9 @@ struct LineStyling<'a> {
     scroll_left: usize,
     /// First column the text may use: the gutter's width.
     left: usize,
+    /// Search matches on screen, as absolute character ranges.
+    matches: &'a [(usize, usize)],
+    match_style: Style,
 }
 
 fn draw_line(
@@ -182,6 +206,7 @@ fn draw_line(
     row: usize,
     text: &str,
     line_byte: usize,
+    line_start: usize,
     sel: Option<(usize, usize)>,
     styling: &LineStyling,
 ) {
@@ -209,6 +234,10 @@ fn draw_line(
             .highlights
             .style_at(line_byte + byte_in_line)
             .unwrap_or_default();
+        let at = line_start + char_idx;
+        if styling.matches.iter().any(|&(s, e)| at >= s && at < e) {
+            style = style.patch(styling.match_style);
+        }
         if sel.is_some_and(|(s, e)| char_idx >= s && char_idx < e) {
             style = style.patch(styling.selection);
         }
@@ -231,6 +260,18 @@ fn draw_line(
 fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
     let (width, height) = surface.size();
     let row = height - 1;
+
+    // A prompt takes the whole status line, the way a command line does.
+    if let Some(prompt) = editor.prompt.as_ref() {
+        let style = editor.theme.style("ui.statusline");
+        let text = format!("{}{}", prompt.sigil(), prompt.input);
+        let mut x = put_str(surface, 0, row, &text, style, width);
+        while x < width {
+            surface.put(x, row, ' ', 1, style);
+            x += 1;
+        }
+        return;
+    }
 
     let mode = format!(" {} ", editor.mode.name());
     let mode_style = editor.theme.style(match editor.mode {

@@ -8,11 +8,33 @@ use std::sync::mpsc::Sender;
 use crate::buffer::Document;
 use crate::keys::BINDINGS;
 use crate::picker::{Item, Outcome, Picker, Source};
+use crate::search::{self, Search};
 use crate::stream::{self, Message};
 use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
 use crate::view::{Move, Selection, View};
+
+/// A line of text being typed into the status line. Only search uses it so
+/// far; `:` would be the second.
+pub struct Prompt {
+    pub backward: bool,
+    pub input: String,
+    /// Where the cursor and viewport were when it opened, so cancelling can
+    /// put them back after the incremental preview has moved them.
+    origin: (usize, usize),
+}
+
+impl Prompt {
+    /// The character the prompt starts with, which is also how you can tell
+    /// which way the search is going.
+    pub fn sigil(&self) -> char {
+        match self.backward {
+            true => '?',
+            false => '/',
+        }
+    }
+}
 
 /// What the gutter shows. Relative numbering is worth its cost when a count
 /// is how you aim a motion (`5j`), but it is a cost: every cursor move
@@ -110,6 +132,9 @@ pub struct Editor {
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
     pub picker: Option<Picker>,
+    /// The status-line prompt, when one is open. It owns the keyboard too.
+    pub prompt: Option<Prompt>,
+    pub search: Search,
     /// Identifies the open picker, so a background job that outlives it can be
     /// told from the one feeding the picker now.
     token: Arc<AtomicU64>,
@@ -152,6 +177,8 @@ impl Editor {
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
+            prompt: None,
+            search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
             jobs: None,
         }
@@ -162,6 +189,163 @@ impl Editor {
         if let Some(warning) = views[index].attach_syntax(theme) {
             *message = warning;
         }
+    }
+
+    // --- search -------------------------------------------------------
+
+    pub fn open_search(&mut self, backward: bool) {
+        let view = self.view();
+        self.prompt = Some(Prompt {
+            backward,
+            input: String::new(),
+            origin: (view.sel.head, view.scroll_top),
+        });
+    }
+
+    /// Route a key to the open prompt. Typing searches as you go, so the match
+    /// is on screen before you commit to it.
+    pub fn prompt_input(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(prompt) = self.prompt.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => return self.cancel_prompt(),
+            KeyCode::Char('c') if ctrl => return self.cancel_prompt(),
+            KeyCode::Enter => return self.accept_prompt(),
+            KeyCode::Backspace => {
+                // Backspacing the prompt empty cancels it, as in vim: there is
+                // nothing left to search for.
+                if prompt.input.pop().is_none() {
+                    return self.cancel_prompt();
+                }
+            }
+            KeyCode::Char('u') if ctrl => prompt.input.clear(),
+            KeyCode::Char('w') if ctrl => {
+                let end = prompt.input.trim_end_matches(|c: char| !c.is_alphanumeric());
+                let cut = end.rfind(|c: char| !c.is_alphanumeric()).map_or(0, |i| i + 1);
+                prompt.input.truncate(cut);
+            }
+            KeyCode::Char(c) if !ctrl => prompt.input.push(c),
+            _ => return,
+        }
+        self.preview_search();
+    }
+
+    /// Show where the pattern typed so far would take you, without committing.
+    fn preview_search(&mut self) {
+        let Some(prompt) = self.prompt.as_ref() else {
+            return;
+        };
+        let (pattern, backward, origin) = (prompt.input.clone(), prompt.backward, prompt.origin);
+
+        if let Err(err) = self.search.set_pattern(&pattern) {
+            self.message = err;
+            return;
+        }
+        self.message.clear();
+        self.search.highlight = true;
+        self.search.backward = backward;
+
+        // A half-typed pattern often matches nothing; that is not worth saying
+        // until enter is pressed, but the cursor should go back either way.
+        match self.search.find(&self.view().doc, origin.0, backward) {
+            Some(hit) => self.jump_to(hit.start),
+            None => self.restore_origin(origin),
+        }
+    }
+
+    fn accept_prompt(&mut self) {
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        if prompt.input.is_empty() {
+            // A bare `/` repeats the last search, as vim does.
+            self.search.backward = prompt.backward;
+            self.search_again(prompt.backward, 1);
+            return;
+        }
+        if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward).is_none() {
+            self.restore_origin(prompt.origin);
+            self.message = format!("pattern not found: {}", prompt.input);
+        }
+    }
+
+    fn cancel_prompt(&mut self) {
+        if let Some(prompt) = self.prompt.take() {
+            self.restore_origin(prompt.origin);
+        }
+        self.search.highlight = false;
+        self.message.clear();
+    }
+
+    fn restore_origin(&mut self, origin: (usize, usize)) {
+        let view = self.view_mut();
+        view.sel = Selection::point(origin.0);
+        view.scroll_top = origin.1;
+        self.clamp_cursor();
+    }
+
+    fn jump_to(&mut self, at: usize) {
+        self.view_mut().sel = Selection::point(at);
+        self.clamp_cursor();
+    }
+
+    /// `n` repeats the last search the way it was going; `N` turns it around.
+    pub fn search_repeat(&mut self, reverse: bool, count: usize) {
+        self.search_again(self.search.backward != reverse, count);
+    }
+
+    /// The next match from where the cursor is now.
+    pub fn search_again(&mut self, backward: bool, count: usize) {
+        if !self.search.is_set() {
+            self.message = "no previous search".into();
+            return;
+        }
+        self.search.highlight = true;
+
+        let mut wrapped = false;
+        for _ in 0..count {
+            let from = self.view().sel.head;
+            match self.search.find(&self.view().doc, from, backward) {
+                Some(hit) => {
+                    wrapped |= hit.wrapped;
+                    self.jump_to(hit.start);
+                }
+                None => {
+                    self.message = format!("pattern not found: {}", self.search.pattern);
+                    return;
+                }
+            }
+        }
+        if wrapped {
+            self.message = match backward {
+                true => "search hit top, continuing at bottom".into(),
+                false => "search hit bottom, continuing at top".into(),
+            };
+        }
+    }
+
+    /// `*`: search for the word the cursor is on.
+    pub fn search_word_under_cursor(&mut self) {
+        let Some(word) = self.view().word_under_cursor() else {
+            self.message = "no word under the cursor".into();
+            return;
+        };
+        if let Err(err) = self.search.set_pattern(&search::word_pattern(&word)) {
+            self.message = err;
+            return;
+        }
+        self.search.highlight = true;
+        self.search.backward = false;
+        self.search_again(false, 1);
+    }
+
+    /// `esc` in normal mode stops painting the matches.
+    pub fn clear_search_highlight(&mut self) {
+        self.search.highlight = false;
     }
 
     // --- picker -------------------------------------------------------
@@ -436,6 +620,10 @@ impl Editor {
     /// Where the terminal cursor goes. An open picker takes it: the user is
     /// typing a query, not editing text.
     pub fn cursor_screen(&self) -> (u16, u16) {
+        // A prompt puts the cursor on the status line, after what is typed.
+        if let Some(prompt) = self.prompt.as_ref() {
+            return (1 + prompt.input.chars().count() as u16, self.height as u16);
+        }
         match self.picker.as_ref() {
             Some(picker) => picker.cursor_screen(self.height),
             None => {

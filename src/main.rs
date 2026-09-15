@@ -5,6 +5,7 @@ mod keys;
 mod picker;
 mod register;
 mod screen;
+mod search;
 mod stream;
 mod syntax;
 mod theme;
@@ -90,7 +91,7 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
 
         // A block cursor in normal mode, a bar in insert, as the mode changes.
         // A bar while typing in the picker, otherwise the mode's cursor.
-        let wanted = match editor.picker.is_some() {
+        let wanted = match editor.picker.is_some() || editor.prompt.is_some() {
             true => Mode::Insert,
             false => editor.mode,
         };

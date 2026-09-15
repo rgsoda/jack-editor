@@ -459,6 +459,19 @@ impl View {
         self.sel = Selection::point(self.doc.line_to_char(line));
         self.move_cursor(Move::FirstNonBlank, false, 0);
     }
+    /// The word the cursor is on, if it is on one.
+    pub fn word_under_cursor(&self) -> Option<String> {
+        let (line, column) = self.cursor_coords();
+        let text = self.doc.line_str(line);
+        let chars: Vec<char> = text.chars().collect();
+        if column >= chars.len() || !is_word(chars[column]) {
+            return None;
+        }
+        let start = (0..column).rev().take_while(|&i| is_word(chars[i])).last().unwrap_or(column);
+        let end = (column..chars.len()).take_while(|&i| is_word(chars[i])).last().unwrap_or(column);
+        Some(chars[start..=end].iter().collect())
+    }
+
     pub fn is_modified(&self) -> bool {
         self.history.is_modified()
     }
@@ -527,6 +540,10 @@ impl View {
         // The cursor ends on the last character put, not after it.
         self.edit_at(at, 0, text, Some(at + len.saturating_sub(1)));
     }
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 pub fn char_width(ch: char, at: usize) -> usize {

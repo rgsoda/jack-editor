@@ -21,6 +21,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "w b e", what: "word forward, back, end", mode: "normal" },
     Binding { keys: "0 ^ $", what: "line start, first non-blank, line end", mode: "normal" },
     Binding { keys: "gg G", what: "first line, last line", mode: "normal" },
+    Binding { keys: "/ ?", what: "search forward, backward", mode: "normal" },
+    Binding { keys: "n N", what: "repeat the search, reverse it", mode: "normal" },
+    Binding { keys: "*", what: "search for the word under the cursor", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
     Binding { keys: "pgdn pgup", what: "page down, up", mode: "normal" },
@@ -37,7 +40,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
     Binding { keys: "u ^r", what: "undo, redo", mode: "normal" },
     Binding { keys: "{count}", what: "repeat the next command", mode: "normal" },
-    Binding { keys: "esc", what: "abandon a half-typed command", mode: "normal" },
+    Binding { keys: "esc", what: "abandon a command, stop highlighting matches", mode: "normal" },
 
     Binding { keys: "v V", what: "select characters, whole lines", mode: "normal" },
     Binding { keys: "shift+arrows", what: "select, entering visual mode", mode: "normal" },
@@ -64,6 +67,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "shift+arrows", what: "select while typing", mode: "insert" },
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
     Binding { keys: "enter", what: "split the line, keeping the indent", mode: "insert" },
+
+    Binding { keys: "enter esc", what: "accept, cancel the search", mode: "prompt" },
+    Binding { keys: "backspace ^w ^u", what: "delete a character, word, all", mode: "prompt" },
 
     Binding { keys: "any character", what: "narrow the list, or search", mode: "picker" },
     Binding { keys: "^n ^p tab arrows", what: "next, previous match", mode: "picker" },
@@ -106,9 +112,14 @@ impl Keys {
     pub fn handle(&mut self, editor: &mut Editor, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-        // An open picker owns the keyboard, including the chords below.
+        // An open picker or prompt owns the keyboard, including the chords
+        // below: `^s` while typing a pattern is an `s`, not a save.
         if editor.picker.is_some() {
             editor.picker_input(key);
+            return Action::Continue;
+        }
+        if editor.prompt.is_some() {
+            editor.prompt_input(key);
             return Action::Continue;
         }
 
@@ -159,6 +170,7 @@ impl Keys {
             self.count = None;
             self.pending = None;
             self.register = None;
+            editor.clear_search_highlight();
             return;
         }
 
@@ -395,6 +407,12 @@ impl Keys {
 
             KeyCode::Char('v') => editor.set_mode(Mode::Visual),
             KeyCode::Char('V') => editor.set_mode(Mode::VisualLine),
+
+            KeyCode::Char('/') => editor.open_search(false),
+            KeyCode::Char('?') => editor.open_search(true),
+            KeyCode::Char('n') => editor.search_repeat(false, repeat),
+            KeyCode::Char('N') => editor.search_repeat(true, repeat),
+            KeyCode::Char('*') => editor.search_word_under_cursor(),
 
             KeyCode::Char('u') => editor.undo(),
             KeyCode::Char('r') if ctrl => editor.redo(),
@@ -1291,6 +1309,142 @@ plain
             let did_something = vim.editor.picker.is_some() || vim.editor.numbers != numbers;
             assert!(did_something, "{} did nothing", binding.keys);
         }
+    }
+
+
+    #[test]
+    fn slash_opens_a_prompt_that_owns_the_keyboard() {
+        let mut vim = Vim::new("one two\n");
+        vim.press("/");
+        assert!(vim.editor.prompt.is_some());
+        // `d` here is a character of the pattern, not a delete.
+        vim.press("dd");
+        assert_eq!(vim.editor.prompt.as_ref().unwrap().input, "dd");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "one two\n");
+    }
+
+    #[test]
+    fn a_search_moves_the_cursor_to_the_match() {
+        let mut vim = Vim::new("one two three\n");
+        vim.press("/three<cr>");
+        assert!(vim.editor.prompt.is_none());
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+    }
+
+    #[test]
+    fn the_search_previews_as_it_is_typed() {
+        let mut vim = Vim::new("one two three\n");
+        vim.press("/thr");
+        // The cursor is already on the match before enter is pressed.
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+    }
+
+    #[test]
+    fn cancelling_a_search_puts_the_cursor_back() {
+        let mut vim = Vim::new("one two three\n");
+        vim.press("/three");
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+        vim.press("<esc>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+        assert!(!vim.editor.search.highlight);
+    }
+
+    #[test]
+    fn n_and_shift_n_walk_the_matches() {
+        let mut vim = Vim::new("x one x two x\n");
+        vim.press("/x<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 6));
+        vim.press("n");
+        assert_eq!(vim.editor.cursor_coords(), (0, 12));
+        vim.press("N");
+        assert_eq!(vim.editor.cursor_coords(), (0, 6));
+    }
+
+    #[test]
+    fn a_count_repeats_the_search() {
+        let mut vim = Vim::new("x a x b x c x\n");
+        vim.press("/x<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 4));
+        vim.press("2n");
+        assert_eq!(vim.editor.cursor_coords(), (0, 12));
+    }
+
+    #[test]
+    fn a_search_wraps_and_says_so() {
+        let mut vim = Vim::new("match\nnothing\n");
+        vim.press("/match<cr>");
+        vim.press("n");
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+        assert!(vim.editor.message.contains("continuing at top"), "{}", vim.editor.message);
+    }
+
+    #[test]
+    fn a_pattern_that_matches_nothing_says_so_and_stays_put() {
+        let mut vim = Vim::new("one two\n");
+        vim.press("llll");
+        vim.press("/zebra<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 4));
+        assert!(vim.editor.message.contains("not found"), "{}", vim.editor.message);
+    }
+
+    #[test]
+    fn star_searches_for_the_word_under_the_cursor() {
+        let mut vim = Vim::new("cat category cat\n");
+        vim.press("*");
+        // Past `category`, which is not the whole word.
+        assert_eq!(vim.editor.cursor_coords(), (0, 13));
+        assert_eq!(vim.editor.search.pattern, r"\bcat\b");
+    }
+
+    #[test]
+    fn a_backwards_search_goes_the_other_way() {
+        let mut vim = Vim::new("one two one\n");
+        vim.press("$");
+        vim.press("?one<cr>");
+        // The nearest match starting before the cursor, which is the one the
+        // cursor is sitting inside.
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+        vim.press("n");
+        // `n` keeps going the way the search was going.
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+        vim.press("N");
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+    }
+
+    #[test]
+    fn escape_in_normal_mode_stops_highlighting_matches() {
+        let mut vim = Vim::new("one two\n");
+        vim.press("/two<cr>");
+        assert!(vim.editor.search.highlight);
+        vim.press("<esc>");
+        assert!(!vim.editor.search.highlight);
+        // The pattern itself is remembered, so `n` still works.
+        vim.press("n");
+        assert!(vim.editor.search.highlight);
+    }
+
+    #[test]
+    fn n_without_a_search_says_so() {
+        let mut vim = Vim::new("one\n");
+        vim.press("n");
+        assert_eq!(vim.editor.message, "no previous search");
+    }
+
+    #[test]
+    fn backspacing_an_empty_pattern_cancels_the_search() {
+        let mut vim = Vim::new("one\n");
+        vim.press("/a<bs><bs>");
+        assert!(vim.editor.prompt.is_none());
+        assert_eq!(vim.editor.cursor_coords(), (0, 0));
+    }
+
+    #[test]
+    fn a_bare_slash_repeats_the_last_search() {
+        let mut vim = Vim::new("x one x two x\n");
+        vim.press("/x<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 6));
+        vim.press("/<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (0, 12));
     }
 
 }

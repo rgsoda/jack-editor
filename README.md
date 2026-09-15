@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 14: line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 15: in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -23,6 +23,9 @@ Starts in normal mode, like vim.
 | `w` `b` `e` | word forward / back / end |
 | `0` `^` `$` | line start / first non-blank / line end |
 | `gg` `G` `{n}G` | first line / last line / line n |
+| `/` `?` | search forward / backward |
+| `n` `N` | repeat the search / reverse it |
+| `*` | search for the word under the cursor |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>?` | every key, searchable |
@@ -40,7 +43,7 @@ Starts in normal mode, like vim.
 | `"x` before a command | use register `x` (`"X` appends) |
 | `u` `^r` | undo / redo |
 | `{count}` before a command | repeat it |
-| `esc` | abandon a half-typed command |
+| `esc` | abandon a half-typed command, stop highlighting matches |
 
 ### Picker
 
@@ -51,6 +54,15 @@ Starts in normal mode, like vim.
 | `enter` | choose |
 | `backspace` `^w` `^u` | delete a character / a word / the query |
 | `esc` `^c` | close |
+
+### Search prompt
+
+| | |
+|---|---|
+| any character | extend the pattern; the match is previewed as you type |
+| `enter` | keep the match |
+| `esc` | put the cursor and the scroll back |
+| `backspace` `^w` `^u` | delete a character / a word / the pattern |
 
 ### Visual mode
 
@@ -113,6 +125,9 @@ Starts in normal mode, like vim.
 - `stream.rs` — everything that arrives from elsewhere: terminal input on its
   own thread, and the background jobs - the directory walk and the search. All of it lands on
   one channel, so the run loop blocks in exactly one place.
+- `search.rs` — in-file search: compiling a pattern, finding the next match
+  from a position, and gathering the matches on a range of lines. It walks the
+  rope line by line, so nothing ever builds a copy of the buffer to search.
 - `picker.rs` — the picker: its items, the query, the fuzzy matcher, and what a
   keypress means while it is open. It knows nothing about what an item *is* -
   a `Source` says that, and the editor acts on the chosen item's id.
@@ -192,6 +207,35 @@ Relative repaints every number, because every number changed - a 10x increase
 on the cheapest frame there is. It is worth it if you aim motions with counts,
 which is why it is a mode and not the default. The test that measures this is
 in `ui.rs`, so the number cannot rot quietly.
+
+## Search
+
+`/` and `?` search, `n` repeats in the direction the search was going and `N`
+reverses it, and `*` searches for the word under the cursor. Patterns are
+regexes with the same smart case as the grep picker: all lower-case matches
+either case, a capital means it.
+
+The prompt takes over the status line and searches as you type, so the match is
+on screen before you commit to it. `esc` puts back both the cursor *and* the
+scroll position, which is what makes previewing free - without the scroll, a
+cancelled search leaves you looking at somewhere you did not choose to go.
+
+Matches stay highlighted until `esc` in normal mode, and the highlighting runs
+the pattern over the visible rows only, the same way syntax highlighting does.
+The pattern outlives the buffer it was typed in, so `n` keeps working after
+switching files.
+
+Two things this got wrong to begin with, both worth knowing:
+
+- `n` repeated forwards no matter which way the search went. The direction
+  belongs with the pattern, not with the key.
+- A buffer with exactly one match never reported wrapping, because "did we come
+  round the end" was `start < cursor` when it needed to be `start <= cursor` -
+  the one match you are already sitting on is still a wrap.
+
+Searching does not yet work from visual mode to extend a selection to a match,
+which is a real vim idiom: the prompt would have to know to extend rather than
+jump.
 
 ## Line numbers
 
