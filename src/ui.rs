@@ -763,7 +763,6 @@ mod tests {
     fn the_dog_sits_in_the_middle_and_runs_when_you_type() {
         let mut editor = editor_with_lines(10);
         let keys = Keys::default();
-        let row = editor.top() + editor.height;
         let middle = editor.width / 2;
 
         let sitting: Vec<char> = status_row(&editor, &keys).chars().collect();

@@ -677,6 +677,16 @@ impl Editor {
         let Some(dest) = self.find_target(find, count) else {
             return false;
         };
+        // A till that is already against its target covers nothing: `dtb` with
+        // the cursor on the `a` of `ab` is a motion that cannot move, and vim
+        // leaves the line alone rather than taking the character under the
+        // cursor with it. Failing here is what makes that a no-op - and stops
+        // `ctb` opening insert mode for a change that was never going to
+        // happen.
+        if find.till && dest == at {
+            self.message = format!("already before {}", find.target);
+            return false;
+        }
         let sel = &mut self.view_mut().sel;
         match find.backward {
             true => (sel.anchor, sel.head) = (dest, at),

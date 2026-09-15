@@ -1570,6 +1570,27 @@ mod tests {
     }
 
     #[test]
+    fn a_till_already_against_its_target_takes_nothing() {
+        // Vim's rule: `dtb` on the `a` of `ab` has nowhere to go, so it does
+        // nothing. Taking the character under the cursor instead would make
+        // pressing `dt,` twice eat the line a character at a time.
+        let mut vim = Vim::new("ab cd, efg\n");
+        vim.press("dtb");
+        assert_eq!(vim.text(), "ab cd, efg\n");
+
+        // The same find that does have somewhere to go still works, and doing
+        // it a second time is the no-op rather than a second bite.
+        vim.press("dt,");
+        assert_eq!(vim.text(), ", efg\n");
+        vim.press("dt,");
+        assert_eq!(vim.text(), ", efg\n");
+
+        // `c` must not open insert mode for a change it cannot make.
+        vim.press("ctb");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
     fn repeating_a_till_moves_on_rather_than_sticking() {
         // The classic `t` trap: the cursor is already beside the comma, so a
         // repeat that meant "the same one" would never move again.
