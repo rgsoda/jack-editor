@@ -27,6 +27,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "0 ^ $", what: "line start, first non-blank, line end", mode: "normal" },
     Binding { keys: "gg G", what: "first line, last line", mode: "normal" },
     Binding { keys: "/ ?", what: "search forward, backward", mode: "normal" },
+    Binding { keys: ";", what: "a command: w q e set noh, or a line number", mode: "normal" },
     Binding { keys: ":", what: "a command: w q e set noh, or a line number", mode: "normal" },
     Binding { keys: "n N", what: "repeat the search, reverse it", mode: "normal" },
     Binding { keys: "*", what: "search for the word under the cursor", mode: "normal" },

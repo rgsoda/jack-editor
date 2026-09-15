@@ -889,7 +889,7 @@ mod tests {
         let mut editor = editor_with_lines(10);
         editor.set_viewport(80, 20);
         let row = status_row(&editor, &Keys::default());
-        assert!(row.contains("NORMAL"), "{row}");
+        assert!(row.contains("ABNORMAL"), "{row}");
         assert!(row.contains("[scratch]"), "{row}");
         assert!(row.trim_end().ends_with('1'), "{row}");
     }

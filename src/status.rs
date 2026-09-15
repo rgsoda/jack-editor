@@ -249,7 +249,7 @@ mod tests {
         editor.view_mut().doc.text = ropey::Rope::from_str("one\ntwo\n");
         let status = build(&editor, &Keys::default());
 
-        assert_eq!(status.left[0].text, "NORMAL");
+        assert_eq!(status.left[0].text, "ABNORMAL");
         assert!(status.left[1].text.contains("[scratch]"), "{}", status.left[1].text);
         let position = &status.right.last().unwrap().text;
         assert!(position.ends_with("1"), "{position}");
