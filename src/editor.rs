@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
+use crate::command;
 use crate::complete::{self, Completion, Pick};
 use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
@@ -39,6 +40,18 @@ pub struct Prompt {
     /// Where the cursor and viewport were when it opened, so cancelling can
     /// put them back after the incremental preview has moved them.
     origin: (usize, usize),
+    /// What `tab` is cycling through, while it is being pressed. Dropped by
+    /// the next key that is not another `tab`, so the list on screen is always
+    /// the list for what is written.
+    pub completion: Option<Completing>,
+}
+
+/// A `:` completion being cycled: where in the input the replacement goes,
+/// what could go there, and which one is showing.
+pub struct Completing {
+    start: usize,
+    pub matches: Vec<String>,
+    pub selected: usize,
 }
 
 impl Prompt {
@@ -350,6 +363,7 @@ impl Editor {
             kind,
             input: String::new(),
             origin: (view.sel.head, view.scroll_top),
+            completion: None,
         });
     }
 
@@ -361,6 +375,13 @@ impl Editor {
         let Some(prompt) = self.prompt.as_mut() else {
             return;
         };
+
+        // `tab` cycles the completion; every other key ends the cycling,
+        // because what is offered has to be an answer to what is written.
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            return self.complete_command(key.code == KeyCode::Tab);
+        }
+        prompt.completion = None;
 
         match key.code {
             KeyCode::Esc => return self.cancel_prompt(),
@@ -386,6 +407,43 @@ impl Editor {
         if self.prompt.as_ref().is_some_and(Prompt::is_search) {
             self.preview_search();
         }
+    }
+
+    /// `tab` on the `:` line: offer what could finish the word being typed,
+    /// and cycle through the offers on every press after the first. Searching
+    /// has nothing to complete against, so `tab` there is a tab.
+    fn complete_command(&mut self, forward: bool) {
+        let Some(prompt) = self.prompt.as_mut() else {
+            return;
+        };
+        if prompt.kind != PromptKind::Command {
+            return;
+        }
+
+        match prompt.completion.as_mut() {
+            Some(completing) => {
+                let count = completing.matches.len();
+                completing.selected = match forward {
+                    true => (completing.selected + 1) % count,
+                    false => (completing.selected + count - 1) % count,
+                };
+            }
+            None => {
+                let (start, matches) = command::complete(&prompt.input);
+                if matches.is_empty() {
+                    return;
+                }
+                let selected = match forward {
+                    true => 0,
+                    false => matches.len() - 1,
+                };
+                prompt.completion = Some(Completing { start, matches, selected });
+            }
+        }
+
+        let completing = prompt.completion.as_ref().expect("just set");
+        prompt.input.truncate(completing.start);
+        prompt.input.push_str(&completing.matches[completing.selected]);
     }
 
     /// Show where the pattern typed so far would take you, without committing.
@@ -2227,6 +2285,123 @@ mod tests {
         assert_eq!(e.views().len(), 2);
         assert_eq!(e.current_index(), 0);
         assert_eq!(e.views()[0].doc.path.as_ref(), Some(&one));
+    }
+
+    /// A key with no modifiers, for driving a prompt.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn every_command_the_completion_offers_is_a_command() {
+        // The two lists have to agree: one is what `tab` offers, the other is
+        // what `:` runs.
+        for command in crate::command::COMMANDS {
+            let mut e = Editor::scratch();
+            e.run_command(command.name);
+            assert!(
+                !e.message.starts_with("not a command"),
+                "{}: {}",
+                command.name,
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn every_option_the_completion_offers_is_an_option() {
+        for option in crate::command::OPTIONS {
+            let mut e = Editor::scratch();
+            // The ones that take a value are offered with their `=` on.
+            let written = match option.ends_with('=') {
+                true => format!("set {option}4"),
+                false => format!("set {option}"),
+            };
+            e.run_command(&written);
+            assert!(
+                !e.message.starts_with("not an option"),
+                "{written}: {}",
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn tab_completes_the_command_line_and_cycles() {
+        let mut e = Editor::scratch();
+        e.open_command();
+        for c in "w".chars() {
+            e.prompt_input(key(KeyCode::Char(c)));
+        }
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "write");
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "wq");
+        // Round the end, and back the other way.
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "write");
+        e.prompt_input(key(KeyCode::BackTab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "wq");
+    }
+
+    #[test]
+    fn typing_after_a_completion_starts_a_new_one() {
+        let mut e = Editor::scratch();
+        e.open_command();
+        for c in "set auto".chars() {
+            e.prompt_input(key(KeyCode::Char(c)));
+        }
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "set autocomplete=");
+        // The list on screen has to be a list for what is written.
+        e.prompt_input(key(KeyCode::Char('3')));
+        assert!(e.prompt.as_ref().unwrap().completion.is_none());
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "set autocomplete=3");
+    }
+
+    #[test]
+    fn a_path_completes_from_the_directory_it_names() {
+        let dir = tempdir();
+        write_file(&dir, "alpha.txt", "a\n");
+        write_file(&dir, "beta.txt", "b\n");
+
+        let mut e = Editor::scratch();
+        e.open_command();
+        let typed = format!("edit {}/a", dir.display());
+        for c in typed.chars() {
+            e.prompt_input(key(KeyCode::Char(c)));
+        }
+        e.prompt_input(key(KeyCode::Tab));
+
+        // The directory already typed stays; only the last segment is
+        // replaced.
+        assert_eq!(
+            e.prompt.as_ref().unwrap().input,
+            format!("edit {}/alpha.txt", dir.display())
+        );
+    }
+
+    #[test]
+    fn a_search_has_nothing_to_complete() {
+        let mut e = Editor::scratch();
+        e.open_search(false);
+        e.prompt_input(key(KeyCode::Char('w')));
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "w");
+    }
+
+    #[test]
+    fn a_completed_command_still_runs() {
+        let mut e = Editor::scratch();
+        e.open_command();
+        for c in "set numb".chars() {
+            e.prompt_input(key(KeyCode::Char(c)));
+        }
+        e.prompt_input(key(KeyCode::Tab));
+        e.prompt_input(key(KeyCode::Enter));
+        assert!(e.prompt.is_none());
+        assert_eq!(e.numbers.name(), "absolute");
     }
 
     #[test]

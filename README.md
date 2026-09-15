@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 26: `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 27: command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -76,6 +76,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 
 | | |
 |---|---|
+| `tab` `shift-tab` | complete the command, the option, or the path |
 | `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
 | `:e path` `:e!` | open a file, reload this one from disk |
@@ -165,6 +166,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `jump.rs` — the jump list: the positions jumped away from, and where `^o` has
   walked back to in that history. Buffer, line and column; it never touches the
   text.
+- `command.rs` — what the `:` line knows about itself: the commands, the
+  options, and what `tab` should offer for a half-typed one. No state; the
+  commands are still run by `editor.rs`.
 - `object.rs` — text objects: a position and a shape (`Word`, `Quote`,
   `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
 - `status.rs` — the status line as a list of coloured `Segment`s, plus the two
@@ -315,6 +319,19 @@ jump.
 once search existed. It is also the answer to a question deferred twice: there
 is still no config file, but `:set` is now a real place for settings to live,
 and adding one is a line in `set_option` rather than a new subsystem.
+
+`tab` completes what is being typed and cycles through the offers, with the
+list drawn in the row above — vim's wildmenu, which is the part of `:` that
+makes it usable without remembering anything. What it offers depends on where
+you are in the line: the command names first, then the `:set` options and their
+values once `set` has been typed, then file names for `:e` and `:w`. Paths come
+from `read_dir` of the one directory being typed into rather than the picker's
+walk, because this is a path being written, not a file being looked for, and a
+`/` is left on directories so another `tab` goes on into them.
+
+The list of commands `tab` offers and the `match` that runs them are two lists
+that have to agree, so a test walks the first through the second and fails if a
+name in one is not a command in the other. The same for `:set` and its options.
 
 `:w` refuses to write a file that has changed on disk since it was read, and
 `:e` refuses to throw away unsaved changes. Both take `!` to mean "I know".

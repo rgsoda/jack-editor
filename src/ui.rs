@@ -1,6 +1,6 @@
 use unicode_width::UnicodeWidthChar;
 
-use crate::editor::Editor;
+use crate::editor::{Completing, Editor};
 use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
@@ -393,12 +393,54 @@ fn draw_line(
     }
 }
 
+/// What `tab` is offering on the `:` line, in the row above it, with the one
+/// it has put there highlighted. Vim calls this the wildmenu.
+fn draw_wildmenu(editor: &Editor, completing: &Completing, surface: &mut Surface, row: usize) {
+    let (width, _) = surface.size();
+    let base = editor.theme.style("ui.completion");
+    let selected = editor.theme.style("ui.completion.selected");
+    let glyphs = status::glyphs(editor);
+
+    // Scrolled from the left until the one showing fits on the row.
+    let item = |text: &String| str_width(text) + 2;
+    let mut first = 0;
+    while first < completing.selected
+        && completing.matches[first..=completing.selected].iter().map(item).sum::<usize>() > width
+    {
+        first += 1;
+    }
+
+    let mut x = 0;
+    if first > 0 {
+        x = put_str(surface, x, row, glyphs.truncated, base, width);
+    }
+    for (i, text) in completing.matches.iter().enumerate().skip(first) {
+        let style = match i == completing.selected {
+            true => selected,
+            false => base,
+        };
+        if x + item(text) > width {
+            break;
+        }
+        x = put_str(surface, x, row, &format!(" {text} "), style, width);
+    }
+    while x < width {
+        surface.put(x, row, ' ', 1, base);
+        x += 1;
+    }
+}
+
 fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
     let (width, height) = surface.size();
     let row = height - 1;
 
     // A prompt takes the whole status line, the way a command line does.
     if let Some(prompt) = editor.prompt.as_ref() {
+        if let Some(completing) = prompt.completion.as_ref()
+            && row > 0
+        {
+            draw_wildmenu(editor, completing, surface, row - 1);
+        }
         let style = editor.theme.style("ui.statusline");
         let text = format!("{}{}", prompt.sigil(), prompt.input);
         let mut x = put_str(surface, 0, row, &text, style, width);
