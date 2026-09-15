@@ -193,6 +193,23 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
     }))
 }
 
+/// What a tags query calls a definition, in the words a one-line list has room
+/// for. The names come from `tags.scm`, which every grammar spells the same
+/// way because they are all built for the same index.
+fn short_kind(kind: &str) -> &'static str {
+    match kind {
+        "function" => "fn",
+        "method" => "method",
+        "class" | "struct" | "type" => "type",
+        "interface" | "trait" => "trait",
+        "module" => "mod",
+        "macro" => "macro",
+        "constant" => "const",
+        "field" => "field",
+        _ => "def",
+    }
+}
+
 /// Whether a node's text is exactly `name`. Borrowed from the rope where it
 /// can be: a name is one line, but the query runs over the whole file.
 fn text_is(rope: &Rope, node: Node, name: &str) -> bool {
@@ -346,6 +363,49 @@ impl Syntax {
             true => self.local_definition(rope, at, name, 0..rope.len_bytes()),
             false => None,
         }
+    }
+
+    /// Everything the file defines, in the order it defines it: the name, what
+    /// kind of thing it is, and where it starts. The symbol picker's list.
+    ///
+    /// The same tags query `gd` reads, asked for all of it rather than for one
+    /// name. `@definition.function` and friends give the kind; the `@name`
+    /// capture gives the name and the place to jump to.
+    pub fn definitions(&self, rope: &Rope) -> Vec<(String, &'static str, usize)> {
+        let Some(query) = self.root.tags.as_ref() else {
+            return Vec::new();
+        };
+        let Some(capture_index) = self.root.name_capture else {
+            return Vec::new();
+        };
+        let names = query.capture_names();
+
+        let mut found = Vec::new();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, self.tree.root_node(), RopeProvider(rope));
+        while let Some(m) = matches.next() {
+            let captures = m.captures();
+            let Some(kind) = captures
+                .iter()
+                .find_map(|c| names[c.index as usize].strip_prefix("definition."))
+            else {
+                continue;
+            };
+            let Some(node) = captures.iter().find(|c| c.index == capture_index).map(|c| c.node)
+            else {
+                continue;
+            };
+            found.push((
+                rope.byte_slice(node.byte_range()).to_string(),
+                short_kind(kind),
+                node.start_byte(),
+            ));
+        }
+        // Query order is not file order, and a list of what a file holds is
+        // only readable in the order it holds it.
+        found.sort_by_key(|(_, _, start)| *start);
+        found.dedup_by_key(|(_, _, start)| *start);
+        found
     }
 
     /// The byte range of the top-level item holding `at` - the function,

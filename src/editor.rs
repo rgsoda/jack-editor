@@ -963,6 +963,30 @@ impl Editor {
         self.open_picker(Picker::new(Source::Buffers, items));
     }
 
+    /// `<space>d`: what this buffer defines, to jump to. The same tags query
+    /// `gd` reads, asked for the whole file - so a language we can highlight is
+    /// a language we can list.
+    pub fn open_symbol_picker(&mut self) {
+        let definitions = self.view().definitions();
+        if definitions.is_empty() {
+            self.message = match self.view().has_grammar() {
+                true => "nothing defined in this buffer".into(),
+                false => "no grammar for this file".into(),
+            };
+            return;
+        }
+        let items = definitions
+            .into_iter()
+            .map(|(name, kind, line)| Item {
+                text: name,
+                detail: format!("{kind}  {}", line + 1),
+                target: String::new(),
+                id: line,
+            })
+            .collect();
+        self.open_picker(Picker::new(Source::Symbols, items));
+    }
+
     /// Every key, searchable by the key or by what it does.
     pub fn open_help_picker(&mut self) {
         let width = BINDINGS.iter().map(|b| b.keys.chars().count()).max().unwrap_or(0);
@@ -1073,6 +1097,11 @@ impl Editor {
                     Source::Buffers => {
                         self.jumps.push(origin);
                         self.switch_to(choice.id);
+                    }
+                    Source::Symbols => {
+                        self.jumps.push(origin);
+                        self.goto_line(choice.id);
+                        self.clamp_cursor();
                     }
                     Source::Files => match self.open_file(&choice.target) {
                         Ok(()) => self.jumps.push(origin),
@@ -2540,6 +2569,68 @@ mod tests {
         assert!(e.picker.is_none());
         assert_eq!(e.current_index(), 1);
         assert_eq!(e.view().doc.text.to_string(), "two\n");
+    }
+
+    #[test]
+    fn the_symbol_picker_lists_what_the_buffer_defines() {
+        let dir = tempdir();
+        let path = write_file(
+            &dir,
+            "lib.rs",
+            "struct Bag;\n\nimpl Bag {\n    fn take(&self) {}\n}\n\nfn main() {\n    let x = 1;\n}\n",
+        );
+
+        let mut e = Editor::open(&[path]).unwrap();
+        e.open_symbol_picker();
+
+        let picker = e.picker.as_ref().unwrap();
+        let rows: Vec<(&str, &str)> = picker
+            .matches()
+            .iter()
+            .map(|m| {
+                let item = picker.item(m);
+                (item.text.as_str(), item.detail.as_str())
+            })
+            .collect();
+        // File order, not name order, and `let x` is a binding rather than a
+        // definition the file offers - it is not on the list.
+        assert_eq!(rows, [("Bag", "type  1"), ("take", "method  4"), ("main", "fn  7")]);
+    }
+
+    #[test]
+    fn choosing_a_symbol_jumps_to_it_and_remembers_where_you_were() {
+        let dir = tempdir();
+        let path = write_file(&dir, "lib.rs", "fn one() {}\n\nfn two() {}\n\nfn three() {}\n");
+
+        let mut e = Editor::open(&[path]).unwrap();
+        e.open_symbol_picker();
+        for c in "three".chars() {
+            e.picker_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        e.picker_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(e.picker.is_none());
+        assert_eq!(e.cursor_coords().0, 4);
+        // And `^o` goes back to the top, where the picker was opened from.
+        e.jump_back();
+        assert_eq!(e.cursor_coords().0, 0);
+    }
+
+    #[test]
+    fn the_symbol_picker_says_so_when_there_is_nothing_to_list() {
+        let dir = tempdir();
+        let empty = write_file(&dir, "empty.rs", "let it be\n");
+        let plain = write_file(&dir, "notes.txt", "fn not_really() {}\n");
+
+        let mut e = Editor::open(&[empty, plain]).unwrap();
+        e.open_symbol_picker();
+        assert!(e.picker.is_none());
+        assert_eq!(e.message, "nothing defined in this buffer");
+
+        e.next_view();
+        e.open_symbol_picker();
+        assert!(e.picker.is_none());
+        assert_eq!(e.message, "no grammar for this file");
     }
 
     #[test]

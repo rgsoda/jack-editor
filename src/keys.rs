@@ -65,6 +65,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>b", what: "pick a buffer", mode: "normal" },
     Binding { keys: "<space>f", what: "pick a file", mode: "normal" },
     Binding { keys: "<space>s", what: "grep the working directory", mode: "normal" },
+    Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
 
@@ -303,6 +304,7 @@ impl Keys {
                     KeyCode::Char('b') => editor.open_buffer_picker(),
                     KeyCode::Char('f') => editor.open_file_picker(),
                     KeyCode::Char('s') => editor.open_grep_picker(),
+                    KeyCode::Char('d') => editor.open_symbol_picker(),
                     KeyCode::Char('?') => editor.open_help_picker(),
                     KeyCode::Char('n') => editor.cycle_numbers(),
                     _ => {}
@@ -2094,7 +2096,11 @@ plain
             let mut vim = Vim::new("hello\n");
             let numbers = vim.editor.numbers;
             vim.press(&format!("<space>{key}"));
-            let did_something = vim.editor.picker.is_some() || vim.editor.numbers != numbers;
+            // A picker, a setting changed, or - for a key that has nothing to
+            // show in a scratch buffer - a word about why.
+            let did_something = vim.editor.picker.is_some()
+                || vim.editor.numbers != numbers
+                || !vim.editor.message.is_empty();
             assert!(did_something, "{} did nothing", binding.keys);
         }
     }
@@ -2559,6 +2565,28 @@ plain
 
         assert!(vim.editor.completion.is_none(), "nothing matches zzaphod");
         assert!(elapsed.as_millis() < 500, "typing took {elapsed:?}");
+    }
+
+    #[test]
+    fn listing_the_definitions_in_a_big_file_stays_cheap() {
+        // One tags query over the whole file, which is the whole cost of the
+        // symbol picker: it is gathered once when the list opens, and typing
+        // into it only filters what is already in hand.
+        let mut text = String::new();
+        let mut line = 0;
+        while text.len() < 800_000 {
+            text.push_str(&format!("fn render_{line}(count: usize) -> usize {{ count + 1 }}\n"));
+            line += 1;
+        }
+        let mut vim = Vim::rust(&text);
+
+        let start = std::time::Instant::now();
+        vim.press("<space>d");
+        let elapsed = start.elapsed();
+
+        let picker = vim.editor.picker.as_ref().expect("a picker");
+        assert_eq!(picker.matches().len(), line);
+        assert!(elapsed.as_millis() < 500, "listing took {elapsed:?}");
     }
 
     #[test]

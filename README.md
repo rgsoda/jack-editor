@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 27: command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 27: a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -42,6 +42,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
+| `<space>d` | pick a definition in this buffer |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `^d` `^u`, page up/down | scroll |
@@ -671,6 +672,32 @@ method with that name rather than the one for the receiver's type; and it looks
 at one file, not the project. Those are where a real index begins — and this is
 what is worth having before one.
 
+## The symbol picker
+
+`<space>d` lists what this buffer defines — functions, methods, types, traits,
+modules, macros, constants — and choosing one jumps to it. It is the picker
+already in the editor over one more source, so the fuzzy query, the preview and
+the scrolling all come for free, and `^o` comes back out of the jump.
+
+The list is the same `tags.scm` the second tier of `gd` reads, asked for the
+whole file rather than for one name. That means a language we can highlight is
+a language we can list, with no new query to write and no list to keep in step
+with the grammar. The kinds the query uses are shortened on the way past —
+`definition.function` is `fn`, `definition.interface` is `trait` — so the
+column on the right stays a column rather than a sentence.
+
+It reads in file order, not alphabetically. A list of names sorted by name is a
+directory; a list in the order you wrote them is the shape of the file, and the
+name you are looking for is usually near the one you came from. Matches are
+deduplicated by position, because a tags query can name the same definition
+twice.
+
+Opening it is one query over the whole tree — **under 50ms** on an 800KB file,
+measured in a test — and typing into it costs nothing more: the list is
+gathered once and the query only filters what is already in hand. A buffer with
+no grammar, or one that defines nothing, says so rather than opening an empty
+picker.
+
 ## The jump list
 
 `^o` goes back to where the last jump started, `^i` forward again. What counts
@@ -837,7 +864,7 @@ ones (`%`, `.`, `:`), nor the system clipboard.
 ## Picker
 
 One component, opened on a source: open buffers, files under the working
-directory, grep hits, and the keymap itself. The source builds the items and
+directory, grep hits, this buffer's definitions, and the keymap itself. The source builds the items and
 says what confirming one does; everything else — the query, the matching, the ranking,
 the scrolling, the keymap — is shared, so adding the file and grep pickers is
 adding a source, not another picker.
@@ -861,7 +888,7 @@ is still running. Walking stops at 100,000 files, and stops early if the picker
 it was feeding has closed. `.gitignore` and hidden files are honoured, which is
 the difference between listing a project and listing a disk.
 
-`<space>?` is the keymap as a fifth source, so the help is searchable by the
+`<space>?` is the keymap as another source, so the help is searchable by the
 key or by what it does - typing `yank` finds `y` and `yy`, typing `gn` finds the
 buffer keys. The bindings are a written table rather than something derived from
 the match arms, which makes it a promise: a test walks every leader key the help

@@ -170,6 +170,24 @@ impl View {
         }
     }
 
+    /// Whether there is a parser for this file at all.
+    pub fn has_grammar(&self) -> bool {
+        self.syntax.is_some()
+    }
+
+    /// Everything this buffer defines, as (name, kind, line). Empty without a
+    /// grammar, which is what the picker reports rather than pretending.
+    pub fn definitions(&self) -> Vec<(String, &'static str, usize)> {
+        match &self.syntax {
+            Some(syntax) => syntax
+                .definitions(&self.doc.text)
+                .into_iter()
+                .map(|(name, kind, byte)| (name, kind, self.doc.text.byte_to_line(byte)))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Where `name` is defined, as a char index: `gd` with `local`, `gD`
     /// without. Three tiers, and the last one needs no grammar at all - which
     /// is why `gd` does something sensible in a file we have no parser for.

@@ -13,6 +13,8 @@ pub enum Source {
     /// Lines matching a pattern, anywhere under the working directory.
     /// `target` is the path and `id` the line number.
     Grep,
+    /// What this buffer defines - functions, types, methods. `id` is the line.
+    Symbols,
 }
 
 impl Source {
@@ -22,6 +24,7 @@ impl Source {
             Source::Files => "file",
             Source::Help => "help",
             Source::Grep => "grep",
+            Source::Symbols => "symbol",
         }
     }
 
