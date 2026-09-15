@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Document;
 use crate::history::{Change, History, Transaction};
+use crate::search::Search;
 use crate::stream::Sign;
 use crate::syntax::{Highlights, Syntax, language_for_path};
 use crate::theme::Theme;
@@ -156,6 +157,55 @@ impl View {
             Some(syntax) => syntax.identifiers(&self.doc.text, range),
             None => Vec::new(),
         }
+    }
+
+    /// Where `name` is defined, as a char index: `gd` with `local`, `gD`
+    /// without. Three tiers, and the last one needs no grammar at all - which
+    /// is why `gd` does something sensible in a file we have no parser for.
+    pub fn definition(&self, name: &str, at: usize, local: bool) -> Option<usize> {
+        if let Some(syntax) = &self.syntax {
+            let byte = self.doc.text.char_to_byte(at);
+            if let Some(found) = syntax.definition(&self.doc.text, byte, name, local) {
+                return Some(self.doc.text.byte_to_char(found));
+            }
+        }
+        self.word_before(name, at)
+    }
+
+    /// Vim's own `gd`, near enough: the nearest earlier occurrence of the
+    /// word, or the first one in the file when there is nothing above. Its own
+    /// `Search` rather than the editor's, because finding a definition should
+    /// not change what `n` repeats.
+    fn word_before(&self, name: &str, at: usize) -> Option<usize> {
+        let mut search = Search::default();
+        search.set_pattern(&crate::search::word_pattern(name)).ok()?;
+        // The word under the cursor is not its own definition, and with no
+        // grammar to say otherwise it is the only thing we can rule out.
+        let here = self.word_range(at);
+
+        let hit = search.find(&self.doc, at, true)?;
+        if !hit.wrapped && !here.contains(&hit.start) {
+            return Some(hit.start);
+        }
+        // Nothing above the cursor: the first occurrence in the file will do.
+        // Searching on from the end wraps to it, which a search from zero
+        // would step over.
+        let first = search.find(&self.doc, self.doc.len_chars(), false)?;
+        (!here.contains(&first.start)).then_some(first.start)
+    }
+
+    /// The char range of the word `at` sits in, empty when it is not in one.
+    fn word_range(&self, at: usize) -> Range<usize> {
+        let text = &self.doc.text;
+        let mut start = at;
+        while start > 0 && is_word(text.char(start - 1)) {
+            start -= 1;
+        }
+        let mut end = at;
+        while end < text.len_chars() && is_word(text.char(end)) {
+            end += 1;
+        }
+        start..end
     }
 
     /// Whether the cursor is somewhere completion should keep quiet. False

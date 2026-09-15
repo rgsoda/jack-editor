@@ -531,6 +531,26 @@ impl Editor {
         self.search_again(false, 1);
     }
 
+    /// `gd`: the definition of the word under the cursor, and `gD` for the
+    /// file's own rather than a binding in scope. A jump, so `^o` comes back.
+    pub fn goto_definition(&mut self, local: bool) {
+        let Some(word) = self.view().word_under_cursor() else {
+            self.message = "no word under the cursor".into();
+            return;
+        };
+        let at = self.view().sel.head;
+        let Some(found) = self.view().definition(&word, at, local) else {
+            self.message = format!("no definition of {word}");
+            return;
+        };
+        if found == at {
+            self.message = format!("{word} is defined here");
+            return;
+        }
+        self.push_jump();
+        self.jump_to(found);
+    }
+
     /// Run a `:` command. Unknown commands say so rather than doing nothing,
     /// which is the difference between a typo and a missing feature.
     /// Run `~/.config/soda_edit/init`: one command per line, written as it

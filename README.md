@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 24: a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 25: go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -27,6 +27,7 @@ Starts in normal mode, like vim.
 | `n` `N` | repeat the search / reverse it |
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
+| `gd` `gD` | go to the definition: in scope / in the file |
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
@@ -170,7 +171,10 @@ Starts in normal mode, like vim.
   each applied edit and reparses incrementally, and runs the highlight query
   over the visible byte range only. Injected regions (a macro body, code in a
   doc comment) are parsed on demand for the viewport and painted over their
-  host. Adding a language is one entry in `LANGUAGES`.
+  host. It also answers the questions the editor asks of the tree rather than
+  of the text: what this line's indent should be, what the names in a range
+  are, and where a name is defined. Adding a language is one entry in
+  `LANGUAGES`.
 - `screen.rs` — a double-buffered cell grid. A frame is drawn onto the back
   `Surface`, diffed against what the terminal already shows, and only the
   differing cells are sent. Wide characters are repainted as a unit.
@@ -572,6 +576,43 @@ and it looks at one buffer, not the project. Those want a language server, which
 is a different piece of machinery — this is the tier that is worth having before
 one.
 
+## Go to definition
+
+`gd` on a name goes to where it is defined, and `^o` comes back. Three tiers,
+and it stops at the first that answers:
+
+- **A binding in scope.** `let`, parameters, closure parameters, `for` and
+  `match` patterns, read from a locals query. The innermost scope holding the
+  cursor is tried first and then outwards, so a shadowed name resolves to the
+  shadow and a `let` beats a parameter of the same name. JavaScript's grammar
+  crate ships a locals query; Rust's does not, so ours is in
+  `queries/rust/locals.scm` next to the indent query.
+- **What the file defines.** Functions, types, traits, methods, modules and
+  macros, from the `tags.scm` that every grammar crate already carries for
+  `ctags`-style indexes. Nearest to the cursor wins, so a method in the `impl`
+  you are reading beats one of the same name further off. A tags query names
+  call sites as well as definitions, so a match only counts when it carries a
+  `@definition.*` capture — without that check `gd` lands on the call you
+  pressed it over.
+- **The word, searched backwards.** Vim's own `gd`, near enough, and it needs
+  no grammar at all: the nearest earlier occurrence, or the first in the file
+  when there is nothing above. It uses its own `Search`, so finding a
+  definition never changes what `n` repeats.
+
+`gD` skips the first tier, which is how you get past a local that is shadowing
+the function you meant.
+
+The two tiers cost very different amounts, and the difference is not an
+accident. A binding can only be in scope from inside the item that holds it, so
+that query reads the enclosing function and not the file: **25µs**. A function
+could be defined anywhere, so that one reads the whole tree: **45ms** on an
+800KB file, a few milliseconds on a normal one. Both are measured in a test.
+
+What this is not: it does not know types, so `gd` on a method call finds a
+method with that name rather than the one for the receiver's type; and it looks
+at one file, not the project. Those are where a real index begins — and this is
+what is worth having before one.
+
 ## The jump list
 
 `^o` goes back to where the last jump started, `^i` forward again. What counts
@@ -794,10 +835,11 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- `gd`: the declaration of the word under the cursor. The locals tier wants a
-  hand-written `locals.scm` for Rust (JavaScript's grammar ships one), and the
-  items tier is the `tags.scm` every grammar crate already carries. Now that
-  the jump list is here, `^o` is the way back.
+- `f` and `t`: find a character on the line, which `gd`'s tests wanted and
+  which nothing else in the keymap replaces.
+- `gd` across files, which means indexing the project: walk, parse, run the
+  tags query per file, cache it. That is where this turns into a language
+  server, and vim's `gd` does not do it either.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

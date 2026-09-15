@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use ropey::Rope;
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
@@ -29,6 +29,13 @@ pub struct LanguageConfig {
     /// Written here rather than shipped by the grammar crates, which have no
     /// indent queries: what indents, and what comes back out.
     indents: &'static str,
+    /// Where names are bound and how far the bindings reach, for `gd`. Some
+    /// grammars ship one; Rust's does not, so ours is in `queries/`.
+    locals: &'static str,
+    /// The definitions a file makes - functions, types, methods. Every grammar
+    /// crate ships this one, for `ctags`-style indexes; `gd` wants the same
+    /// thing.
+    tags: &'static str,
 }
 
 fn rust_language() -> Language {
@@ -53,6 +60,8 @@ static LANGUAGES: &[LanguageConfig] = &[
         highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
         injections: tree_sitter_rust::INJECTIONS_QUERY,
         indents: include_str!("../queries/rust/indents.scm"),
+        locals: include_str!("../queries/rust/locals.scm"),
+        tags: tree_sitter_rust::TAGS_QUERY,
     },
     LanguageConfig {
         name: "html",
@@ -61,6 +70,10 @@ static LANGUAGES: &[LanguageConfig] = &[
         highlights: tree_sitter_html::HIGHLIGHTS_QUERY,
         injections: tree_sitter_html::INJECTIONS_QUERY,
         indents: include_str!("../queries/html/indents.scm"),
+        // A markup language binds no names and defines nothing: `gd` falls
+        // back to looking for the word.
+        locals: "",
+        tags: "",
     },
     LanguageConfig {
         name: "javascript",
@@ -69,6 +82,8 @@ static LANGUAGES: &[LanguageConfig] = &[
         highlights: tree_sitter_javascript::HIGHLIGHT_QUERY,
         injections: tree_sitter_javascript::INJECTIONS_QUERY,
         indents: include_str!("../queries/javascript/indents.scm"),
+        locals: tree_sitter_javascript::LOCALS_QUERY,
+        tags: tree_sitter_javascript::TAGS_QUERY,
     },
 ];
 
@@ -88,6 +103,8 @@ struct Compiled {
     highlights: Query,
     injections: Option<Query>,
     indents: Option<Query>,
+    locals: Option<Query>,
+    tags: Option<Query>,
     /// Highlight capture index to style, resolved against the theme up front.
     capture_styles: Vec<Option<Style>>,
     /// Indices of the `@injection.content` and `@injection.language` captures.
@@ -96,6 +113,11 @@ struct Compiled {
     /// Indices of the `@indent` and `@outdent` captures.
     indent_capture: Option<u32>,
     outdent_capture: Option<u32>,
+    /// Indices of the `@local.scope` and `@local.definition` captures, and of
+    /// the tags query's `@name`.
+    scope_capture: Option<u32>,
+    definition_capture: Option<u32>,
+    name_capture: Option<u32>,
 }
 
 fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
@@ -136,17 +158,52 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
         None => (None, None),
     };
 
+    let compile_query = |source: &'static str, what: &str| -> Result<Option<Query>> {
+        match source.trim().is_empty() {
+            true => Ok(None),
+            false => Ok(Some(
+                Query::new(&language, source)
+                    .with_context(|| format!("compiling {} {what} query", config.name))?,
+            )),
+        }
+    };
+    let locals = compile_query(config.locals, "locals")?;
+    let tags = compile_query(config.tags, "tags")?;
+    let (scope_capture, definition_capture) = match &locals {
+        Some(query) => (capture(query, "local.scope"), capture(query, "local.definition")),
+        None => (None, None),
+    };
+    let name_capture = tags.as_ref().and_then(|query| capture(query, "name"));
+
     Ok(Rc::new(Compiled {
         language,
         highlights,
         injections,
         indents,
+        locals,
+        tags,
         capture_styles,
         content_capture,
         language_capture,
         indent_capture,
         outdent_capture,
+        scope_capture,
+        definition_capture,
+        name_capture,
     }))
+}
+
+/// Whether a node's text is exactly `name`. Borrowed from the rope where it
+/// can be: a name is one line, but the query runs over the whole file.
+fn text_is(rope: &Rope, node: Node, name: &str) -> bool {
+    let slice = rope.byte_slice(node.byte_range());
+    if slice.len_bytes() != name.len() {
+        return false;
+    }
+    match slice.as_str() {
+        Some(text) => text == name,
+        None => slice == name,
+    }
 }
 
 /// What a highlight capture says the thing it named is, in the words the
@@ -256,6 +313,180 @@ impl Syntax {
             found.push((capture.node.byte_range(), kind));
         }
         found
+    }
+
+    /// Where `name` is defined, as a byte offset, read from the cursor at
+    /// `at`. `local` is `gd`, which looks for a binding in scope before it
+    /// looks at what the file defines; `gD` skips straight to the second.
+    ///
+    /// Two tiers, and neither of them is a language server: the first knows
+    /// about `let`, parameters and match arms, the second about functions,
+    /// types and methods. Neither looks at another file, and neither knows
+    /// about types - `gd` on a method call finds a method with that name, not
+    /// the one for the receiver's type. That is where a real index begins, and
+    /// this is what is worth having before one.
+    pub fn definition(&self, rope: &Rope, at: usize, name: &str, local: bool) -> Option<usize> {
+        // A binding can only be in scope from inside the item that holds it,
+        // so the first tier reads that item and not the file. It is what makes
+        // `gd` on a local instant in a file where reading the whole tree is
+        // tens of milliseconds.
+        if local
+            && let Some(item) = self.enclosing_item(at)
+            && let Some(found) = self.local_definition(rope, at, name, item)
+        {
+            return Some(found);
+        }
+        if let Some(found) = self.tagged_definition(rope, at, name) {
+            return Some(found);
+        }
+        // Left over: a binding at the top level of the file, which is to say a
+        // `const` or a `static`. No tags query names those, and they are the
+        // one kind of binding the first tier cannot have seen.
+        match local {
+            true => self.local_definition(rope, at, name, 0..rope.len_bytes()),
+            false => None,
+        }
+    }
+
+    /// The byte range of the top-level item holding `at` - the function,
+    /// `impl` or `mod` that a binding in scope has to be inside.
+    fn enclosing_item(&self, at: usize) -> Option<Range<usize>> {
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(at, end)?;
+        while let Some(parent) = node.parent() {
+            if parent.id() == root.id() {
+                return Some(node.byte_range());
+            }
+            node = parent;
+        }
+        None
+    }
+
+    /// A binding of `name` in scope at `at`: the innermost one wins, which is
+    /// what makes a shadowed name resolve to the shadow and a parameter lose
+    /// to a `let` of the same name further in.
+    fn local_definition(
+        &self,
+        rope: &Rope,
+        at: usize,
+        name: &str,
+        range: Range<usize>,
+    ) -> Option<usize> {
+        let query = self.root.locals.as_ref()?;
+        let (scope, definition) = (self.root.scope_capture?, self.root.definition_capture?);
+
+        let mut scopes: HashSet<usize> = HashSet::new();
+        let mut found: Vec<(usize, usize)> = Vec::new();
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(range);
+        let mut matches = cursor.captures(query, self.tree.root_node(), RopeProvider(rope));
+        while let Some((m, index)) = matches.next() {
+            let capture = m.captures()[*index];
+            if capture.index == scope {
+                scopes.insert(capture.node.id());
+            } else if capture.index == definition && text_is(rope, capture.node, name) {
+                found.push((capture.node.id(), capture.node.start_byte()));
+            }
+        }
+        if found.is_empty() {
+            return None;
+        }
+
+        // The scopes around the cursor, innermost first. The file itself is
+        // the last of them, for grammars whose locals query does not name the
+        // root - JavaScript's does not.
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut chain: Vec<usize> = Vec::new();
+        let mut node = root.descendant_for_byte_range(at, end);
+        while let Some(current) = node {
+            if scopes.contains(&current.id()) {
+                chain.push(current.id());
+            }
+            node = current.parent();
+        }
+        chain.push(root.id());
+
+        for scope in chain {
+            let mut best: Option<usize> = None;
+            for &(id, start) in &found {
+                if self.scope_of(id, start, &scopes) != Some(scope) {
+                    continue;
+                }
+                // The last binding before the cursor, because a rebinding
+                // shadows the one above it. A binding *after* the cursor only
+                // counts when there is none before - `gd` on a name used above
+                // its `let` should still find it.
+                let better = match best {
+                    None => true,
+                    Some(current) => match (current < at, start < at) {
+                        (true, true) => start > current,
+                        (false, false) => start < current,
+                        (had, _) => !had,
+                    },
+                };
+                if better {
+                    best = Some(start);
+                }
+            }
+            if best.is_some() {
+                return best;
+            }
+        }
+        None
+    }
+
+    /// Which scope a binding belongs to: the nearest one above it.
+    fn scope_of(&self, id: usize, start: usize, scopes: &HashSet<usize>) -> Option<usize> {
+        let root = self.tree.root_node();
+        let end = (start + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(start, end);
+        // Walk up to the captured node itself first, then on to its scope.
+        while let Some(current) = node {
+            if current.id() != id && scopes.contains(&current.id()) {
+                return Some(current.id());
+            }
+            node = current.parent();
+        }
+        Some(root.id())
+    }
+
+    /// What the file itself defines, from the tags query every grammar crate
+    /// ships. Nearest to the cursor wins, so a method defined in the impl you
+    /// are reading beats one of the same name further off.
+    ///
+    /// A tags query names call sites as well as definitions - it is built for
+    /// an index that cross-references both - so a match only counts when it
+    /// also carries a `@definition.*` capture. Without that check `gd` lands
+    /// on the call it was pressed over.
+    fn tagged_definition(&self, rope: &Rope, at: usize, name: &str) -> Option<usize> {
+        let query = self.root.tags.as_ref()?;
+        let capture_index = self.root.name_capture?;
+        let names = query.capture_names();
+
+        let mut best: Option<usize> = None;
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, self.tree.root_node(), RopeProvider(rope));
+        while let Some(m) = matches.next() {
+            let captures = m.captures();
+            if !captures.iter().any(|c| names[c.index as usize].starts_with("definition")) {
+                continue;
+            }
+            let Some(node) = captures
+                .iter()
+                .find(|c| c.index == capture_index)
+                .map(|c| c.node)
+                .filter(|node| text_is(rope, *node, name))
+            else {
+                continue;
+            };
+            let start = node.start_byte();
+            if best.is_none_or(|current| at.abs_diff(start) < at.abs_diff(current)) {
+                best = Some(start);
+            }
+        }
+        best
     }
 
     /// Whether the byte sits inside a comment or a string. Completion suggests

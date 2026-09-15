@@ -270,6 +270,8 @@ impl Keys {
                         editor.goto_line(count.unwrap_or(1) - 1);
                         editor.clamp_cursor();
                     }
+                    KeyCode::Char('d') => editor.goto_definition(true),
+                    KeyCode::Char('D') => editor.goto_definition(false),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
                     KeyCode::Char('n') => match count {
                         Some(n) => editor.switch_to(n - 1),
@@ -848,6 +850,16 @@ mod tests {
             Vim::file("demo.rs", text)
         }
 
+        /// Put the cursor on a line and column, both counting from one.
+        /// These tests are about what a command finds, not about how the
+        /// cursor got there.
+        fn at(&mut self, line: usize, column: usize) -> &mut Self {
+            let view = self.editor.view_mut();
+            let start = view.doc.line_to_char(line - 1);
+            view.sel = crate::view::Selection::point(start + column - 1);
+            self
+        }
+
         /// Type a key sequence. `<esc>`, `<cr>`, `<bs>`, `<tab>` and `<C-x>`
         /// name the keys that are not plain characters.
         fn press(&mut self, sequence: &str) -> &mut Self {
@@ -1182,6 +1194,139 @@ mod tests {
         vim.press("gg");
         vim.press("<C-i>");
         assert_eq!(vim.editor.message, "at the newest jump");
+    }
+
+    #[test]
+    fn gd_finds_a_let_binding_in_the_same_function() {
+        let mut vim = Vim::rust("fn main() {\n    let total = 1;\n    show(total);\n}\n");
+        vim.at(3, 10).press("gd");
+        assert_eq!(vim.cursor(), (2, 9));
+    }
+
+    #[test]
+    fn gd_finds_a_parameter() {
+        let mut vim = Vim::rust("fn twice(count: usize) -> usize {\n    count + count\n}\n");
+        vim.at(2, 5).press("gd");
+        assert_eq!(vim.cursor(), (1, 10));
+    }
+
+    #[test]
+    fn the_nearest_binding_wins_over_the_one_it_shadows() {
+        let text = "fn main() {\n    let value = 1;\n    {\n        let value = 2;\n        use_it(value);\n    }\n}\n";
+        let mut vim = Vim::rust(text);
+        vim.at(5, 16).press("gd");
+        // The inner `let`, not the outer one.
+        assert_eq!(vim.cursor(), (4, 13));
+    }
+
+    #[test]
+    fn gd_finds_a_function_the_file_defines() {
+        let mut vim = Vim::rust("fn helper() {}\n\nfn main() {\n    helper();\n}\n");
+        vim.at(4, 5).press("gd");
+        assert_eq!(vim.cursor(), (1, 4));
+    }
+
+    #[test]
+    fn gd_finds_a_type() {
+        let mut vim = Vim::rust("struct Widget;\n\nfn make() -> Widget {\n    Widget\n}\n");
+        vim.at(4, 5).press("gd");
+        assert_eq!(vim.cursor(), (1, 8));
+    }
+
+    #[test]
+    fn gd_is_a_jump_so_control_o_comes_back() {
+        let mut vim = Vim::rust("fn helper() {}\n\nfn main() {\n    helper();\n}\n");
+        vim.at(4, 5).press("gd");
+        assert_eq!(vim.cursor().0, 1);
+        vim.press("<C-o>");
+        assert_eq!(vim.cursor(), (4, 5));
+    }
+
+    #[test]
+    fn capital_gd_skips_the_binding_and_takes_the_file_definition() {
+        let text = "fn value() {}\n\nfn main() {\n    let value = 1;\n    use_it(value);\n}\n";
+        let mut vim = Vim::rust(text);
+        vim.at(5, 12).press("gd");
+        assert_eq!(vim.cursor().0, 4, "gd finds the let");
+        vim.at(5, 12).press("gD");
+        assert_eq!(vim.cursor().0, 1, "gD finds the fn");
+    }
+
+    #[test]
+    fn gd_without_a_grammar_looks_backwards_for_the_word() {
+        // No file name, so no parser: this is the tier that is only a search.
+        let mut vim = Vim::new("total = 1\nsomething else\nprint total\n");
+        vim.at(3, 7).press("gd");
+        assert_eq!(vim.cursor(), (1, 1));
+    }
+
+    #[test]
+    fn gd_says_so_when_there_is_nothing_to_find() {
+        let mut vim = Vim::rust("fn main() {\n    missing();\n}\n");
+        vim.at(2, 5).press("gd");
+        assert_eq!(vim.editor.message, "no definition of missing");
+
+        let mut vim = Vim::rust("fn main() {}\n");
+        vim.press("$").press("gd");
+        assert_eq!(vim.editor.message, "no word under the cursor");
+    }
+
+    #[test]
+    fn gd_on_the_definition_itself_says_so_rather_than_jumping() {
+        let mut vim = Vim::rust("fn helper() {}\n\nfn main() {\n    helper();\n}\n");
+        vim.at(1, 4).press("gd");
+        assert_eq!(vim.editor.message, "helper is defined here");
+    }
+
+    #[test]
+    fn gd_works_in_javascript_from_the_grammars_own_queries() {
+        // JavaScript's crate ships both queries, so this language needed no
+        // file of ours at all.
+        let mut vim = Vim::file("demo.js", "function helper() {}\n\nfunction main() {\n  helper();\n}\n");
+        vim.at(4, 3).press("gd");
+        assert_eq!(vim.cursor(), (1, 10));
+
+        let text = "function main() {\n  const total = 1;\n  show(total);\n}\n";
+        let mut vim = Vim::file("demo.js", text);
+        vim.at(3, 8).press("gd");
+        assert_eq!(vim.cursor(), (2, 9));
+    }
+
+    #[test]
+    fn a_definition_in_a_big_file_is_found_between_keystrokes() {
+        // The items tier reads the whole tree, because a function can be
+        // defined anywhere in the file. The bindings tier reads only the item
+        // the cursor is in, because that is as far as a binding reaches - and
+        // that is the difference between the two numbers below.
+        let mut text = String::from("fn needle(count: usize) -> usize { count }\n");
+        while text.len() < 800_000 {
+            text.push_str("fn filler(count: usize) -> usize { count + 1 }\n");
+        }
+        text.push_str("fn main() {\n    needle(1);\n}\n");
+        let mut vim = Vim::rust(&text);
+        // `last_line` counts from zero; `at` counts from one, like the editor
+        // shows it.
+        let call = vim.editor.last_line();
+
+        // A parameter, in a function that is one line long however big the
+        // file is.
+        vim.at(2, 36);
+        let start = std::time::Instant::now();
+        let local = vim.editor.view().definition("count", vim.editor.view().sel.head, true);
+        let binding = start.elapsed();
+        assert!(local.is_some());
+
+        // A function, which could be anywhere.
+        vim.at(call, 5);
+        let start = std::time::Instant::now();
+        vim.press("gd");
+        let item = start.elapsed();
+
+        assert_eq!(vim.cursor().0, 1, "the needle is on the first line");
+        // 25µs and 45ms release on this file; the bound is for a debug build
+        // on a slow machine.
+        assert!(binding.as_millis() < 50, "a binding took {binding:?}");
+        assert!(item.as_millis() < 800, "an item took {item:?}");
     }
 
     #[test]
