@@ -4,10 +4,10 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 30: a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 30: nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
-Languages: Rust, HTML, JavaScript.
+Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
 
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
@@ -253,9 +253,36 @@ those regions get their own parse with that language's grammar:
   highlights as HTML. The language comes out of the document rather than being
   fixed by the query.
 
-Adding a language is one entry in `LANGUAGES` in `syntax.rs`. Its `name` is what
-other grammars' injection queries refer to, so it has to match the name they
-use.
+Adding a language is one entry in `LANGUAGES` in `syntax.rs`: the grammar crate
+in `Cargo.toml`, a row naming its extensions and its queries, and an indent
+query in `queries/<name>/indents.scm` — no grammar crate ships one. Its `name`
+is what other grammars' injection queries refer to, so it has to match the name
+they use. `highlights` is the only field that has to be filled in; `injections`,
+`locals` and `tags` are `""` where the grammar has none, and the features that
+read them (injected regions, `gd`'s first tier, `<space>d`) simply do not apply.
+
+Two things the nine languages here taught the shape:
+
+- **`highlights` is a list, not a string.** C++'s query is only the half that C
+  does not already say — on its own, `return` in a `.cpp` file is unhighlighted.
+  So a language is a stack of queries, C++ first and C under it, since the
+  earliest pattern wins.
+- **An indent query is about where a step *opens*, not where the body is.**
+  In a brace language the two coincide: the `{` is on the line above. Python's
+  `block` starts on the first line of the body, so a block cannot be what
+  indents it — the `function_definition` is, because it starts up on the header
+  line where the brace would have been. That in turn is why `else_clause` and
+  friends are `@outdent` rather than `@indent`: an `else` body's ancestors are
+  the block, the clause *and* the `if`, and counting the clause too would indent
+  it twice — while as an outdent, the clause pulls the `else:` line itself back
+  under its `if`. Writing a language's indent query is one afternoon of reading
+  `tree-sitter parse` output, and the test that every query compiles catches a
+  node name the grammar does not have.
+
+Python-flavoured caveat: a Python file whose indentation is already wrong cannot
+be reindented, because in Python the indentation *is* the syntax — the tree is
+broken, and the editor says nothing rather than guessing. Vim has the same
+limitation for the same reason.
 
 Grammars are compiled lazily and shared: opening a Rust file never pays for the
 HTML or JavaScript queries, and a page with fifty `<script>` tags compiles

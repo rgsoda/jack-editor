@@ -24,7 +24,10 @@ pub struct LanguageConfig {
     pub name: &'static str,
     extensions: &'static [&'static str],
     language: fn() -> Language,
-    highlights: &'static str,
+    /// The highlight queries, in the order the earliest pattern should win.
+    /// A list because a language can be another language plus its own: C++'s
+    /// query is the C++ half only, and means nothing without C's under it.
+    highlights: &'static [&'static str],
     injections: &'static str,
     /// Written here rather than shipped by the grammar crates, which have no
     /// indent queries: what indents, and what comes back out.
@@ -36,6 +39,30 @@ pub struct LanguageConfig {
     /// crate ships this one, for `ctags`-style indexes; `gd` wants the same
     /// thing.
     tags: &'static str,
+}
+
+fn python_language() -> Language {
+    tree_sitter_python::LANGUAGE.into()
+}
+
+fn toml_language() -> Language {
+    tree_sitter_toml_ng::LANGUAGE.into()
+}
+
+fn go_language() -> Language {
+    tree_sitter_go::LANGUAGE.into()
+}
+
+fn java_language() -> Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn c_language() -> Language {
+    tree_sitter_c::LANGUAGE.into()
+}
+
+fn cpp_language() -> Language {
+    tree_sitter_cpp::LANGUAGE.into()
 }
 
 fn rust_language() -> Language {
@@ -57,7 +84,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         name: "rust",
         extensions: &["rs"],
         language: rust_language,
-        highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
+        highlights: &[tree_sitter_rust::HIGHLIGHTS_QUERY],
         injections: tree_sitter_rust::INJECTIONS_QUERY,
         indents: include_str!("../queries/rust/indents.scm"),
         locals: include_str!("../queries/rust/locals.scm"),
@@ -67,7 +94,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         name: "html",
         extensions: &["html", "htm"],
         language: html_language,
-        highlights: tree_sitter_html::HIGHLIGHTS_QUERY,
+        highlights: &[tree_sitter_html::HIGHLIGHTS_QUERY],
         injections: tree_sitter_html::INJECTIONS_QUERY,
         indents: include_str!("../queries/html/indents.scm"),
         // A markup language binds no names and defines nothing: `gd` falls
@@ -79,11 +106,75 @@ static LANGUAGES: &[LanguageConfig] = &[
         name: "javascript",
         extensions: &["js", "mjs", "cjs"],
         language: javascript_language,
-        highlights: tree_sitter_javascript::HIGHLIGHT_QUERY,
+        highlights: &[tree_sitter_javascript::HIGHLIGHT_QUERY],
         injections: tree_sitter_javascript::INJECTIONS_QUERY,
         indents: include_str!("../queries/javascript/indents.scm"),
         locals: tree_sitter_javascript::LOCALS_QUERY,
         tags: tree_sitter_javascript::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "python",
+        extensions: &["py", "pyi"],
+        language: python_language,
+        highlights: &[tree_sitter_python::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/python/indents.scm"),
+        locals: "",
+        tags: tree_sitter_python::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "toml",
+        extensions: &["toml"],
+        language: toml_language,
+        highlights: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/toml/indents.scm"),
+        // Nothing to bind and nothing to define: a key is not a definition
+        // you can go to, it is the thing itself.
+        locals: "",
+        tags: "",
+    },
+    LanguageConfig {
+        name: "go",
+        extensions: &["go"],
+        language: go_language,
+        highlights: &[tree_sitter_go::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/go/indents.scm"),
+        locals: "",
+        tags: tree_sitter_go::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "java",
+        extensions: &["java"],
+        language: java_language,
+        highlights: &[tree_sitter_java::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/java/indents.scm"),
+        locals: "",
+        tags: tree_sitter_java::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "c",
+        extensions: &["c", "h"],
+        language: c_language,
+        highlights: &[tree_sitter_c::HIGHLIGHT_QUERY],
+        injections: "",
+        indents: include_str!("../queries/c/indents.scm"),
+        locals: "",
+        tags: tree_sitter_c::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "cpp",
+        extensions: &["cc", "cpp", "cxx", "hh", "hpp", "hxx"],
+        language: cpp_language,
+        // C++ first, then C: the earliest pattern wins, and the C++ query is
+        // only the half that C does not already say.
+        highlights: &[tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
+        injections: "",
+        indents: include_str!("../queries/cpp/indents.scm"),
+        locals: "",
+        tags: tree_sitter_cpp::TAGS_QUERY,
     },
 ];
 
@@ -122,7 +213,8 @@ struct Compiled {
 
 fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
     let language = (config.language)();
-    let highlights = Query::new(&language, config.highlights)
+    let source = config.highlights.join("\n");
+    let highlights = Query::new(&language, &source)
         .with_context(|| format!("compiling {} highlight query", config.name))?;
     let capture_styles = highlights
         .capture_names()
@@ -932,6 +1024,55 @@ mod tests {
         let f = Fixture::new("// fn main\nfn main() {}\n");
         assert_eq!(f.color_of("// fn"), Some(Color::DarkGrey));
         assert_eq!(f.color_of("fn main() {}"), Some(Color::Magenta));
+    }
+
+    #[test]
+    fn every_language_compiles_every_query_it_ships() {
+        // A query is only checked when it is compiled, and a node name that
+        // the grammar does not have is a typo the test suite should find
+        // rather than the first person to open such a file.
+        let theme = Theme::built_in();
+        for config in LANGUAGES {
+            compile(config, &theme)
+                .unwrap_or_else(|err| panic!("{}: {err:#}", config.name));
+        }
+    }
+
+    #[test]
+    fn every_language_highlights_and_indents_something() {
+        // One shape per language: a word that has to be coloured, and a line
+        // the grammar has to want indented one step. Between them they say the
+        // highlight query matched and the indent query named a real node.
+        let cases: &[(&str, &str, &str)] = &[
+            ("rust", "fn main() {\n    let x = 1;\n}\n", "fn"),
+            ("javascript", "function f() {\n    let x = 1;\n}\n", "function"),
+            ("python", "def f():\n    x = 1\n", "def"),
+            ("toml", "key = [\n    1,\n]\n", "key"),
+            ("go", "func main() {\n    x := 1\n}\n", "func"),
+            ("java", "class A {\n    int x = 1;\n}\n", "class"),
+            ("c", "int main(void) {\n    int x = 1;\n}\n", "int"),
+            ("cpp", "namespace n {\n    int x = 1;\n}\n", "namespace"),
+        ];
+        for (language, text, word) in cases {
+            let f = Fixture::with_language(language, text);
+            assert!(f.color_of(word).is_some(), "{language}: {word} is coloured");
+
+            // The second line, which every snippet has indented by one step.
+            let start = f.doc.text.line_to_byte(1);
+            let end = f.doc.text.line_to_byte(2);
+            let level = f.syntax.indent_level(&f.doc.text, start, start..end);
+            assert_eq!(level, Some(1), "{language}: one step on line two");
+        }
+    }
+
+    #[test]
+    fn cpp_gets_cs_highlighting_as_well_as_its_own() {
+        // The C++ query is only the half C does not already say, so a plain C
+        // keyword in a C++ file is the check that both halves are in.
+        let f = Fixture::with_language("cpp", "int main() { return 0; }\n");
+        assert!(f.color_of("return").is_some(), "C's keywords are in");
+        let f = Fixture::with_language("cpp", "template <class T> T id(T x) { return x; }\n");
+        assert!(f.color_of("template").is_some(), "and C++'s own");
     }
 
     #[test]
