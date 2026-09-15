@@ -87,6 +87,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
+| `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
@@ -386,6 +387,13 @@ beside it. In visual mode they drag the selection like any other motion.
 The line and no further, which is the whole character of the motion: `f` is for
 getting somewhere you can already see. Off the end of it, the status line says
 so rather than wandering into the next line.
+
+`;` is where the finger already is and `:` is what it is usually reaching for,
+so `:set semicolon=command` binds `;` to the command line instead. `,` then
+takes over repeating the find forwards, which is the other half of the remap
+people write by hand — and the reverse repeat goes with `;`, because there is
+no third key that belongs to this. Put `set semicolon=command` in
+`~/.config/soda_edit/init` to have it every time.
 
 One borrowed detail, because without it `t` is a trap: **a repeat of a till
 that could not move goes to the next one instead.** After `t,` the cursor is

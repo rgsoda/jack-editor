@@ -103,6 +103,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
     Binding { keys: ":set autoindent", what: "noautoindent: indent new lines by the grammar", mode: "command" },
     Binding { keys: ":set autocomplete=2", what: "noautocomplete: word length that pops the list", mode: "command" },
+    Binding { keys: ":set semicolon=find", what: "command: make ; open the command line", mode: "command" },
     Binding { keys: ":set tabline=auto", what: "off, auto, always: list buffers along the top", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
@@ -326,7 +327,8 @@ impl Keys {
             Some(operator)
                 if matches!(key.code, KeyCode::Char(';') | KeyCode::Char(',')) && !ctrl =>
             {
-                if editor.select_repeat(key.code == KeyCode::Char(','), count.unwrap_or(1)) {
+                let reverse = key.code == KeyCode::Char(',') && !editor.semicolon_is_command();
+                if editor.select_repeat(reverse, count.unwrap_or(1)) {
                     self.operate(editor, Some(operator_key(operator)));
                 }
                 self.finish();
@@ -430,7 +432,8 @@ impl Keys {
             }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
             KeyCode::Char(';') | KeyCode::Char(',') => {
-                editor.repeat_to_char(key.code == KeyCode::Char(','), repeat, true);
+                let reverse = key.code == KeyCode::Char(',') && !editor.semicolon_is_command();
+                editor.repeat_to_char(reverse, repeat, true);
             }
             _ if find_for(key.code, ctrl).is_some() => {
                 let (till, backward) = find_for(key.code, ctrl).expect("checked above");
@@ -579,8 +582,13 @@ impl Keys {
             KeyCode::Char('N') => editor.search_repeat(true, repeat),
             KeyCode::Char('*') => editor.search_word_under_cursor(),
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
+            // With `:set semicolon=command` this key is the command line, and
+            // `,` takes over repeating the find forwards - the other half of
+            // the remap people write by hand.
+            KeyCode::Char(';') if editor.semicolon_is_command() => editor.open_command(),
             KeyCode::Char(';') | KeyCode::Char(',') => {
-                editor.repeat_to_char(key.code == KeyCode::Char(','), repeat, false);
+                let reverse = key.code == KeyCode::Char(',') && !editor.semicolon_is_command();
+                editor.repeat_to_char(reverse, repeat, false);
             }
 
             KeyCode::Char('u') => editor.undo(),
@@ -1531,6 +1539,32 @@ mod tests {
         assert_eq!(vim.cursor(), (1, 4));
         vim.press(";");
         assert_eq!(vim.cursor(), (1, 7));
+    }
+
+    #[test]
+    fn semicolon_can_be_the_command_line_instead() {
+        let mut vim = Vim::new("a.b.c.d\n");
+        vim.editor.run_command("set semicolon=command");
+        vim.press(";");
+        assert!(vim.editor.prompt.is_some(), "the command line is open");
+        vim.press("<esc>");
+
+        // `,` takes over repeating, forwards.
+        vim.press("f.");
+        assert_eq!(vim.cursor(), (1, 2));
+        vim.press(",");
+        assert_eq!(vim.cursor(), (1, 4));
+        // And an operator takes it: from the second dot through the third.
+        vim.press("d,");
+        assert_eq!(vim.text(), "a.bd\n");
+    }
+
+    #[test]
+    fn the_command_line_semicolon_runs_a_command() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.editor.run_command("set semicolon=command");
+        vim.press(";3<cr>");
+        assert_eq!(vim.cursor(), (3, 1));
     }
 
     #[test]

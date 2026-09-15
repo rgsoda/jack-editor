@@ -61,6 +61,38 @@ impl Prompt {
     }
 }
 
+/// What `;` does. Vim repeats the last `f`/`t` with it, but `;` is where the
+/// finger already is and `:` is what it is usually reaching for, so this is a
+/// remap common enough to be worth an option rather than an init file full of
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Semicolon {
+    /// Vim's: repeat the last find, with `,` reversing it.
+    #[default]
+    Find,
+    /// Open the command line, as `:` does. `,` then repeats the find forwards,
+    /// taking over the job `;` had - which is the other half of the remap
+    /// people write by hand.
+    Command,
+}
+
+impl Semicolon {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Semicolon::Find => "find",
+            Semicolon::Command => "command",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Semicolon> {
+        Some(match value {
+            "find" | "repeat" => Semicolon::Find,
+            "command" | "colon" | ":" => Semicolon::Command,
+            _ => return None,
+        })
+    }
+}
+
 /// Whether the open buffers are listed along the top: never, when there is
 /// more than one of them, or always.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -185,6 +217,8 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// What `;` is bound to.
+    pub semicolon: Semicolon,
     /// Whether the open buffers are listed along the top.
     pub tabline: Tabline,
     /// Indent a new line the way the grammar says, rather than copying the
@@ -269,6 +303,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            semicolon: Semicolon::default(),
             tabline: Tabline::Auto,
             autoindent: true,
             emacs: false,
@@ -581,6 +616,11 @@ impl Editor {
         self.last_find = Some(find);
     }
 
+    /// Whether `;` opens the command line rather than repeating a find.
+    pub fn semicolon_is_command(&self) -> bool {
+        self.semicolon == Semicolon::Command
+    }
+
     /// `;` and `,` as a motion.
     pub fn repeat_to_char(&mut self, reverse: bool, count: usize, extend: bool) {
         let Some(find) = self.repeated_find(reverse) else {
@@ -728,6 +768,10 @@ impl Editor {
                 ("autocomplete" | "ac", _) => {
                     self.message = format!("autocomplete wants 0 to 16, not {value:?}");
                 }
+                ("semicolon", _) => match Semicolon::parse(value) {
+                    Some(semicolon) => self.semicolon = semicolon,
+                    None => self.message = "semicolon wants find or command".into(),
+                },
                 ("tabline", _) => match Tabline::parse(value) {
                     Some(tabline) => self.tabline = tabline,
                     None => self.message = "tabline wants off, auto or always".into(),
@@ -740,6 +784,8 @@ impl Editor {
             return;
         }
         match option {
+            "semicolon" => self.semicolon = Semicolon::Command,
+            "nosemicolon" => self.semicolon = Semicolon::Find,
             "tabline" => self.tabline = Tabline::Always,
             "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
@@ -765,7 +811,7 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
@@ -775,7 +821,8 @@ impl Editor {
                     self.autoindent,
                     self.emacs,
                     self.tabline.name(),
-                    self.autocomplete
+                    self.autocomplete,
+                    self.semicolon.name()
                 );
             }
             other => self.message = format!("not an option: {other}"),
