@@ -101,8 +101,8 @@ Starts in normal mode, like vim.
 | | |
 |---|---|
 | any character, `enter`, `tab` | insert |
-| `^n` `^p` | complete the word: next candidate, previous |
-| `tab` `^y` | accept the completion |
+| `^n` `^p`, up/down | complete the word: next candidate, previous |
+| `enter` `tab` `^y` | accept the completion |
 | `esc` `^e` | close the popup, still typing |
 | `backspace` `delete` | delete a grapheme, or the selection |
 | arrows, `home`, `end` | move (with `shift` to select) |
@@ -365,8 +365,9 @@ tree instead of the rope.
 ## Autocomplete
 
 `^n` in insert mode offers what could finish the word you are on, `^p` the same
-list from the bottom, `tab` or `^y` takes one, `esc` closes the popup and leaves
-you typing. Typing narrows the list and deleting widens it; when nothing matches
+list from the bottom. While the popup is up the arrow keys walk it, `enter`,
+`tab` or `^y` takes one, and `esc` closes it and leaves you typing — so the
+newline `enter` would otherwise have made is one press away. Typing narrows the list and deleting widens it; when nothing matches
 any more the popup closes itself.
 
 Two tiers, and the second is what the grammar is for:

@@ -74,7 +74,8 @@ pub const BINDINGS: &[Binding] = &[
 
     Binding { keys: "esc", what: "back to normal mode", mode: "insert" },
     Binding { keys: "^n ^p", what: "complete the word: next, previous", mode: "insert" },
-    Binding { keys: "tab ^y", what: "accept the completion", mode: "insert" },
+    Binding { keys: "up down", what: "next, previous completion", mode: "insert" },
+    Binding { keys: "enter tab ^y", what: "accept the completion", mode: "insert" },
     Binding { keys: "esc ^e", what: "close the completion popup", mode: "insert" },
     Binding { keys: "shift+arrows", what: "select while typing", mode: "insert" },
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
@@ -591,11 +592,15 @@ fn operator_key(operator: Pending) -> char {
 /// popup's own and insert mode should not also see it.
 fn completing(editor: &mut Editor, key: KeyEvent, ctrl: bool) -> bool {
     match (key.code, ctrl) {
-        (KeyCode::Char('n'), true) => editor.completion_step(true),
-        (KeyCode::Char('p'), true) => editor.completion_step(false),
+        (KeyCode::Char('n'), true) | (KeyCode::Down, _) => editor.completion_step(true),
+        (KeyCode::Char('p'), true) | (KeyCode::Up, _) => editor.completion_step(false),
         // `tab` accepts because every other editor taught everyone that; `^y`
-        // accepts because vim taught the rest of us.
-        (KeyCode::Char('y'), true) | (KeyCode::Tab, _) => editor.accept_completion(),
+        // accepts because vim taught the rest of us. `enter` accepts rather
+        // than splitting the line: while the popup is up it is the popup's key,
+        // and esc is one press away if a newline is what you wanted.
+        (KeyCode::Char('y'), true) | (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
+            editor.accept_completion()
+        }
         // Esc closes the popup and leaves you typing rather than leaving insert
         // mode: one escape, one thing undone.
         (KeyCode::Char('e'), true) | (KeyCode::Esc, _) => editor.close_completion(),
@@ -1800,6 +1805,27 @@ plain
         vim.press("Gozz<C-n>");
         assert!(vim.editor.completion.is_none());
         assert_eq!(vim.editor.message, "no completions");
+    }
+
+
+    #[test]
+    fn the_arrows_walk_the_popup_and_enter_takes_one() {
+        let mut vim = Vim::new("alpha album\n");
+        vim.press("Goal<C-n><down>");
+        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), 1);
+        vim.press("<up>");
+        assert_eq!(vim.editor.completion.as_ref().unwrap().selected(), 0);
+
+        vim.press("<cr>");
+        assert!(vim.editor.completion.is_none());
+        assert_eq!(vim.text(), "alpha album\nalbum\n");
+    }
+
+    #[test]
+    fn enter_is_a_newline_again_once_the_popup_is_gone() {
+        let mut vim = Vim::new("alpha\n");
+        vim.press("Goal<C-n><esc><cr>x");
+        assert_eq!(vim.text(), "alpha\nal\nx\n");
     }
 
 }
