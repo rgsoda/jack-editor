@@ -48,6 +48,7 @@
 "ui.picker.match" = { fg = "#50fa7b" }
 "ui.picker.detail" = { fg = "#6272a4" }
 "ui.mode.visual" = { fg = "#282a36", bg = "#ffb86c", bold = true }
+"ui.cursorline" = { bg = "#44475a" }
 "ui.linenr" = { fg = "#6272a4" }
 "ui.linenr.selected" = { fg = "#f8f8f2", bold = true }
 "ui.search.match" = { fg = "#282a36", bg = "#f1fa8c" }

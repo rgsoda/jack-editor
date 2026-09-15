@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 28: the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 29: a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -90,6 +90,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
+| `:set cursorline` | `nocursorline`: tint the row the cursor is on |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
@@ -403,6 +404,24 @@ the terminal's width and the text's width stop being the same number:
 measured against, and `width` stays the terminal. Getting that wrong shows up
 as a cursor that drifts from the character it is on once a line is long enough
 to scroll.
+
+## The cursor line
+
+The row the cursor is on is tinted the whole width of the screen, `ui.cursorline`
+in the theme, on unless `:set nocursorline`.
+
+It is drawn underneath rather than over: the row is painted first, then the
+gutter, the syntax and everything else go on top and keep their own colours,
+because `patch` lets the overlay win on a conflict and a tint that took the
+foreground with it would turn the line into a block. A selection or a search
+match still wins on the cells it covers, which is what you want while dragging
+a selection along the line you are already on.
+
+The whole width, past the end of the text, is the point: a tint that stops at
+the last character is a smear rather than a line. That is also all it costs —
+two rows repaint on a cursor move instead of none, **190 bytes** on an 80-column
+screen, measured in a test beside the line-numbering costs. Relative numbering
+costs twice that, for comparison.
 
 ## Finding a character on the line
 

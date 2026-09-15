@@ -29,6 +29,10 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
     let gutter = editor.gutter_width();
     let signs = editor.sign_width();
     let (cursor_line, _) = editor.cursor_coords();
+    // The row the cursor is on, tinted the whole width of the screen. Drawn
+    // under everything else: the syntax keeps its colours, and a selection or
+    // a search match still wins on the cells it covers.
+    let cursorline = editor.cursorline.then(|| editor.theme.style("ui.cursorline"));
     let number_style = editor.theme.style("ui.linenr");
     let current_style = editor.theme.style("ui.linenr.selected");
 
@@ -73,6 +77,16 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             continue;
         }
 
+        let here = cursorline.filter(|_| line == cursor_line);
+        if let Some(tint) = here {
+            // The whole row first, so the tint reaches past the end of the
+            // text and behind the gutter; everything below draws over it.
+            let (width, _) = surface.size();
+            for x in 0..width {
+                surface.put(x, row, ' ', 1, tint);
+            }
+        }
+
         if signs > 0 {
             let (ch, key) = match editor.view().signs.get(&line) {
                 Some(Sign::Added) => ('+', "ui.gutter.added"),
@@ -80,12 +94,13 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
                 Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
                 None => (' ', "ui.linenr"),
             };
-            surface.put(0, row, ch, 1, editor.theme.style(key));
+            let style = editor.theme.style(key);
+            surface.put(0, row, ch, 1, under(here, style));
         }
 
         if let Some(number) = editor.numbers.label(line, cursor_line) {
             let style = match line == cursor_line {
-                true => current_style,
+                true => under(here, current_style),
                 false => number_style,
             };
             // Right-aligned, with the space either side the width allows for.
@@ -114,6 +129,7 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             editor.view().doc.line_to_byte(line),
             line_start,
             sel,
+            here,
             &styling,
         );
     }
@@ -334,6 +350,16 @@ struct LineStyling<'a> {
     bracket_style: Style,
 }
 
+/// `style` over the cursor line's tint, when this row has one. The tint is a
+/// background and what goes on it keeps its own colours, so it has to go
+/// underneath rather than on top.
+fn under(tint: Option<Style>, style: Style) -> Style {
+    match tint {
+        Some(tint) => tint.patch(style),
+        None => style,
+    }
+}
+
 fn draw_line(
     surface: &mut Surface,
     row: usize,
@@ -341,6 +367,7 @@ fn draw_line(
     line_byte: usize,
     line_start: usize,
     sel: Option<(usize, usize)>,
+    cursorline: Option<Style>,
     styling: &LineStyling,
 ) {
     let (width, _) = surface.size();
@@ -363,10 +390,13 @@ fn draw_line(
         }
 
         // Syntax first, then the selection tints it rather than replacing it.
-        let mut style = styling
-            .highlights
-            .style_at(line_byte + byte_in_line)
-            .unwrap_or_default();
+        let mut style = under(
+            cursorline,
+            styling
+                .highlights
+                .style_at(line_byte + byte_in_line)
+                .unwrap_or_default(),
+        );
         let at = line_start + char_idx;
         if styling.matches.iter().any(|&(s, e)| at >= s && at < e) {
             style = style.patch(styling.match_style);
@@ -681,6 +711,75 @@ mod tests {
         let surface = screen.begin(width, height);
         draw(editor, keys, surface);
         (0..width).map(|x| surface.get(x, y).ch).collect()
+    }
+
+    /// The background of every cell on a row, so a tint can be told from what
+    /// is drawn on it.
+    fn row_backgrounds(editor: &Editor, keys: &Keys, y: usize) -> Vec<Option<crossterm::style::Color>> {
+        let mut screen = Screen::new();
+        let (width, height) = (editor.width, editor.top() + editor.height + 1);
+        let surface = screen.begin(width, height);
+        draw(editor, keys, surface);
+        (0..width).map(|x| surface.get(x, y).style.bg).collect()
+    }
+
+    #[test]
+    fn the_cursor_line_is_tinted_the_whole_width() {
+        let mut editor = editor_with_lines(10);
+        editor.goto_line(3);
+        let keys = Keys::default();
+        let tint = editor.theme.style("ui.cursorline").bg;
+        assert!(tint.is_some(), "the theme has a cursorline colour");
+
+        let cursor_row = row_backgrounds(&editor, &keys, 3);
+        // Every cell, gutter and past the end of the text alike - a tint that
+        // stops at the last character is a smear, not a line.
+        assert!(cursor_row.iter().all(|bg| *bg == tint), "{cursor_row:?}");
+
+        // And no other row has it.
+        assert!(row_backgrounds(&editor, &keys, 2).iter().all(|bg| *bg != tint));
+    }
+
+    #[test]
+    fn the_tint_does_not_take_over_a_selection() {
+        let mut editor = editor_with_lines(10);
+        editor.goto_line(3);
+        editor.set_mode(crate::editor::Mode::Visual);
+        editor.move_cursor(Move::Right, true);
+        let keys = Keys::default();
+        let tint = editor.theme.style("ui.cursorline").bg;
+        let selection = editor.theme.style("ui.selection");
+
+        let row = row_backgrounds(&editor, &keys, 3);
+        let text = editor.gutter_width();
+        // The selection covers the first two characters, and keeps its own
+        // look there; the rest of the row is still tinted.
+        match selection.bg {
+            Some(_) => assert_ne!(row[text], tint),
+            // The default theme reverses video rather than setting a colour,
+            // in which case what matters is that the tint is still under it.
+            None => assert_eq!(row[text], tint),
+        }
+        assert_eq!(row[text + 8], tint);
+    }
+
+    #[test]
+    fn turning_the_cursor_line_off_costs_nothing_to_draw() {
+        let cost = |on: bool| {
+            let mut editor = editor_with_lines(500);
+            editor.cursorline = on;
+            editor.signs_enabled = false;
+            let keys = Keys::default();
+            let mut screen = Screen::new();
+            frame(&editor, &mut screen, &keys);
+            editor.move_cursor(Move::Down, false);
+            frame(&editor, &mut screen, &keys)
+        };
+        let (off, on) = (cost(false), cost(true));
+        println!("one line down, 40 rows: cursorline off {off}b, on {on}b");
+        // Two rows repaint rather than none, which is the whole cost of it.
+        assert!(on > off, "on {on} vs off {off}");
+        assert!(on < off + 2000, "a cursor move costs {} bytes more", on - off);
     }
 
     fn status_row(editor: &Editor, keys: &Keys) -> String {

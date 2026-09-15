@@ -249,6 +249,8 @@ pub struct Editor {
     /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
     /// terminal whose font has not been patched.
     pub glyphs: bool,
+    /// Tint the row the cursor is on, the whole width of the screen.
+    pub cursorline: bool,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
     /// An escape sequence the run loop should write out with the next frame.
@@ -322,6 +324,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            cursorline: true,
             semicolon: Semicolon::default(),
             tabline: Tabline::Auto,
             autoindent: true,
@@ -866,6 +869,8 @@ impl Editor {
             "hybrid" => self.numbers = Numbers::Hybrid,
             "trim" => self.trim_on_save = true,
             "notrim" => self.trim_on_save = false,
+            "cursorline" => self.cursorline = true,
+            "nocursorline" => self.cursorline = false,
             "glyphs" => self.glyphs = true,
             "noglyphs" => self.glyphs = false,
             "signs" => self.signs_enabled = true,
@@ -875,8 +880,9 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
+                    self.cursorline,
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
