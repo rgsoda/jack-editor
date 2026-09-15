@@ -12,7 +12,13 @@ Languages: Rust, HTML, JavaScript.
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
 cargo run -- .                         # a directory: the file picker, there
+
+cargo install --path .                 # then it is just `soda`
+soda src/main.rs
 ```
+
+The crate is `soda_edit`; the binary it builds is `soda`, and its files live in
+`~/.config/soda`.
 
 Starts in normal mode, like vim.
 
@@ -219,7 +225,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `register.rs` — the register store. Text is charwise or linewise, which is
   what decides whether `p` puts it inline or on a new line.
 - `theme.rs` — capture names and `ui.*` elements to styles, from TOML. The
-  built-in theme is embedded; `$XDG_CONFIG_HOME/soda_edit/theme.toml` layers
+  built-in theme is embedded; `$XDG_CONFIG_HOME/soda/theme.toml` layers
   over it, so a short theme file can restyle keywords without losing the
   status line. It also owns `config_dir()`, since the init file lives there
   too.
@@ -420,7 +426,7 @@ so `:set semicolon=command` binds `;` to the command line instead. `,` then
 takes over repeating the find forwards, which is the other half of the remap
 people write by hand — and the reverse repeat goes with `;`, because there is
 no third key that belongs to this. Put `set semicolon=command` in
-`~/.config/soda_edit/init` to have it every time.
+`~/.config/soda/init` to have it every time.
 
 One borrowed detail, because without it `t` is a trap: **a repeat of a till
 that could not move goes to the next one instead.** After `t,` the cursor is
@@ -533,7 +539,7 @@ very nearly what our completion is. The popup still owns `^n`, `^p` and `^y`
 while it is open, because a list in front of you is the more specific thing.
 
 So it is off by default, and typing `:set emacs` every session would be a poor
-joke. `~/.config/soda_edit/init` is read at startup: one command per line,
+joke. `~/.config/soda/init` is read at startup: one command per line,
 written as you would type it after `:`, with `#` comments and blank lines
 ignored.
 
@@ -838,8 +844,8 @@ four lines and why the ASCII fallback needed no new drawing code.
 
 ## Theming
 
-Drop a file at `$XDG_CONFIG_HOME/soda_edit/theme.toml` (or
-`~/.config/soda_edit/theme.toml`):
+Drop a file at `$XDG_CONFIG_HOME/soda/theme.toml` (or
+`~/.config/soda/theme.toml`):
 
 ```toml
 "keyword"      = "#ff5555"

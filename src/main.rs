@@ -58,7 +58,7 @@ fn restore() {
 }
 
 /// The directory to start in, when that is what the arguments name. One
-/// directory and nothing else: `soda_edit .` is a way of saying "this project",
+/// directory and nothing else: `soda .` is a way of saying "this project",
 /// and mixing it with file names would be asking for two things at once.
 fn start_directory(paths: &[String]) -> Option<&String> {
     match paths {
