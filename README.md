@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 18: a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 19: autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -101,6 +101,9 @@ Starts in normal mode, like vim.
 | | |
 |---|---|
 | any character, `enter`, `tab` | insert |
+| `^n` `^p` | complete the word: next candidate, previous |
+| `tab` `^y` | accept the completion |
+| `esc` `^e` | close the popup, still typing |
 | `backspace` `delete` | delete a grapheme, or the selection |
 | arrows, `home`, `end` | move (with `shift` to select) |
 | `esc` | back to normal mode |
@@ -128,6 +131,9 @@ Starts in normal mode, like vim.
   `Pair`, `Paragraph`) in, a char range out. Pure rope reading, no state.
 - `status.rs` — the status line as a list of coloured `Segment`s, plus the two
   glyph sets. Knows nothing about painting.
+- `complete.rs` — the completion popup's candidates: every word in a window
+  around the cursor, tagged with what the grammar calls it, ranked and filtered
+  by prefix.
 - `history.rs` — `Change` / `Transaction` / `History`. A transaction carries its
   own pre-edit coordinates and the selection either side of it, so it can be
   inverted without the document and undo lands the cursor where you left it.
@@ -356,6 +362,44 @@ counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
 
+## Autocomplete
+
+`^n` in insert mode offers what could finish the word you are on, `^p` the same
+list from the bottom, `tab` or `^y` takes one, `esc` closes the popup and leaves
+you typing. Typing narrows the list and deleting widens it; when nothing matches
+any more the popup closes itself.
+
+Two tiers, and the second is what the grammar is for:
+
+- **Every word in the buffer.** The thing you are half way through typing is
+  usually a few lines up, and finding it needs no grammar at all — which is also
+  why this tier still works in a file we have no parser for.
+- **What tree-sitter *names*.** The highlight query is run over the same region
+  and its captures are matched back against those words, so `render_widget` is
+  known to be a `fn` and `label` a `field`. Named things are offered first and
+  carry their kind in the popup; a word that only ever appeared in a comment
+  comes last. Within each group the nearest occurrence to the cursor wins, and
+  ties break alphabetically so the list does not reshuffle for reasons the eye
+  cannot follow.
+
+Matching is by prefix, not fuzzy: completion is finishing a word you have
+started, and a fuzzy list of things that merely contain `re` is a worse answer
+than a short list of things that begin with it. Case is smart, as in search — a
+lower-case prefix matches either case, an upper-case one is taken literally.
+
+The two tiers get different windows around the cursor, because they cost
+different amounts. On a 1.4MB buffer, scanning 400k chars for words takes about
+a millisecond; running the highlight query over the same span takes forty. So
+words come from ±200k chars and names from ±20k, which puts the whole thing at
+about 7ms — once, when the popup opens. Filtering as you type touches only what
+was already gathered. There is a test that measures it.
+
+What this is not: it does not know scope, so a local in another function is
+offered here; it does not know types, so `.` completes nothing in particular;
+and it looks at one buffer, not the project. Those want a language server, which
+is a different piece of machinery — this is the tier that is worth having before
+one.
+
 ## The status line
 
 ```
@@ -406,7 +450,8 @@ lookup falls back along the dots, so `variable` also styles
 `#rrggbb`. A broken theme is reported in the status line and the built-in one
 is used instead. See `themes/default.toml`.
 
-The status line's blocks are `ui.statusline` (the bar), `ui.statusline.file`,
+The completion popup is `ui.completion`, `ui.completion.selected` and
+`ui.completion.kind`. The status line's blocks are `ui.statusline` (the bar), `ui.statusline.file`,
 `ui.statusline.info`, `ui.statusline.position` and the three `ui.mode.*` keys.
 Give them backgrounds if you want the powerline wedges; leave them out and you
 get hairlines.
@@ -519,7 +564,6 @@ was at first:
 
 ## Next
 
-- Autocomplete, starting with the words already in the buffer under `^n`/`^p`.
 - Indent and dedent: `>>`, `<<`, and `>` over a selection.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.

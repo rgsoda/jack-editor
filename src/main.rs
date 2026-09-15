@@ -1,4 +1,5 @@
 mod buffer;
+mod complete;
 mod editor;
 mod history;
 mod keys;

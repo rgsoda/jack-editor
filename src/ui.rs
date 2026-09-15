@@ -4,6 +4,7 @@ use crate::editor::Editor;
 use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
+use crate::complete::{Candidate, Completion};
 use crate::screen::{Style, Surface};
 use crate::status::{self, Glyphs, Segment};
 use crate::stream::Sign;
@@ -116,6 +117,10 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         );
     }
 
+    if let Some(completion) = editor.completion.as_ref() {
+        draw_completion(editor, completion, surface);
+    }
+
     if let Some(picker) = editor.picker.as_ref() {
         draw_picker(editor, picker, surface);
     }
@@ -125,6 +130,75 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
 
 /// The picker panel, drawn over the bottom rows of the text area. It is opaque:
 /// every cell in the panel is written, so nothing of the text shows through.
+/// The completion popup: a small box anchored under the word being completed,
+/// or over it when there is no room below.
+fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surface) {
+    const MAX_ROWS: usize = 8;
+    const MAX_WIDTH: usize = 40;
+
+    let (screen_width, _) = surface.size();
+    let rows = completion.len().min(MAX_ROWS);
+    if rows == 0 || editor.height == 0 {
+        return;
+    }
+
+    let base = editor.theme.style("ui.completion");
+    let selected = editor.theme.style("ui.completion.selected");
+    let kind_style = editor.theme.style("ui.completion.kind");
+
+    // Scrolled so the selection is always one of the rows drawn, and wide
+    // enough for the rows that are.
+    let first = completion.selected().saturating_sub(rows - 1);
+    let shown: Vec<&Candidate> = completion.items().skip(first).take(rows).collect();
+    let width = shown
+        .iter()
+        .map(|c| str_width(&c.text) + c.kind.map_or(0, |k| str_width(k) + 1) + 2)
+        .max()
+        .unwrap_or(0)
+        .clamp(1, MAX_WIDTH.min(screen_width));
+
+    // Under the first character of the word, so the list lines up with what it
+    // would replace, and pushed left off the right edge if it has to be.
+    let (cursor_x, cursor_y) = editor.cursor_screen();
+    let anchor = (cursor_x as usize).saturating_sub(completion.prefix().chars().count());
+    let left = anchor.min(screen_width.saturating_sub(width));
+
+    // Below the cursor unless the box would not fit, in which case above it.
+    let below = cursor_y as usize + 1;
+    let top = match below + rows <= editor.height {
+        true => below,
+        false => (cursor_y as usize).saturating_sub(rows),
+    };
+
+    for (row, candidate) in shown.into_iter().enumerate() {
+        let y = top + row;
+        if y >= editor.height {
+            break;
+        }
+        let style = match first + row == completion.selected() {
+            true => selected,
+            false => base,
+        };
+        let right = left + width;
+        let mut x = put_str(surface, left, y, " ", style, right);
+        x = put_str(surface, x, y, &candidate.text, style, right);
+        // The kind is right-aligned, and the name gives way to it rather than
+        // the other way round.
+        if let Some(kind) = candidate.kind {
+            let kind_at = right.saturating_sub(str_width(kind) + 1);
+            while x < kind_at {
+                surface.put(x, y, ' ', 1, style);
+                x += 1;
+            }
+            x = put_str(surface, x.max(kind_at), y, kind, style.patch(kind_style), right);
+        }
+        while x < right {
+            surface.put(x, y, ' ', 1, style);
+            x += 1;
+        }
+    }
+}
+
 fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     let (width, _) = surface.size();
     let rows = editor.height;

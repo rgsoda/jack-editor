@@ -124,6 +124,27 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
     }))
 }
 
+/// What a highlight capture says the thing it named is, in the words the
+/// completion popup has room for. Captures that name syntax rather than a
+/// thing - punctuation, keywords, comments - have no kind and are not offered.
+fn kind_for(capture: &str) -> Option<&'static str> {
+    let kind = match capture.split('.').next()? {
+        "function" | "method" => "fn",
+        "type" | "constructor" => "type",
+        "constant" => "const",
+        "variable" => match capture.starts_with("variable.parameter") {
+            true => "param",
+            false => "var",
+        },
+        "property" | "field" => "field",
+        "module" | "namespace" => "mod",
+        "attribute" => "attr",
+        "label" => "label",
+        _ => return None,
+    };
+    Some(kind)
+}
+
 /// The parts of a highlight pass that do not change as injections recurse.
 struct Frame<'a> {
     rope: &'a Rope,
@@ -189,6 +210,27 @@ impl Syntax {
         let frame = Frame { rope, range: &range, theme };
         self.paint(&frame, &self.root, self.tree.root_node(), &mut styles, 0);
         Highlights { start: range.start, styles }
+    }
+
+    /// Identifier-shaped words the highlight query can name, with what kind of
+    /// thing each is. Only the root language: an injected region's names are
+    /// not what you are typing when you ask for a completion.
+    pub fn identifiers(&self, rope: &Rope, range: Range<usize>) -> Vec<(Range<usize>, &'static str)> {
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(range);
+
+        let mut found = Vec::new();
+        let names = self.root.highlights.capture_names();
+        let mut matches =
+            cursor.captures(&self.root.highlights, self.tree.root_node(), RopeProvider(rope));
+        while let Some((m, index)) = matches.next() {
+            let capture = m.captures()[*index];
+            let Some(kind) = kind_for(names[capture.index as usize]) else {
+                continue;
+            };
+            found.push((capture.node.byte_range(), kind));
+        }
+        found
     }
 
     fn paint(

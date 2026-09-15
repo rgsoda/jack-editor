@@ -35,6 +35,10 @@
 "ui.mode.normal"   = { fg = "black", bg = "blue", bold = true }
 "ui.mode.insert"   = { fg = "black", bg = "green", bold = true }
 
+"ui.completion" = { fg = "#f8f8f2", bg = "#44475a" }
+"ui.completion.selected" = { fg = "#282a36", bg = "#bd93f9", bold = true }
+"ui.completion.kind" = { fg = "#8be9fd", italic = true }
+
 "ui.picker" = { fg = "#f8f8f2", bg = "#282a36" }
 "ui.picker.prompt" = { fg = "#282a36", bg = "#bd93f9", bold = true }
 "ui.picker.selected" = { fg = "#f8f8f2", bg = "#44475a", bold = true }

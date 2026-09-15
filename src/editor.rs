@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
+use crate::complete::Completion;
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
@@ -163,6 +164,8 @@ pub struct Editor {
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
     pub picker: Option<Picker>,
+    /// The insert-mode completion popup, while one is open.
+    pub completion: Option<Completion>,
     /// The status-line prompt, when one is open. It owns the keyboard too.
     pub prompt: Option<Prompt>,
     pub search: Search,
@@ -214,6 +217,7 @@ impl Editor {
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
+            completion: None,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -862,6 +866,55 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// `^n` / `^p`: offer what could finish the word at the cursor. `backward`
+    /// is `^p`, which opens on the last candidate rather than the first.
+    pub fn open_completion(&mut self, backward: bool) {
+        let at = self.view().sel.head;
+        self.completion = Completion::new(self.view(), at, backward);
+        if self.completion.is_none() {
+            self.message = "no completions".into();
+        }
+    }
+
+    pub fn completion_step(&mut self, forward: bool) {
+        if let Some(completion) = self.completion.as_mut() {
+            completion.step(forward);
+        }
+    }
+
+    pub fn close_completion(&mut self) {
+        self.completion = None;
+    }
+
+    /// Follow the buffer as it changes under the popup: a typed character
+    /// narrows the list, a deleted one widens it, and running out closes it.
+    pub fn update_completion(&mut self) {
+        let at = self.view().sel.head;
+        let alive = match self.completion.as_mut() {
+            Some(completion) => {
+                let view = &self.views[self.current];
+                completion.update(view, at)
+            }
+            None => return,
+        };
+        if !alive {
+            self.completion = None;
+        }
+    }
+
+    /// Replace the half-typed word with the selected candidate, as one edit so
+    /// a single undo takes the whole completion back.
+    pub fn accept_completion(&mut self) {
+        let Some(completion) = self.completion.take() else {
+            return;
+        };
+        let text = completion.selected_text().to_string();
+        let start = completion.start;
+        let at = self.view().sel.head;
+        let cursor = start + text.chars().count();
+        self.view_mut().edit_at(start, at - start, &text, Some(cursor));
+    }
+
     pub fn insert(&mut self, text: &str) {
         self.view_mut().insert(text);
     }
@@ -879,6 +932,10 @@ impl Editor {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
+        // The popup belongs to insert mode, whichever way you leave it.
+        if mode != Mode::Insert {
+            self.completion = None;
+        }
         // Leaving insert mode with something selected keeps the selection and
         // hands it to visual mode, so `shift`-arrow, `esc`, `y` does what it
         // looks like it should. Without this the selection is still on screen

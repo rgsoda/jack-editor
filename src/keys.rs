@@ -73,6 +73,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "esc", what: "back to normal mode", mode: "visual" },
 
     Binding { keys: "esc", what: "back to normal mode", mode: "insert" },
+    Binding { keys: "^n ^p", what: "complete the word: next, previous", mode: "insert" },
+    Binding { keys: "tab ^y", what: "accept the completion", mode: "insert" },
+    Binding { keys: "esc ^e", what: "close the completion popup", mode: "insert" },
     Binding { keys: "shift+arrows", what: "select while typing", mode: "insert" },
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
     Binding { keys: "enter", what: "split the line, keeping the indent", mode: "insert" },
@@ -584,6 +587,29 @@ fn operator_key(operator: Pending) -> char {
     }
 }
 
+/// Insert mode with the completion popup open. True when the key was the
+/// popup's own and insert mode should not also see it.
+fn completing(editor: &mut Editor, key: KeyEvent, ctrl: bool) -> bool {
+    match (key.code, ctrl) {
+        (KeyCode::Char('n'), true) => editor.completion_step(true),
+        (KeyCode::Char('p'), true) => editor.completion_step(false),
+        // `tab` accepts because every other editor taught everyone that; `^y`
+        // accepts because vim taught the rest of us.
+        (KeyCode::Char('y'), true) | (KeyCode::Tab, _) => editor.accept_completion(),
+        // Esc closes the popup and leaves you typing rather than leaving insert
+        // mode: one escape, one thing undone.
+        (KeyCode::Char('e'), true) | (KeyCode::Esc, _) => editor.close_completion(),
+        // Typing and deleting keep it open, and it re-filters afterwards.
+        (KeyCode::Char(_), false) | (KeyCode::Backspace, _) => return false,
+        // Anything else dismisses it and then means what it usually means.
+        _ => {
+            editor.close_completion();
+            return false;
+        }
+    }
+    true
+}
+
 /// The motion a key names, and whether it includes the character it lands on.
 fn motion_for(code: KeyCode, ctrl: bool) -> Option<(Move, bool)> {
     let motion = match code {
@@ -630,7 +656,16 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let extend = key.modifiers.contains(KeyModifiers::SHIFT);
 
+    // The completion popup gets first refusal on the keyboard, but only for the
+    // keys that are its own: typing and deleting go through as normal and the
+    // popup follows along afterwards.
+    if editor.completion.is_some() && completing(editor, key, ctrl) {
+        return;
+    }
+
     match key.code {
+        KeyCode::Char('n') if ctrl => editor.open_completion(false),
+        KeyCode::Char('p') if ctrl => editor.open_completion(true),
         KeyCode::Esc => editor.set_mode(Mode::Normal),
         KeyCode::Char(c) if !ctrl && !alt => editor.insert(&c.to_string()),
         KeyCode::Enter => editor.insert_newline(),
@@ -649,6 +684,9 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
         KeyCode::PageDown => editor.move_cursor(Move::PageDown, extend),
         _ => {}
     }
+
+    // Typing and deleting change the word under the popup.
+    editor.update_completion();
 }
 
 #[cfg(test)]
@@ -1715,6 +1753,53 @@ plain
         let mut vim = Vim::new("one\ntwo\nthree\n");
         vim.press("2d<C-d>");
         assert_eq!(vim.text(), "one\ntwo\nthree\n");
+    }
+
+
+
+    #[test]
+    fn a_completion_finishes_the_word_and_undoes_in_one_step() {
+        let mut vim = Vim::new("render_widget\n");
+        vim.press("Gorend<C-n><tab>");
+        assert_eq!(vim.text(), "render_widget\nrender_widget\n");
+
+        vim.press("<esc>u");
+        assert_eq!(vim.text(), "render_widget\nrend\n");
+    }
+
+    #[test]
+    fn typing_narrows_the_popup_and_running_out_closes_it() {
+        let mut vim = Vim::new("alpha album\n");
+        vim.press("Goal<C-n>");
+        assert!(vim.editor.completion.is_some());
+        // `alb` still matches `album`...
+        vim.press("b");
+        assert!(vim.editor.completion.is_some());
+        // ...and `albz` matches nothing.
+        vim.press("z");
+        assert!(vim.editor.completion.is_none());
+        assert_eq!(vim.text(), "alpha album\nalbz\n");
+    }
+
+    #[test]
+    fn escape_closes_the_popup_without_leaving_insert_mode() {
+        let mut vim = Vim::new("alpha\n");
+        vim.press("Goal<C-n>");
+        assert!(vim.editor.completion.is_some());
+        vim.press("<esc>");
+        assert!(vim.editor.completion.is_none());
+        assert_eq!(vim.editor.mode, Mode::Insert);
+        // The second escape is the one that leaves.
+        vim.press("<esc>");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_word_with_nothing_to_finish_it_says_so() {
+        let mut vim = Vim::new("alpha\n");
+        vim.press("Gozz<C-n>");
+        assert!(vim.editor.completion.is_none());
+        assert_eq!(vim.editor.message, "no completions");
     }
 
 }

@@ -114,6 +114,16 @@ impl View {
         }
     }
 
+    /// What the grammar calls the names in a byte range, for completion. Empty
+    /// when there is no grammar for this file, which is why completion also has
+    /// a tier that only knows about words.
+    pub fn identifiers(&self, range: Range<usize>) -> Vec<(Range<usize>, &'static str)> {
+        match &self.syntax {
+            Some(syntax) => syntax.identifiers(&self.doc.text, range),
+            None => Vec::new(),
+        }
+    }
+
     pub fn highlights(&self, range: Range<usize>, theme: &Theme) -> Highlights {
         match &self.syntax {
             Some(syntax) => syntax.highlights(&self.doc.text, range, theme),
