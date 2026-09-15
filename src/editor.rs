@@ -16,7 +16,7 @@ use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
-use crate::view::{self, Indent, Move, Selection, TAB_WIDTH, View};
+use crate::view::{self, Find, Indent, Move, Selection, TAB_WIDTH, View};
 
 /// How many characters of a word bring the completion popup up on its own.
 /// Two, because one character narrows a buffer to hundreds of words and three
@@ -212,6 +212,9 @@ pub struct Editor {
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
     pub picker: Option<Picker>,
+    /// The last `f`, `F`, `t` or `T`, which is what `;` and `,` repeat. Shared
+    /// across buffers, as the search is.
+    pub last_find: Option<Find>,
     /// Where the cursor was before each jump, for `^o` and `^i`.
     pub jumps: Jumps,
     /// The insert-mode completion popup, while one is open.
@@ -279,6 +282,7 @@ impl Editor {
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
+            last_find: None,
             jumps: Jumps::default(),
             completion: None,
             prompt: None,
@@ -529,6 +533,93 @@ impl Editor {
         self.search.highlight = true;
         self.search.backward = false;
         self.search_again(false, 1);
+    }
+
+    /// `f` `F` `t` `T`: put the cursor on the `count`th target along this
+    /// line. `extend` drags a visual selection rather than collapsing it.
+    pub fn move_to_char(&mut self, find: Find, count: usize, extend: bool) {
+        let Some(dest) = self.find_target(find, count) else {
+            return;
+        };
+        let sel = &mut self.view_mut().sel;
+        sel.head = dest;
+        if !extend {
+            sel.anchor = dest;
+        }
+        self.clamp_cursor();
+    }
+
+    /// The same as the target of an operator - `df,` and `ct)`. The range runs
+    /// from the cursor to the target and is half-open, so `f` includes the
+    /// character it lands on and `t` stops before it.
+    pub fn select_to_char(&mut self, find: Find, count: usize) -> bool {
+        let at = self.view().sel.head;
+        let Some(dest) = self.find_target(find, count) else {
+            return false;
+        };
+        let sel = &mut self.view_mut().sel;
+        match find.backward {
+            true => (sel.anchor, sel.head) = (dest, at),
+            false => (sel.anchor, sel.head) = (at, dest + 1),
+        }
+        true
+    }
+
+    fn find_target(&mut self, find: Find, count: usize) -> Option<usize> {
+        let at = self.view().sel.head;
+        let found = self.view().find_char(at, find, count);
+        if found.is_none() {
+            self.message = format!("no {} on this line", find.target);
+        }
+        found
+    }
+
+    /// Remember a find so `;` and `,` can repeat it. Only a literal `f`, `F`,
+    /// `t` or `T` does this: repeating a find must not rewrite what is being
+    /// repeated, or `,` `,` would walk in one direction.
+    pub fn remember_find(&mut self, find: Find) {
+        self.last_find = Some(find);
+    }
+
+    /// `;` and `,` as a motion.
+    pub fn repeat_to_char(&mut self, reverse: bool, count: usize, extend: bool) {
+        let Some(find) = self.repeated_find(reverse) else {
+            return;
+        };
+        let count = self.repeat_count(find, count);
+        self.move_to_char(find, count, extend);
+    }
+
+    /// `;` and `,` as an operator's motion: `d;`.
+    pub fn select_repeat(&mut self, reverse: bool, count: usize) -> bool {
+        let Some(find) = self.repeated_find(reverse) else {
+            return false;
+        };
+        let count = self.repeat_count(find, count);
+        self.select_to_char(find, count)
+    }
+
+    /// Repeating a till that is already against its target means the next one:
+    /// `t,` then `;` should reach the following comma rather than sitting
+    /// where it is. Vim does this too - a `;` that cannot move is wasted.
+    fn repeat_count(&self, find: Find, count: usize) -> usize {
+        let at = self.view().sel.head;
+        match find.till && self.view().find_char(at, find, count) == Some(at) {
+            true => count + 1,
+            false => count,
+        }
+    }
+
+    /// What `;` repeats, or `,` repeats the other way.
+    fn repeated_find(&mut self, reverse: bool) -> Option<Find> {
+        let Some(find) = self.last_find else {
+            self.message = "no previous find".into();
+            return None;
+        };
+        Some(match reverse {
+            true => Find { backward: !find.backward, ..find },
+            false => find,
+        })
     }
 
     /// `gd`: the definition of the word under the cursor, and `gD` for the

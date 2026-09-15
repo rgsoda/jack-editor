@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::{Editor, Mode};
 use crate::object;
-use crate::view::Move;
+use crate::view::{Find, Move};
 
 /// One line of the help. These are written down rather than derived from the
 /// match arms below, so this is a promise the tests have to keep: every key
@@ -141,6 +141,10 @@ enum Pending {
     Leader,
     /// The `"` prefix, waiting for the register name.
     Register,
+    /// `f`, `F`, `t` or `T`, waiting for the character to look for.
+    /// `operator` is the key of the operator it will be handed to, or `None`
+    /// when the find is the whole command.
+    Find { operator: Option<char>, till: bool, backward: bool },
     /// `i` or `a`, waiting for the key that names the text object. `operator`
     /// is the key of the operator the object will be handed to, or `None` in
     /// visual mode, where selecting it is the whole command.
@@ -225,7 +229,9 @@ impl Keys {
             Some(Pending::Go) => "g",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
-            Some(Pending::Object { .. }) => unreachable!("handled above"),
+            Some(Pending::Find { .. }) | Some(Pending::Object { .. }) => {
+                unreachable!("handled above")
+            }
             None => "",
         });
         text
@@ -297,8 +303,32 @@ impl Keys {
                 self.finish();
             }
             Some(Pending::Register) => unreachable!("handled above"),
+            Some(Pending::Find { operator, till, backward }) => {
+                self.apply_find(editor, operator, till, backward, key, count.unwrap_or(1));
+                self.finish();
+            }
             Some(Pending::Object { operator, around }) => {
                 self.apply_object(editor, operator, around, key);
+                self.finish();
+            }
+            // `f` and friends after an operator are the same motion they are
+            // on their own; the operator waits for the character too.
+            Some(operator) if find_for(key.code, ctrl).is_some() => {
+                let (till, backward) = find_for(key.code, ctrl).expect("checked above");
+                self.pending = Some(Pending::Find {
+                    operator: Some(operator_key(operator)),
+                    till,
+                    backward,
+                });
+            }
+            // `;` and `,` repeat the last find, and an operator can take that
+            // as its motion too: `d;` deletes to wherever `;` would have gone.
+            Some(operator)
+                if matches!(key.code, KeyCode::Char(';') | KeyCode::Char(',')) && !ctrl =>
+            {
+                if editor.select_repeat(key.code == KeyCode::Char(','), count.unwrap_or(1)) {
+                    self.operate(editor, Some(operator_key(operator)));
+                }
                 self.finish();
             }
             // `i` and `a` after an operator are not the insert commands: they
@@ -356,6 +386,13 @@ impl Keys {
         let count = self.count;
         let repeat = count.unwrap_or(1);
 
+        if let Some(Pending::Find { operator, till, backward }) = self.pending {
+            self.pending = None;
+            self.apply_find(editor, operator, till, backward, key, repeat);
+            self.finish();
+            return;
+        }
+
         if let Some(Pending::Object { operator, around }) = self.pending {
             self.pending = None;
             self.apply_object(editor, operator, around, key);
@@ -392,6 +429,14 @@ impl Keys {
                 _ => Mode::VisualLine,
             }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
+            KeyCode::Char(';') | KeyCode::Char(',') => {
+                editor.repeat_to_char(key.code == KeyCode::Char(','), repeat, true);
+            }
+            _ if find_for(key.code, ctrl).is_some() => {
+                let (till, backward) = find_for(key.code, ctrl).expect("checked above");
+                self.pending = Some(Pending::Find { operator: None, till, backward });
+                return;
+            }
             // A count here is levels, not lines: `3>` moves the selection three
             // steps, as vim does.
             KeyCode::Char('>') => {
@@ -534,6 +579,9 @@ impl Keys {
             KeyCode::Char('N') => editor.search_repeat(true, repeat),
             KeyCode::Char('*') => editor.search_word_under_cursor(),
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
+            KeyCode::Char(';') | KeyCode::Char(',') => {
+                editor.repeat_to_char(key.code == KeyCode::Char(','), repeat, false);
+            }
 
             KeyCode::Char('u') => editor.undo(),
             KeyCode::Char('r') if ctrl => editor.redo(),
@@ -546,6 +594,10 @@ impl Keys {
             KeyCode::Char('=') => self.pending = Some(Pending::Reindent),
             KeyCode::Char('g') => self.pending = Some(Pending::Go),
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
+            _ if find_for(key.code, ctrl).is_some() => {
+                let (till, backward) = find_for(key.code, ctrl).expect("checked above");
+                self.pending = Some(Pending::Find { operator: None, till, backward });
+            }
             KeyCode::Char('G') => {
                 // Bare `G` goes to the last line, `{n}G` to line n.
                 editor.push_jump();
@@ -572,6 +624,39 @@ impl Keys {
         if !editor.select_object(object, around) {
             return;
         }
+        self.operate(editor, operator);
+    }
+
+    /// `f`, `F`, `t` or `T`, once the character to look for has been typed.
+    /// With an operator it covers the range it would have moved over; without
+    /// one it is a motion, which in visual mode drags the selection.
+    fn apply_find(
+        &mut self,
+        editor: &mut Editor,
+        operator: Option<char>,
+        till: bool,
+        backward: bool,
+        key: KeyEvent,
+        count: usize,
+    ) {
+        let KeyCode::Char(target) = key.code else {
+            return;
+        };
+        let find = Find { target, till, backward };
+        editor.remember_find(find);
+        match operator {
+            Some(operator) => {
+                if editor.select_to_char(find, count) {
+                    self.operate(editor, Some(operator));
+                }
+            }
+            None => editor.move_to_char(find, count, editor.mode.is_visual()),
+        }
+    }
+
+    /// Hand a selection - a text object's, or a find's - to the operator that
+    /// asked for it.
+    fn operate(&mut self, editor: &mut Editor, operator: Option<char>) {
         match operator {
             Some('>') => editor.shift_selection(true, 1),
             Some('<') => editor.shift_selection(false, 1),
@@ -616,7 +701,11 @@ impl Keys {
                     let (line, _) = editor.view().cursor_coords();
                     editor.reindent_lines(line, line + count - 1);
                 }
-                Pending::Go | Pending::Register | Pending::Leader | Pending::Object { .. } => {}
+                Pending::Go
+                | Pending::Register
+                | Pending::Leader
+                | Pending::Find { .. }
+                | Pending::Object { .. } => {}
             }
             return;
         }
@@ -722,6 +811,21 @@ fn completing(editor: &mut Editor, key: KeyEvent, ctrl: bool) -> bool {
         }
     }
     true
+}
+
+/// Whether a key starts a find, and how it stops: `f` and `F` land on the
+/// character, `t` and `T` one short of it; `F` and `T` look backwards.
+fn find_for(code: KeyCode, ctrl: bool) -> Option<(bool, bool)> {
+    if ctrl {
+        return None;
+    }
+    match code {
+        KeyCode::Char('f') => Some((false, false)),
+        KeyCode::Char('F') => Some((false, true)),
+        KeyCode::Char('t') => Some((true, false)),
+        KeyCode::Char('T') => Some((true, true)),
+        _ => None,
+    }
 }
 
 /// The motion a key names, and whether it includes the character it lands on.
@@ -1327,6 +1431,135 @@ mod tests {
         // on a slow machine.
         assert!(binding.as_millis() < 50, "a binding took {binding:?}");
         assert!(item.as_millis() < 800, "an item took {item:?}");
+    }
+
+    #[test]
+    fn f_and_capital_f_land_on_the_character() {
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("f,");
+        assert_eq!(vim.cursor(), (1, 4));
+        vim.press("f,");
+        assert_eq!(vim.cursor(), (1, 9));
+        vim.press("F,");
+        assert_eq!(vim.cursor(), (1, 4));
+    }
+
+    #[test]
+    fn t_and_capital_t_stop_one_short() {
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("t,");
+        assert_eq!(vim.cursor(), (1, 3));
+        vim.press("$");
+        vim.press("T,");
+        assert_eq!(vim.cursor(), (1, 10));
+    }
+
+    #[test]
+    fn a_count_takes_the_nth_one() {
+        let mut vim = Vim::new("a.b.c.d.e\n");
+        vim.press("3f.");
+        assert_eq!(vim.cursor(), (1, 6));
+        vim.press("2F.");
+        assert_eq!(vim.cursor(), (1, 2));
+    }
+
+    #[test]
+    fn a_find_stops_at_the_end_of_the_line() {
+        let mut vim = Vim::new("one two\nthree, four\n");
+        vim.press("f,");
+        // The comma is on the next line, which `f` does not reach.
+        assert_eq!(vim.cursor(), (1, 1));
+        assert_eq!(vim.editor.message, "no , on this line");
+    }
+
+    #[test]
+    fn an_operator_takes_a_find_as_its_motion() {
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("df,");
+        assert_eq!(vim.text(), " two, three\n");
+
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("dt,");
+        assert_eq!(vim.text(), ", two, three\n");
+
+        // Backwards, from the end of the word `three`.
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("$dF,");
+        assert_eq!(vim.text(), "one, twoe\n");
+    }
+
+    #[test]
+    fn change_with_a_find_leaves_you_typing() {
+        let mut vim = Vim::new("call(a, b);\n");
+        vim.press("ct)");
+        assert_eq!(vim.editor.mode, Mode::Insert);
+        assert_eq!(vim.text(), ");\n");
+    }
+
+    #[test]
+    fn yank_with_a_find_takes_what_it_covers() {
+        let mut vim = Vim::new("one, two\n");
+        vim.press("yf,");
+        assert_eq!(vim.editor.registers.get(None).text, "one,");
+    }
+
+    #[test]
+    fn semicolon_repeats_and_comma_reverses() {
+        let mut vim = Vim::new("a.b.c.d\n");
+        vim.press("f.");
+        assert_eq!(vim.cursor(), (1, 2));
+        vim.press(";");
+        assert_eq!(vim.cursor(), (1, 4));
+        vim.press(";");
+        assert_eq!(vim.cursor(), (1, 6));
+        vim.press(",");
+        assert_eq!(vim.cursor(), (1, 4));
+        // Reversing does not change what is being repeated: another `;` still
+        // goes the way the original `f` went.
+        vim.press(";");
+        assert_eq!(vim.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn repeating_a_till_moves_on_rather_than_sticking() {
+        // The classic `t` trap: the cursor is already beside the comma, so a
+        // repeat that meant "the same one" would never move again.
+        let mut vim = Vim::new("a, b, c, d\n");
+        vim.press("t,");
+        assert_eq!(vim.cursor(), (1, 1));
+        vim.press(";");
+        assert_eq!(vim.cursor(), (1, 4));
+        vim.press(";");
+        assert_eq!(vim.cursor(), (1, 7));
+    }
+
+    #[test]
+    fn repeating_before_any_find_says_so() {
+        let mut vim = Vim::new("a.b\n");
+        vim.press(";");
+        assert_eq!(vim.editor.message, "no previous find");
+    }
+
+    #[test]
+    fn an_operator_can_take_the_repeat_too() {
+        let mut vim = Vim::new("a.b.c\n");
+        vim.press("f.");
+        vim.press("d;");
+        // From the first dot through the second, as vim does.
+        assert_eq!(vim.text(), "ac\n");
+    }
+
+    #[test]
+    fn a_find_drags_a_visual_selection() {
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("vf,");
+        assert_eq!(vim.cursor(), (1, 4));
+        vim.press("y");
+        assert_eq!(vim.editor.registers.get(None).text, "one,");
+
+        let mut vim = Vim::new("one, two, three\n");
+        vim.press("vt,;y");
+        assert_eq!(vim.editor.registers.get(None).text, "one, two");
     }
 
     #[test]

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 25: go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 26: `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -22,6 +22,9 @@ Starts in normal mode, like vim.
 | `h` `j` `k` `l`, arrows | move |
 | `w` `b` `e` | word forward / back / end |
 | `0` `^` `$` | line start / first non-blank / line end |
+| `f{c}` `F{c}` | to the next / previous `{c}` on the line |
+| `t{c}` `T{c}` | up to it, from either side |
+| `;` `,` | repeat the last `f`/`t`, reverse it |
 | `gg` `G` `{n}G` | first line / last line / line n |
 | `/` `?` | search forward / backward |
 | `n` `N` | repeat the search / reverse it |
@@ -359,6 +362,29 @@ the terminal's width and the text's width stop being the same number:
 measured against, and `width` stays the terminal. Getting that wrong shows up
 as a cursor that drifts from the character it is on once a line is long enough
 to scroll.
+
+## Finding a character on the line
+
+`f{c}` goes to the next `{c}` on this line, `F{c}` to the previous one, and `t`
+and `T` stop one short of it. `;` repeats the last of those and `,` repeats it
+the other way — without changing what is being repeated, so `,` `;` walks back
+and then on again rather than dithering.
+
+They are motions, so an operator takes them: `df,` deletes through the next
+comma, `dt,` stops before it, `ct)` changes up to the closing paren, and `d;`
+takes whatever `;` would have moved over. The range is half-open from the
+cursor, which is what makes `f` include the character it lands on and `t` stop
+beside it. In visual mode they drag the selection like any other motion.
+
+The line and no further, which is the whole character of the motion: `f` is for
+getting somewhere you can already see. Off the end of it, the status line says
+so rather than wandering into the next line.
+
+One borrowed detail, because without it `t` is a trap: **a repeat of a till
+that could not move goes to the next one instead.** After `t,` the cursor is
+already against the comma, so a `;` meaning "the same one again" would never
+move — press it twice and you would still be there. Vim does the same, unless
+`cpoptions` asks it not to.
 
 ## Text objects
 
@@ -835,8 +861,6 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- `f` and `t`: find a character on the line, which `gd`'s tests wanted and
-  which nothing else in the keymap replaces.
 - `gd` across files, which means indexing the project: walk, parse, run the
   tags query per file, cache it. That is where this turns into a language
   server, and vim's `gd` does not do it either.

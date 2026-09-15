@@ -79,6 +79,17 @@ impl Selection {
     }
 }
 
+/// One press of `f`, `F`, `t` or `T`: which character to look for, and how to
+/// stop at it. Remembered by the editor so `;` and `,` can repeat it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Find {
+    pub target: char,
+    /// `t` and `T`, which stop one character short of the target.
+    pub till: bool,
+    /// `F` and `T`, which look back along the line rather than on.
+    pub backward: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Move {
     Left,
@@ -206,6 +217,46 @@ impl View {
             end += 1;
         }
         start..end
+    }
+
+    /// Where `f`, `F`, `t` or `T` would put the cursor: the `count`th target
+    /// on this line, or one short of it for a till. `None` when the line does
+    /// not hold that many.
+    ///
+    /// This line and no further, which is the whole character of the motion:
+    /// `f` is for getting somewhere you can see.
+    pub fn find_char(&self, at: usize, find: Find, count: usize) -> Option<usize> {
+        let line = self.doc.char_to_line(at);
+        let start = self.doc.line_to_char(line);
+        let text = self.doc.line_str(line);
+        let chars: Vec<char> = text.chars().collect();
+        let column = at - start;
+
+        let mut seen = 0;
+        let mut found = None;
+        let columns: Vec<usize> = match find.backward {
+            true => (0..column.min(chars.len())).rev().collect(),
+            false => (column + 1..chars.len()).collect(),
+        };
+        for i in columns {
+            if chars[i] == find.target {
+                seen += 1;
+                if seen == count {
+                    found = Some(i);
+                    break;
+                }
+            }
+        }
+
+        // A till stops beside the target rather than on it. Neither step can
+        // leave the line: a forward target is at least one column on, and a
+        // backward one at least one column back.
+        let column = match (found?, find.till, find.backward) {
+            (i, true, false) => i - 1,
+            (i, true, true) => i + 1,
+            (i, false, _) => i,
+        };
+        Some(start + column)
     }
 
     /// Whether the cursor is somewhere completion should keep quiet. False
