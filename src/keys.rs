@@ -40,6 +40,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "cc c{motion}", what: "change lines, over a motion", mode: "normal" },
     Binding { keys: "yy Y y{motion}", what: "yank lines, over a motion", mode: "normal" },
     Binding { keys: "p P", what: "put after, before the cursor", mode: "normal" },
+    Binding { keys: ">> << >{motion}", what: "indent, dedent lines", mode: "normal" },
     Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
     Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
@@ -68,6 +69,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
     Binding { keys: "c s", what: "delete it and start typing", mode: "visual" },
     Binding { keys: "y", what: "yank the selection", mode: "visual" },
+    Binding { keys: "> <", what: "indent, dedent the lines ({n} steps)", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
     Binding { keys: "D X Y C S", what: "the same, on whole lines", mode: "visual" },
     Binding { keys: "esc", what: "back to normal mode", mode: "visual" },
@@ -76,6 +78,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^n ^p", what: "complete the word: next, previous", mode: "insert" },
     Binding { keys: "up down", what: "next, previous completion", mode: "insert" },
     Binding { keys: "enter tab ^y", what: "accept the completion", mode: "insert" },
+    Binding { keys: "^t ^d", what: "indent, dedent this line", mode: "insert" },
     Binding { keys: "esc ^e", what: "close the completion popup", mode: "insert" },
     Binding { keys: "shift+arrows", what: "select while typing", mode: "insert" },
     Binding { keys: "backspace delete", what: "delete a grapheme, or the selection", mode: "insert" },
@@ -87,6 +90,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set number", what: "nonumber, relativenumber, hybrid", mode: "command" },
     Binding { keys: ":set trim", what: "notrim: strip trailing space on save", mode: "command" },
     Binding { keys: ":set glyphs", what: "noglyphs: nerd font status line, or ascii", mode: "command" },
+    Binding { keys: ":set shiftwidth=4", what: "how wide one indent step is", mode: "command" },
+    Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
 
@@ -109,10 +114,13 @@ pub enum Action {
 /// What a half-typed command is waiting for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
-    /// An operator waiting for the motion it applies to: `d`, `c`, `y`.
+    /// An operator waiting for the motion it applies to: `d`, `c`, `y`, and
+    /// the two that move lines sideways rather than taking them away.
     Delete,
     Change,
     Yank,
+    Indent,
+    Dedent,
     /// The `g` prefix, waiting for `gg`.
     Go,
     /// The space leader, waiting for which picker to open.
@@ -197,6 +205,8 @@ impl Keys {
             Some(Pending::Delete) => "d",
             Some(Pending::Change) => "c",
             Some(Pending::Yank) => "y",
+            Some(Pending::Indent) => ">",
+            Some(Pending::Dedent) => "<",
             Some(Pending::Go) => "g",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
@@ -364,6 +374,16 @@ impl Keys {
                 _ => Mode::VisualLine,
             }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
+            // A count here is levels, not lines: `3>` moves the selection three
+            // steps, as vim does.
+            KeyCode::Char('>') => {
+                editor.shift_selection(true, repeat);
+                editor.set_mode(Mode::Normal);
+            }
+            KeyCode::Char('<') => {
+                editor.shift_selection(false, repeat);
+                editor.set_mode(Mode::Normal);
+            }
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
@@ -490,6 +510,8 @@ impl Keys {
             KeyCode::Char('d') => self.pending = Some(Pending::Delete),
             KeyCode::Char('c') => self.pending = Some(Pending::Change),
             KeyCode::Char('y') => self.pending = Some(Pending::Yank),
+            KeyCode::Char('>') => self.pending = Some(Pending::Indent),
+            KeyCode::Char('<') => self.pending = Some(Pending::Dedent),
             KeyCode::Char('g') => self.pending = Some(Pending::Go),
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
             KeyCode::Char('G') => {
@@ -518,6 +540,8 @@ impl Keys {
             return;
         }
         match operator {
+            Some('>') => editor.shift_selection(true, 1),
+            Some('<') => editor.shift_selection(false, 1),
             Some('y') => editor.yank_selection(self.register),
             Some('c') => {
                 // An empty object - `ci(` on `()` - deletes nothing, but the
@@ -543,12 +567,16 @@ impl Keys {
             (Pending::Delete, KeyCode::Char('d'))
                 | (Pending::Change, KeyCode::Char('c'))
                 | (Pending::Yank, KeyCode::Char('y'))
+                | (Pending::Indent, KeyCode::Char('>'))
+                | (Pending::Dedent, KeyCode::Char('<'))
         );
         if doubled {
             match operator {
                 Pending::Delete => editor.delete_lines(self.register, count),
                 Pending::Change => editor.change_lines(self.register, count),
                 Pending::Yank => editor.yank_lines(self.register, count),
+                Pending::Indent => editor.shift_count(true, count),
+                Pending::Dedent => editor.shift_count(false, count),
                 Pending::Go | Pending::Register | Pending::Leader | Pending::Object { .. } => {}
             }
             return;
@@ -571,6 +599,9 @@ impl Keys {
 
         match operator {
             Pending::Yank => editor.yank_selection(self.register),
+            // `>j` moves this line and the next one, and leaves them there.
+            Pending::Indent => editor.shift_motion(true),
+            Pending::Dedent => editor.shift_motion(false),
             _ => editor.delete_selection(self.register),
         }
         if operator == Pending::Change {
@@ -584,6 +615,8 @@ fn operator_key(operator: Pending) -> char {
     match operator {
         Pending::Change => 'c',
         Pending::Yank => 'y',
+        Pending::Indent => '>',
+        Pending::Dedent => '<',
         _ => 'd',
     }
 }
@@ -671,10 +704,12 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     match key.code {
         KeyCode::Char('n') if ctrl => editor.open_completion(false),
         KeyCode::Char('p') if ctrl => editor.open_completion(true),
+        KeyCode::Char('t') if ctrl => editor.shift_current_line(true),
+        KeyCode::Char('d') if ctrl => editor.shift_current_line(false),
         KeyCode::Esc => editor.set_mode(Mode::Normal),
         KeyCode::Char(c) if !ctrl && !alt => editor.insert(&c.to_string()),
         KeyCode::Enter => editor.insert_newline(),
-        KeyCode::Tab => editor.insert("\t"),
+        KeyCode::Tab => editor.insert_tab(),
         KeyCode::Backspace => editor.delete_backward(),
         KeyCode::Delete => editor.delete_forward(),
         KeyCode::Left => editor.move_cursor(Move::Left, extend),
@@ -730,6 +765,8 @@ mod tests {
                         "bs" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
                         "tab" => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
                         "space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+                        // `<<` would otherwise read as the start of a key name.
+                        "lt" => KeyEvent::new(KeyCode::Char('<'), KeyModifiers::NONE),
                         "left" => KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
                         "right" => KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
                         "up" => KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -1826,6 +1863,101 @@ plain
         let mut vim = Vim::new("alpha\n");
         vim.press("Goal<C-n><esc><cr>x");
         assert_eq!(vim.text(), "alpha\nal\nx\n");
+    }
+
+
+    #[test]
+    fn shifting_lines_moves_them_by_one_step() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press(">>");
+        assert_eq!(vim.text(), "\tone\ntwo\nthree\n");
+        vim.press("<lt><lt>");
+        assert_eq!(vim.text(), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn a_count_shifts_that_many_lines() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\n");
+        vim.press("3>>");
+        assert_eq!(vim.text(), "\tone\n\ttwo\n\tthree\nfour\n");
+    }
+
+    #[test]
+    fn shifting_is_one_undo_step_and_lands_on_the_first_non_blank() {
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("2>>");
+        assert_eq!(vim.cursor(), (1, 2));
+        vim.press("u");
+        assert_eq!(vim.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn dedent_takes_what_indent_there_is_and_no_more() {
+        let mut vim = Vim::new("  two spaces\n\t\ttwo tabs\nnone\n");
+        vim.press("3<lt><lt>");
+        // Two spaces is less than one step, so the line lands at the margin.
+        assert_eq!(vim.text(), "two spaces\n\ttwo tabs\nnone\n");
+    }
+
+    #[test]
+    fn blank_lines_are_left_where_they_are() {
+        let mut vim = Vim::new("one\n\n   \ntwo\n");
+        vim.press("4>>");
+        assert_eq!(vim.text(), "\tone\n\n   \n\ttwo\n");
+    }
+
+    #[test]
+    fn visual_shifts_the_selected_lines_and_a_count_is_levels() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press("Vj>");
+        assert_eq!(vim.text(), "\tone\n\ttwo\nthree\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("Vj3>");
+        assert_eq!(vim.text(), "\t\t\tone\n\t\t\ttwo\n");
+    }
+
+    #[test]
+    fn a_motion_or_an_object_says_which_lines_to_shift() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        vim.press(">j");
+        assert_eq!(vim.text(), "\tone\n\ttwo\nthree\n");
+
+        let mut vim = Vim::new("one\ntwo\n\nthree\n");
+        vim.press(">ip");
+        assert_eq!(vim.text(), "\tone\n\ttwo\n\nthree\n");
+    }
+
+    #[test]
+    fn expandtab_and_shiftwidth_decide_what_a_step_is() {
+        let mut vim = Vim::new("one\n");
+        vim.press(":set expandtab<cr>:set sw=2<cr>>>");
+        assert_eq!(vim.text(), "  one\n");
+        // And `tab` follows the same setting.
+        vim.press("A<tab>x<esc>");
+        assert_eq!(vim.text(), "  one x\n");
+    }
+
+    #[test]
+    fn insert_mode_shifts_the_line_without_moving_off_the_word() {
+        let mut vim = Vim::new("one\n");
+        vim.press("A<C-t>");
+        assert_eq!(vim.text(), "\tone\n");
+        // Still at the end of the word, not pushed along by the tab.
+        assert_eq!(vim.editor.mode, Mode::Insert);
+        vim.press("x<C-d>");
+        assert_eq!(vim.text(), "onex\n");
+    }
+
+
+    #[test]
+    fn an_object_shifts_only_the_lines_it_covers() {
+        // `ap` reaches to the start of the line after the paragraph, which is
+        // not part of it.
+        let mut vim = Vim::new("one\ntwo\n\nthree\n");
+        vim.press(">ap");
+        assert_eq!(vim.text(), "\tone\n\ttwo\n\nthree\n");
     }
 
 }

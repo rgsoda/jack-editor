@@ -11,6 +11,40 @@ use crate::syntax::{Highlights, Syntax, language_for_path};
 use crate::theme::Theme;
 
 pub const TAB_WIDTH: usize = 4;
+
+/// What one step of indentation is: how many columns, and whether to spend
+/// them on tabs or spaces.
+#[derive(Clone, Copy, Debug)]
+pub struct Indent {
+    pub width: usize,
+    pub tabs: bool,
+}
+
+impl Indent {
+    /// The whitespace that reaches `column`. With tabs, as many whole tab
+    /// stops as fit and spaces for the remainder - which is what a mixture of
+    /// tab width and shift width leaves you with either way.
+    pub fn make(&self, column: usize) -> String {
+        match self.tabs {
+            true => "\t".repeat(column / TAB_WIDTH) + &" ".repeat(column % TAB_WIDTH),
+            false => " ".repeat(column),
+        }
+    }
+
+    /// What `tab` inserts at display column `at`: enough to reach the next
+    /// stop, or a literal tab.
+    pub fn tab(&self, at: usize) -> String {
+        match self.tabs {
+            true => "\t".to_string(),
+            false => " ".repeat(self.width - (at % self.width)),
+        }
+    }
+}
+
+/// Byte length of the first `chars` chars of `text`.
+fn leading_bytes(text: &str, chars: usize) -> usize {
+    text.char_indices().nth(chars).map_or(text.len(), |(i, _)| i)
+}
 /// Rows kept between the cursor and the top/bottom edge when scrolling.
 const SCROLLOFF: usize = 3;
 
@@ -134,6 +168,66 @@ impl View {
     /// Strip trailing whitespace from every line, as one undoable transaction,
     /// and say how many lines changed. The cursor comes back to where it was,
     /// or to the end of its line if it was sitting in the spaces that went.
+    /// Indent or dedent lines `first..=last` by `levels` steps, as one
+    /// transaction. Returns how many lines actually moved.
+    ///
+    /// Blank lines are left alone, as vim leaves them: indenting a paragraph
+    /// should not leave trailing whitespace on the gaps between its lines.
+    pub fn shift_lines(
+        &mut self,
+        first: usize,
+        last: usize,
+        out: bool,
+        levels: usize,
+        indent: Indent,
+    ) -> usize {
+        let mut changes = Vec::new();
+        let step = indent.width * levels;
+        for line in first..=last.min(self.doc.len_lines().saturating_sub(1)) {
+            let text = self.doc.line_str(line);
+            if text.trim().is_empty() {
+                continue;
+            }
+            let leading = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            let column = display_col(&text, leading);
+            let target = match out {
+                true => column + step,
+                false => column.saturating_sub(step),
+            };
+            let wanted = indent.make(target);
+            if wanted == text[..leading_bytes(&text, leading)] {
+                continue;
+            }
+            let base = self.doc.line_to_char(line);
+            changes.push(Change {
+                pos: base,
+                removed: text.chars().take(leading).collect(),
+                inserted: wanted,
+            });
+        }
+        if changes.is_empty() {
+            return 0;
+        }
+
+        let count = changes.len();
+        let (line, _) = self.cursor_coords();
+        let tx = Transaction::new(changes, self.sel, self.sel);
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        // The cursor lands on the first non-blank of the line it was on, which
+        // is where vim leaves it and the only column that still means the same
+        // thing after the line has moved sideways.
+        let base = self.doc.line_to_char(line);
+        let text = self.doc.line_str(line);
+        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        self.sel = Selection::point(base + blank.min(self.doc.line_len_chars(line)));
+        self.goal_col = None;
+        self.history.push(Transaction { sel_after: self.sel, ..tx });
+        count
+    }
+
     pub fn trim_trailing_whitespace(&mut self) -> usize {
         let mut changes = Vec::new();
         for line in 0..self.doc.len_lines() {

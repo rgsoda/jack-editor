@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 19: autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 20: indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -41,6 +41,7 @@ Starts in normal mode, like vim.
 | `yy` `Y` `y{motion}` | yank lines / over a motion |
 | `p` `P` | put after / before the cursor |
 | `diw` `daw` `ciw` `yiw` | an operator over a text object (see below) |
+| `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `v` `V` | select characters / whole lines |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
@@ -68,6 +69,8 @@ Starts in normal mode, like vim.
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
+| `:set shiftwidth=4` | `sw`: how wide one indent step is |
+| `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -92,6 +95,7 @@ Starts in normal mode, like vim.
 | `d` `x` | delete the selection |
 | `c` `s` | delete it and start typing |
 | `y` | yank it |
+| `>` `<` `{n}>` | indent / dedent the lines, n steps |
 | `p` `P` | replace it with a register |
 | `D` `X` `Y` `C` `S` | the same, on whole lines |
 | `esc` | back to normal mode |
@@ -104,6 +108,7 @@ Starts in normal mode, like vim.
 | `^n` `^p`, up/down | complete the word: next candidate, previous |
 | `enter` `tab` `^y` | accept the completion |
 | `esc` `^e` | close the popup, still typing |
+| `^t` `^d` | indent / dedent this line |
 | `backspace` `delete` | delete a grapheme, or the selection |
 | arrows, `home`, `end` | move (with `shift` to select) |
 | `esc` | back to normal mode |
@@ -362,6 +367,36 @@ counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
 
+## Indent and dedent
+
+`>>` and `<<` move the line sideways by one step, `3>>` moves three lines,
+`>{motion}` moves what the motion covers — `>j`, `>ap`, `>i{`. In visual mode
+`>` and `<` move the selected lines and drop back to normal mode, and there a
+count is *steps* rather than lines, so `3>` moves the selection three of them.
+In insert mode `^t` and `^d` shift the line you are typing on without moving
+the cursor off the word.
+
+A step is `:set shiftwidth=4` columns of `:set noexpandtab` — a tab by default,
+because that is what `tab` already inserted. With `expandtab` both the indent
+commands and `tab` itself switch to spaces. Where a tab cannot express the
+width (spaces set to 2 with tabs on, say) the remainder is spaces, which is the
+same mixture vim ends up with.
+
+Two details worth stating because they are easy to get wrong and the tests pin
+them down. Blank lines are left alone — indenting a paragraph should not leave
+trailing whitespace in the gaps. And a shift is one transaction however many
+lines it touched, so one `u` puts them all back, with the cursor landing on the
+first non-blank of the line it was on: the only column that still means the
+same thing after the line has moved.
+
+A motion covers the line it lands *on* (`>j` moves two lines) while a selection
+or an object is half-open (`>ap` does not reach the line after the paragraph).
+That is the same rule vim follows and the reason those are two code paths.
+
+None of this is syntax-aware: it moves lines by a fixed step rather than working
+out what the nesting says they deserve. Tree-sitter grammars ship indentation
+queries for exactly that, and it is the obvious next thing here.
+
 ## Autocomplete
 
 `^n` in insert mode offers what could finish the word you are on, `^p` the same
@@ -565,7 +600,8 @@ was at first:
 
 ## Next
 
-- Indent and dedent: `>>`, `<<`, and `>` over a selection.
+- Tree-sitter indentation queries, so a step is what the nesting deserves
+  rather than a fixed width - and so `enter` indents the new line properly.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

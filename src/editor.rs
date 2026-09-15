@@ -15,7 +15,7 @@ use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers};
 use crate::syntax::Highlights;
 use crate::theme::Theme;
-use crate::view::{Move, Selection, View};
+use crate::view::{Indent, Move, Selection, TAB_WIDTH, View};
 
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
@@ -150,6 +150,8 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// One step of indentation: how wide, and tabs or spaces.
+    pub indent: Indent,
     /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
     /// terminal whose font has not been patched.
     pub glyphs: bool,
@@ -210,6 +212,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            indent: Indent { width: TAB_WIDTH, tabs: true },
             quit: None,
             signs_enabled: true,
             signs_token: 0,
@@ -444,7 +447,22 @@ impl Editor {
     }
 
     fn set_option(&mut self, option: &str) {
+        // Options that take a value: `:set shiftwidth=2`.
+        if let Some((name, value)) = option.split_once('=') {
+            match (name, value.parse::<usize>()) {
+                ("shiftwidth" | "sw", Ok(width)) if width > 0 && width <= 16 => {
+                    self.indent.width = width;
+                }
+                ("shiftwidth" | "sw", _) => {
+                    self.message = format!("shiftwidth wants 1 to 16, not {value:?}");
+                }
+                _ => self.message = format!("not an option: {name}"),
+            }
+            return;
+        }
         match option {
+            "expandtab" | "et" => self.indent.tabs = false,
+            "noexpandtab" | "noet" => self.indent.tabs = true,
             "number" | "nu" => self.numbers = Numbers::Absolute,
             "nonumber" | "nonu" => self.numbers = Numbers::Off,
             "relativenumber" | "rnu" => self.numbers = Numbers::Relative,
@@ -460,11 +478,13 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
-                    self.glyphs
+                    self.glyphs,
+                    self.indent.width,
+                    !self.indent.tabs
                 );
             }
             other => self.message = format!("not an option: {other}"),
@@ -913,6 +933,64 @@ impl Editor {
         let at = self.view().sel.head;
         let cursor = start + text.chars().count();
         self.view_mut().edit_at(start, at - start, &text, Some(cursor));
+    }
+
+    /// `>>` and `<<`, `>` over a motion, `>` in visual mode: move lines
+    /// sideways by whole steps of indentation.
+    pub fn shift_lines(&mut self, out: bool, first: usize, last: usize, levels: usize) {
+        let indent = self.indent;
+        self.view_mut().shift_lines(first, last, out, levels, indent);
+    }
+
+    /// The lines `count` lines from the cursor down, for `3>>`.
+    pub fn shift_count(&mut self, out: bool, count: usize) {
+        let (line, _) = self.view().cursor_coords();
+        self.shift_lines(out, line, line + count - 1, 1);
+    }
+
+    /// The lines a selection covers, for visual `>` and for `>ip`. The range
+    /// is half-open at both: a selection that stops at the start of a line has
+    /// not reached into it.
+    pub fn shift_selection(&mut self, out: bool, levels: usize) {
+        let (start, end) = self.selection_range().unwrap_or_else(|| self.view().sel.range());
+        let view = self.view();
+        let (first, _) = view.doc.coords(start);
+        let (last, column) = view.doc.coords(end);
+        let last = match column == 0 && last > first {
+            true => last - 1,
+            false => last,
+        };
+        self.shift_lines(out, first, last, levels);
+    }
+
+    /// The lines a motion covered, for `>j`. A motion ends *on* a line rather
+    /// than before it, which is why `>j` moves two lines and not one.
+    pub fn shift_motion(&mut self, out: bool) {
+        let view = self.view();
+        let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
+        let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
+        self.shift_lines(out, first, last, 1);
+    }
+
+    /// `tab` in insert mode: a literal tab, or spaces to the next stop.
+    pub fn insert_tab(&mut self) {
+        let at = self.view().cursor_display_col();
+        let text = self.indent.tab(at);
+        self.insert(&text);
+    }
+
+    /// `^t` and `^d` in insert mode: shift the line the cursor is on without
+    /// leaving insert mode or moving the cursor off its word.
+    pub fn shift_current_line(&mut self, out: bool) {
+        let (line, column) = self.view().cursor_coords();
+        let before = self.view().doc.line_len_chars(line);
+        let indent = self.indent;
+        self.view_mut().shift_lines(line, line, out, 1, indent);
+        // The cursor keeps its place in the text rather than its column.
+        let after = self.view().doc.line_len_chars(line);
+        let base = self.view().doc.line_to_char(line);
+        let moved = (column + after).saturating_sub(before).min(after);
+        self.view_mut().sel = Selection::point(base + moved);
     }
 
     pub fn insert(&mut self, text: &str) {
