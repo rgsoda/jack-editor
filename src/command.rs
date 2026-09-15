@@ -87,8 +87,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "dog",
         kind: Kind::Flag(true),
-        about: "A dog in the status line. It runs while you type and sits down \
-                where it stopped. Needs glyphs.",
+        about: "A dog in the status line. It runs while the cursor moves and \
+                sits down where it stopped. Needs glyphs.",
     },
     Setting {
         name: "tabline",

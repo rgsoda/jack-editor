@@ -1950,7 +1950,15 @@ impl Editor {
         self.registers.get(Some(SYSTEM))
     }
 
-    /// A key was pressed: the dog takes a step.
+    /// Where the cursor is, in a form that can be compared before and after a
+    /// key: which buffer, and where in it. The dog runs on this changing
+    /// rather than on the keystroke, so holding a key that goes nowhere - `l`
+    /// against the end of a line, a `:w`, an `esc` - leaves it sitting.
+    pub fn cursor_mark(&self) -> (usize, usize) {
+        (self.current, self.view().sel.head)
+    }
+
+    /// The cursor moved: the dog takes a step.
     pub fn dog_runs(&mut self) {
         self.dog.steps = self.dog.steps.wrapping_add(1);
         self.dog.running = true;
@@ -2648,6 +2656,30 @@ mod tests {
         e.prompt_input(key(KeyCode::Char('w')));
         e.prompt_input(key(KeyCode::Tab));
         assert_eq!(e.prompt.as_ref().unwrap().input, "w");
+    }
+
+    #[test]
+    fn the_dog_follows_the_cursor_rather_than_the_keyboard() {
+        let mut e = editor("one two\nthree four\n");
+        let start = e.cursor_mark();
+
+        // Anything that moves the cursor is a step.
+        e.move_cursor(Move::Down, false);
+        assert_ne!(e.cursor_mark(), start, "the cursor moved");
+
+        // Anything that does not is not: a command that writes a message, a
+        // mode change, or a motion with nowhere left to go.
+        let sitting = e.cursor_mark();
+        e.set_mode(Mode::Insert);
+        e.set_mode(Mode::Normal);
+        e.message = "something happened".into();
+        assert_eq!(e.cursor_mark(), sitting);
+
+        e.goto_line(0);
+        e.move_cursor(Move::LineStart, false);
+        let at_start = e.cursor_mark();
+        e.move_cursor(Move::Left, false);
+        assert_eq!(e.cursor_mark(), at_start, "no room left to move");
     }
 
     #[test]

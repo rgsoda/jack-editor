@@ -217,8 +217,12 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         loop {
             if let Message::Key(key) = message {
                 editor.message.clear();
-                editor.dog_runs();
                 let was_armed = std::mem::take(&mut quit_armed);
+                // The dog runs on the cursor, not on the keyboard: a key that
+                // moves nothing - `esc`, a `:w`, `l` at the end of a line -
+                // is not a step, and neither is a leant-on key that has run
+                // out of line to move along.
+                let was_at = editor.cursor_mark();
 
                 match keys.handle(editor, key) {
                     Action::Continue => {}
@@ -229,6 +233,9 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
                         editor.message = "unsaved changes - press ^Q again to quit".into();
                         quit_armed = true;
                     }
+                }
+                if editor.cursor_mark() != was_at {
+                    editor.dog_runs();
                 }
             } else if let Message::Items { token, items, done } = message {
                 if token != streamed_token {

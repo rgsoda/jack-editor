@@ -462,14 +462,19 @@ to scroll.
 ## The dog
 
 There is a dog in the status line. It comes in at the left end of its lane and
-runs while you type — a step on every key, so it goes as fast as
+runs while you type — a step every time the cursor moves, so it goes as fast as
 you do. Stop typing and it sits down where it had got to, and the next burst of
 typing carries on from there: one animal changing pace, rather than a glyph
 that teleports home every time you pause.
 
+It follows the cursor rather than the keyboard, so a key that goes nowhere -
+`esc`, a `:w`, an `l` against the end of a line - is not a step. A key held
+down until it runs out of line stops the dog with it, which is the only reading
+that makes the run mean anything.
+
 It needs no timer and no thread, because the keyboard is the only clock it
-wants: a key is a step, and the moment nothing arrives is the moment typing has
-stopped. The run loop already blocks waiting for the next message; while the
+wants: a cursor that moves is a step, and the moment nothing arrives is the
+moment typing has stopped. The run loop already blocks waiting for the next message; while the
 dog is running it blocks with a 700ms timeout instead, and a timeout is the
 dog sitting down. One extra wake-up after the last key of a burst, and none at
 all while the editor is idle — the loop goes back to blocking for ever once the
