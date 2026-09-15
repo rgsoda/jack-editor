@@ -60,8 +60,9 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         bracket_style: editor.theme.style("ui.bracket.match"),
     };
 
-    for row in 0..editor.height {
-        let line = editor.view().scroll_top + row;
+    let top = editor.top();
+    for row in top..top + editor.height {
+        let line = editor.view().scroll_top + row - top;
         if line >= total_lines {
             // Past the end there is no line to number, and the `~` keeps the
             // far left column, as it does with no gutter at all.
@@ -117,6 +118,10 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         );
     }
 
+    if editor.show_tabline() {
+        draw_tabline(editor, surface);
+    }
+
     if let Some(completion) = editor.completion.as_ref() {
         draw_completion(editor, completion, surface);
     }
@@ -130,6 +135,35 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
 
 /// The picker panel, drawn over the bottom rows of the text area. It is opaque:
 /// every cell in the panel is written, so nothing of the text shows through.
+/// The open buffers along the top. Scrolled from the left when there are more
+/// than fit, so the one you are in is always on it.
+fn draw_tabline(editor: &Editor, surface: &mut Surface) {
+    let (width, _) = surface.size();
+    let bar = editor.theme.style("ui.tabline");
+    let glyphs = status::glyphs(editor);
+    let tabs = status::tabs(editor);
+
+    let mut first = 0;
+    let mut pieces = run(&tabs[first..], bar, glyphs, true);
+    while first < editor.current_index() && run_width(&pieces) > width {
+        first += 1;
+        pieces = run(&tabs[first..], bar, glyphs, true);
+    }
+
+    let mut x = 0;
+    // A mark where the ones that did not fit went.
+    if first > 0 {
+        x = put_str(surface, x, 0, glyphs.truncated, bar, width);
+    }
+    for (text, style) in &pieces {
+        x = put_str(surface, x, 0, text, *style, width);
+    }
+    while x < width {
+        surface.put(x, 0, ' ', 1, bar);
+        x += 1;
+    }
+}
+
 /// The completion popup: a small box anchored under the word being completed,
 /// or over it when there is no room below.
 fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surface) {
@@ -164,15 +198,16 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
     let left = anchor.min(screen_width.saturating_sub(width));
 
     // Below the cursor unless the box would not fit, in which case above it.
+    let bottom = editor.top() + editor.height;
     let below = cursor_y as usize + 1;
-    let top = match below + rows <= editor.height {
+    let top = match below + rows <= bottom {
         true => below,
         false => (cursor_y as usize).saturating_sub(rows),
     };
 
     for (row, candidate) in shown.into_iter().enumerate() {
         let y = top + row;
-        if y >= editor.height {
+        if y >= bottom {
             break;
         }
         let style = match first + row == completion.selected() {
@@ -203,7 +238,9 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     let (width, _) = surface.size();
     let rows = editor.height;
     let panel = Picker::panel_height(rows);
-    let top = rows.saturating_sub(panel);
+    // Relative to the text area, which may start a row down.
+    let top = editor.top() + rows.saturating_sub(panel);
+    let bottom = editor.top() + rows;
 
     let base = editor.theme.style("ui.picker");
     let selected = editor.theme.style("ui.picker.selected");
@@ -234,7 +271,7 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     for row in 0..list_rows {
         let y = top + 1 + row;
         // On a very short terminal the panel would reach the status line.
-        if y >= rows {
+        if y >= bottom {
             break;
         }
         let index = picker.scroll() + row;
@@ -594,13 +631,17 @@ mod tests {
         assert_eq!(editor.cursor_screen(), (6, 0));
     }
 
-    /// The status row as text, for asserting on what it actually says.
-    fn status_row(editor: &Editor, keys: &Keys) -> String {
+    /// One row of a drawn frame as text, for asserting on what it says.
+    fn row_text(editor: &Editor, keys: &Keys, y: usize) -> String {
         let mut screen = Screen::new();
-        let (width, height) = (editor.width, editor.height + 1);
+        let (width, height) = (editor.width, editor.top() + editor.height + 1);
         let surface = screen.begin(width, height);
         draw(editor, keys, surface);
-        (0..width).map(|x| surface.get(x, height - 1).ch).collect()
+        (0..width).map(|x| surface.get(x, y).ch).collect()
+    }
+
+    fn status_row(editor: &Editor, keys: &Keys) -> String {
+        row_text(editor, keys, editor.top() + editor.height)
     }
 
     #[test]
@@ -641,6 +682,53 @@ mod tests {
         editor.glyphs = false;
         let row = status_row(&editor, &Keys::default());
         assert!(row.is_ascii(), "{row}");
+    }
+
+
+    #[test]
+    fn the_buffer_list_appears_when_there_is_more_than_one() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(80, 20);
+        // One buffer: the row would be a waste, and the text starts at the top.
+        assert!(!editor.show_tabline());
+        assert_eq!(editor.top(), 0);
+        assert_eq!(editor.cursor_screen().1, 0);
+
+        editor.open_file("demo.rs").unwrap();
+        assert!(editor.show_tabline());
+        let tabs = row_text(&editor, &Keys::default(), 0);
+        assert!(tabs.contains("[scratch]"), "{tabs}");
+        assert!(tabs.contains("demo.rs"), "{tabs}");
+        // And the text has moved down to make room.
+        assert_eq!(editor.top(), 1);
+        assert_eq!(editor.cursor_screen().1, 1);
+    }
+
+    #[test]
+    fn the_buffer_list_can_be_asked_for_or_turned_off() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(80, 20);
+        editor.run_command("set tabline");
+        assert!(editor.show_tabline(), "one buffer, but asked for");
+
+        editor.open_file("demo.rs").unwrap();
+        editor.run_command("set notabline");
+        assert!(!editor.show_tabline(), "two buffers, but turned off");
+        let row = row_text(&editor, &Keys::default(), 0);
+        assert!(!row.contains("demo.rs"), "{row}");
+    }
+
+    #[test]
+    fn the_buffer_you_are_in_is_always_on_the_line() {
+        let mut editor = editor_with_lines(10);
+        editor.set_viewport(40, 20);
+        for name in ["one_long_name.rs", "two_long_name.rs", "three_long.rs", "four_long.rs"] {
+            editor.open_file(name).unwrap();
+        }
+        let tabs = row_text(&editor, &Keys::default(), 0);
+        assert!(tabs.contains("four_long.rs"), "{tabs}");
+        // The ones that did not fit are marked rather than silently missing.
+        assert!(tabs.starts_with('<') || tabs.starts_with('\u{e0b3}'), "{tabs}");
     }
 
 }

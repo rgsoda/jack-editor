@@ -35,6 +35,9 @@
 "ui.mode.normal"   = { fg = "black", bg = "blue", bold = true }
 "ui.mode.insert"   = { fg = "black", bg = "green", bold = true }
 
+"ui.tabline" = { fg = "#6272a4", bg = "#282a36" }
+"ui.tabline.selected" = { fg = "#282a36", bg = "#bd93f9", bold = true }
+
 "ui.completion" = { fg = "#f8f8f2", bg = "#44475a" }
 "ui.completion.selected" = { fg = "#282a36", bg = "#bd93f9", bold = true }
 "ui.completion.kind" = { fg = "#8be9fd", italic = true }

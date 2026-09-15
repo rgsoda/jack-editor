@@ -86,8 +86,11 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
     loop {
         let (cols, rows) = terminal::size()?;
         let (cols, rows) = (cols.max(1) as usize, rows.max(2) as usize);
-        // One row goes to the status line.
-        editor.set_viewport(cols, rows - 1);
+        // One row goes to the status line, and one to the buffer list when it
+        // is showing. The tabline depends on how many buffers are open, not on
+        // the size, so this is safe to ask before setting the size.
+        let chrome = 1 + editor.top();
+        editor.set_viewport(cols, rows.saturating_sub(chrome));
         editor.scroll_to_cursor();
         // Cheap when nothing has changed: it compares a revision first.
         editor.refresh_signs();

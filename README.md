@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 22: tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 23: a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -28,7 +28,7 @@ Starts in normal mode, like vim.
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
 | `:` | a command (see below) |
-| `gn` `gp` `{n}gn` | next buffer / previous / buffer n |
+| `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
@@ -74,6 +74,7 @@ Starts in normal mode, like vim.
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
+| `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -540,6 +541,31 @@ offered here; it does not know types, so `.` completes nothing in particular;
 and it looks at one buffer, not the project. Those want a language server, which
 is a different piece of machinery — this is the tier that is worth having before
 one.
+
+## The buffer list
+
+```
+ 1  main.rs ●  2  view.rs  3  theme.toml
+```
+
+The open buffers along the top, the current one lit up, a dot on the ones with
+unsaved changes. The number on a tab is what `{n}gn` takes, which is the only
+way to reach a buffer directly without opening the picker.
+
+It appears when there is more than one buffer and not before — a single file
+should not pay a row for a list of itself. `:set tabline=always` keeps it there,
+`off` never shows it, `auto` is the default. When it is showing, the status line
+drops the `1/2` it used to carry, because the top line is already saying it.
+
+More tabs than fit scroll from the left, always keeping the current one on the
+line, and a mark at the left edge says some went past. They are drawn with the
+same `Segment` and separator code as the status line, so they wedge into each
+other the same way and degrade to hairlines under `:set noglyphs`.
+
+The row costs the text area a line: `editor.top()` is 0 or 1, and everything
+that maps a buffer line to a screen row — the text, the picker panel, the
+completion popup, the cursor — goes through it. That was the whole of the work;
+the list itself is twenty lines.
 
 ## The status line
 

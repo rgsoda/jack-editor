@@ -55,6 +55,35 @@ impl Prompt {
     }
 }
 
+/// Whether the open buffers are listed along the top: never, when there is
+/// more than one of them, or always.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum Tabline {
+    Off,
+    #[default]
+    Auto,
+    Always,
+}
+
+impl Tabline {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Tabline::Off => "off",
+            Tabline::Auto => "auto",
+            Tabline::Always => "always",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Tabline> {
+        Some(match value {
+            "off" | "no" | "never" => Tabline::Off,
+            "auto" => Tabline::Auto,
+            "always" | "yes" => Tabline::Always,
+            _ => return None,
+        })
+    }
+}
+
 /// What the gutter shows. Relative numbering is worth its cost when a count
 /// is how you aim a motion (`5j`), but it is a cost: every cursor move
 /// repaints every number, where absolute numbering repaints only on scroll.
@@ -150,6 +179,8 @@ pub struct Editor {
     /// Strip trailing whitespace when writing. On by default, and every save
     /// says how many lines it touched, so it is never silent.
     pub trim_on_save: bool,
+    /// Whether the open buffers are listed along the top.
+    pub tabline: Tabline,
     /// Indent a new line the way the grammar says, rather than copying the
     /// line above. Only does anything where there is an indent query.
     pub autoindent: bool,
@@ -218,6 +249,7 @@ impl Editor {
             numbers: Numbers::default(),
             trim_on_save: true,
             glyphs: true,
+            tabline: Tabline::Auto,
             autoindent: true,
             emacs: false,
             indent: Indent { width: TAB_WIDTH, tabs: true },
@@ -492,6 +524,10 @@ impl Editor {
                 ("shiftwidth" | "sw", Ok(width)) if width > 0 && width <= 16 => {
                     self.indent.width = width;
                 }
+                ("tabline", _) => match Tabline::parse(value) {
+                    Some(tabline) => self.tabline = tabline,
+                    None => self.message = "tabline wants off, auto or always".into(),
+                },
                 ("shiftwidth" | "sw", _) => {
                     self.message = format!("shiftwidth wants 1 to 16, not {value:?}");
                 }
@@ -500,6 +536,8 @@ impl Editor {
             return;
         }
         match option {
+            "tabline" => self.tabline = Tabline::Always,
+            "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
             "noautoindent" | "noai" => self.autoindent = false,
             "emacs" => self.emacs = true,
@@ -521,7 +559,7 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={}",
+                    "number={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={}",
                     self.numbers.name(),
                     self.trim_on_save,
                     self.signs_enabled,
@@ -529,7 +567,8 @@ impl Editor {
                     self.indent.width,
                     !self.indent.tabs,
                     self.autoindent,
-                    self.emacs
+                    self.emacs,
+                    self.tabline.name()
                 );
             }
             other => self.message = format!("not an option: {other}"),
@@ -818,6 +857,23 @@ impl Editor {
 
     // --- delegated to the current view --------------------------------
 
+    /// The screen row the text starts on: one down when the buffers are
+    /// listed above it, otherwise the top of the terminal.
+    pub fn top(&self) -> usize {
+        match self.show_tabline() {
+            true => 1,
+            false => 0,
+        }
+    }
+
+    pub fn show_tabline(&self) -> bool {
+        match self.tabline {
+            Tabline::Off => false,
+            Tabline::Auto => self.views.len() > 1,
+            Tabline::Always => true,
+        }
+    }
+
     pub fn set_viewport(&mut self, width: usize, height: usize) {
         self.width = width.max(1);
         self.height = height.max(1);
@@ -890,13 +946,20 @@ impl Editor {
     pub fn cursor_screen(&self) -> (u16, u16) {
         // A prompt puts the cursor on the status line, after what is typed.
         if let Some(prompt) = self.prompt.as_ref() {
-            return (1 + prompt.input.chars().count() as u16, self.height as u16);
+            return (
+                1 + prompt.input.chars().count() as u16,
+                (self.top() + self.height) as u16,
+            );
         }
+        let top = self.top() as u16;
         match self.picker.as_ref() {
-            Some(picker) => picker.cursor_screen(self.height),
+            Some(picker) => {
+                let (x, y) = picker.cursor_screen(self.height);
+                (x, y + top)
+            }
             None => {
                 let (x, y) = self.view().cursor_screen();
-                (x + self.gutter_width() as u16, y)
+                (x + self.gutter_width() as u16, y + top)
             }
         }
     }

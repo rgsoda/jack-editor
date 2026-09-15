@@ -39,6 +39,8 @@ pub struct Glyphs {
     pub added: &'static str,
     pub modified_sign: &'static str,
     pub deleted: &'static str,
+    /// Shown where tabs scrolled off the left of the line.
+    pub truncated: &'static str,
 }
 
 /// Nerd Font code points, all from the Powerline and Devicons ranges.
@@ -55,6 +57,7 @@ pub const NERD: Glyphs = Glyphs {
     added: "\u{f457}",
     modified_sign: "\u{f459}",
     deleted: "\u{f458}",
+    truncated: "\u{e0b3}",
 };
 
 pub const PLAIN: Glyphs = Glyphs {
@@ -70,6 +73,7 @@ pub const PLAIN: Glyphs = Glyphs {
     added: "+",
     modified_sign: "~",
     deleted: "-",
+    truncated: "<",
 };
 
 pub fn glyphs(editor: &Editor) -> &'static Glyphs {
@@ -90,6 +94,43 @@ fn language_icon(language: Option<&str>, glyphs: &Glyphs) -> &'static str {
         Some("javascript") => "\u{e781}",
         _ => "\u{f15b}",
     }
+}
+
+/// The open buffers, one block each, for the line along the top. The number
+/// on a tab is what `{n}gn` takes, which is the only way to get there without
+/// the picker.
+pub fn tabs(editor: &Editor) -> Vec<Segment> {
+    let glyphs = glyphs(editor);
+    let base = editor.theme.style("ui.tabline");
+    let selected = editor.theme.style("ui.tabline.selected");
+
+    editor
+        .views()
+        .iter()
+        .enumerate()
+        .map(|(index, view)| {
+            let language = language_for_path(view.doc.path.as_deref()).map(|l| l.name);
+            let icon = match view.doc.path.is_some() {
+                true => language_icon(language, glyphs),
+                false => glyphs.scratch,
+            };
+            let mut text = format!("{} ", index + 1);
+            if !icon.is_empty() {
+                text.push_str(icon);
+                text.push(' ');
+            }
+            text.push_str(view.doc.display_name());
+            if view.is_modified() {
+                text.push(' ');
+                text.push_str(glyphs.modified);
+            }
+            let style = match index == editor.current_index() {
+                true => selected,
+                false => base,
+            };
+            Segment { text, style }
+        })
+        .collect()
 }
 
 pub fn build(editor: &Editor, keys: &Keys) -> Status {
@@ -122,7 +163,8 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
         file.push(' ');
         file.push_str(glyphs.modified);
     }
-    if editor.views().len() > 1 {
+    // Which buffer this is, unless the line along the top is already saying.
+    if editor.views().len() > 1 && !editor.show_tabline() {
         file.push_str(&format!(" {}/{}", editor.current_index() + 1, editor.views().len()));
     }
     left.push(Segment { text: file, style: editor.theme.style("ui.statusline.file") });

@@ -101,6 +101,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
     Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
     Binding { keys: ":set autoindent", what: "noautoindent: indent new lines by the grammar", mode: "command" },
+    Binding { keys: ":set tabline=auto", what: "off, auto, always: list buffers along the top", mode: "command" },
     Binding { keys: ":noh", what: "stop highlighting matches", mode: "command" },
     Binding { keys: ":{n}", what: "go to line n", mode: "command" },
 
