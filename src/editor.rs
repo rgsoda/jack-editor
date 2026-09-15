@@ -87,7 +87,8 @@ impl Prompt {
 /// down, which the run loop notices by waiting with a timeout.
 #[derive(Default)]
 pub struct Dog {
-    /// How many keys have been pressed in this burst of typing.
+    /// How far along its lane the dog is. Counts keys, and survives a rest so
+    /// that the dog sits where it stopped; zero means it has never run.
     pub steps: usize,
     pub running: bool,
 }
@@ -1955,9 +1956,10 @@ impl Editor {
         self.dog.running = true;
     }
 
-    /// Typing stopped: the dog comes back to the middle and sits.
+    /// Typing stopped: the dog sits down where it had got to. Keeping the
+    /// step count is what puts it there rather than back in the middle, and
+    /// what makes the next burst of typing carry on from the same place.
     pub fn dog_rests(&mut self) {
-        self.dog.steps = 0;
         self.dog.running = false;
     }
 

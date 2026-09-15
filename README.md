@@ -117,7 +117,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:config` | open the config file, writing the documented defaults first |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
-| `:set dog` | `nodog`: the dog in the middle of the status line |
+| `:set dog` | `nodog`: the dog in the status line |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
@@ -461,9 +461,11 @@ to scroll.
 
 ## The dog
 
-There is a dog in the middle of the status line. It sits there while you think,
-and runs while you type — a step along its lane on every key, so it goes as
-fast as you do, and it comes back to the middle and sits down when you stop.
+There is a dog in the status line. It waits in the middle while you think, and
+runs while you type — a step along its lane on every key, so it goes as fast as
+you do. Stop typing and it sits down where it had got to, and the next burst of
+typing carries on from there: one animal changing pace, rather than a glyph
+that teleports home every time you pause.
 
 It needs no timer and no thread, because the keyboard is the only clock it
 wants: a key is a step, and the moment nothing arrives is the moment typing has
@@ -477,9 +479,9 @@ Its lane is the whole gap — everything between what the left side has written
 and where the right side begins — so it has the run of the line rather than a
 few cells of it. A long file name or a message shortens the lane from the left
 rather than being drawn over, and a gap too narrow to run in gets no dog at
-all. Sitting, it wants the middle of the screen, which is where it was asked to
-sit; the middle of the gap when the line is too lopsided for the screen's
-middle to be in it. Both glyphs are
+all. Before it has ever run it waits in the middle of the screen, which is
+where the eye goes looking for it; the middle of the gap when the line is too
+lopsided for the screen's middle to be in it. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
 
@@ -659,7 +661,7 @@ setting there is, at its default, with a line above it saying what it does and
 what else it takes.
 
 ```
-# A dog in the status line. It runs while you type and sits in the middle
+# A dog in the status line. It runs while you type and sits where it stopped
 # when you stop. Needs glyphs.
 # set dog | set nodog
 set dog
