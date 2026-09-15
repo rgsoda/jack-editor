@@ -434,7 +434,6 @@ fn draw_line(
 /// the lane from the left rather than being drawn over, and a gap too small to
 /// run in gets no dog at all.
 fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize>, bar: Style) {
-    let (width, _) = surface.size();
     let lane = gap.end.saturating_sub(gap.start);
     if lane < status::DOG_ROOM {
         return;
@@ -444,20 +443,11 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
         true => status::DOG_RUNNING,
         false => status::DOG_SITTING,
     };
-    // Where it has got to: a dog that stops running stops where it is, and
-    // starts again from there, which is the only way the two glyphs read as
-    // one animal rather than two.
-    let x = match (editor.dog.running, editor.dog.steps) {
-        // Before it has ever run it waits in the middle of the screen rather
-        // than the middle of the gap - that is where the eye goes looking for
-        // it. The gap's own middle when the line is too lopsided for the
-        // screen's to be in it.
-        (false, 0) => match gap.contains(&(width / 2)) {
-            true => width / 2,
-            false => gap.start + lane / 2,
-        },
-        _ => gap.start + editor.dog.steps % lane,
-    };
+    // Where it has got to, running or resting: a dog that stops running stops
+    // where it is, and starts again from there, which is the only way the two
+    // glyphs read as one animal rather than two. Before the first key that is
+    // the start of the lane, which is where it comes in from.
+    let x = gap.start + editor.dog.steps % lane;
     surface.put(x, row, dog, 1, bar);
 }
 
@@ -767,20 +757,23 @@ mod tests {
     }
 
     #[test]
-    fn the_dog_sits_in_the_middle_and_runs_when_you_type() {
+    fn the_dog_starts_at_the_left_and_runs_when_you_type() {
         let mut editor = editor_with_lines(10);
         let keys = Keys::default();
         let middle = editor.width / 2;
 
+        // It comes in from the left end of its lane rather than the middle.
         let sitting: Vec<char> = status_row(&editor, &keys).chars().collect();
-        assert_eq!(sitting[middle], status::DOG_SITTING);
+        let start = sitting.iter().position(|c| *c == status::DOG_SITTING);
+        let start = start.expect("a sitting dog");
+        assert!(start < middle, "the left of the lane: {start}");
 
-        // A key, and it is off - a different dog, and no longer in the middle.
+        // A key, and it is off - a different dog, one cell on.
         editor.dog_runs();
         let running: Vec<char> = status_row(&editor, &keys).chars().collect();
-        assert_eq!(running[middle], ' ');
+        assert!(!running.contains(&status::DOG_SITTING));
         let at = running.iter().position(|c| *c == status::DOG_RUNNING);
-        assert!(at.is_some(), "the dog is somewhere on the line");
+        assert_eq!(at, Some(start + 1));
 
         // It keeps going while the keys keep coming, and comes back around
         // rather than running off the end of its lane. The lane is the whole

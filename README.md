@@ -461,8 +461,8 @@ to scroll.
 
 ## The dog
 
-There is a dog in the status line. It waits in the middle while you think, and
-runs while you type — a step along its lane on every key, so it goes as fast as
+There is a dog in the status line. It comes in at the left end of its lane and
+runs while you type — a step on every key, so it goes as fast as
 you do. Stop typing and it sits down where it had got to, and the next burst of
 typing carries on from there: one animal changing pace, rather than a glyph
 that teleports home every time you pause.
@@ -479,9 +479,7 @@ Its lane is the whole gap — everything between what the left side has written
 and where the right side begins — so it has the run of the line rather than a
 few cells of it. A long file name or a message shortens the lane from the left
 rather than being drawn over, and a gap too narrow to run in gets no dog at
-all. Before it has ever run it waits in the middle of the screen, which is
-where the eye goes looking for it; the middle of the gap when the line is too
-lopsided for the screen's middle to be in it. Both glyphs are
+all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
 
