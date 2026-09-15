@@ -239,6 +239,19 @@ impl Keys {
             text.push('"');
             text.push(register);
         }
+        // A half-typed find, waiting for the character to look for: `dt` is
+        // what the user has pressed and so what the indicator should say.
+        // Drawing runs on every frame, so there is nothing here that can fail.
+        if let Some(Pending::Find { operator, till, backward }) = self.pending {
+            text.extend(operator);
+            text.push(match (till, backward) {
+                (false, false) => 'f',
+                (false, true) => 'F',
+                (true, false) => 't',
+                (true, true) => 'T',
+            });
+            return text;
+        }
         if let Some(Pending::Object { operator, around }) = self.pending {
             text.extend(operator);
             text.push(match around {
@@ -257,8 +270,11 @@ impl Keys {
             Some(Pending::Go) => "g",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Register) => "\"",
+            // Both are handled above, and neither is worth a panic in the
+            // middle of a redraw if a later one ever isn't.
             Some(Pending::Find { .. }) | Some(Pending::Object { .. }) => {
-                unreachable!("handled above")
+                debug_assert!(false, "handled above");
+                ""
             }
             None => "",
         });
@@ -1679,6 +1695,26 @@ mod tests {
         assert_eq!(vim.text(), "text\n");
         vim.press("<C-r>");
         assert_eq!(vim.text(), "hello text\n");
+    }
+
+    #[test]
+    fn every_half_typed_command_has_something_to_show() {
+        // The indicator is drawn on every frame, so a state it cannot describe
+        // is a crash rather than a blank: a pending find used to panic the
+        // editor the moment it redrew, which is any pause between `dt` and the
+        // character to look for.
+        let states = [
+            ("d", "d"), ("c", "c"), ("y", "y"), (">", ">"), ("<lt>", "<"),
+            ("=", "="), ("g", "g"), (" ", "<space>"), ("\"", "\""),
+            ("f", "f"), ("F", "F"), ("t", "t"), ("T", "T"),
+            ("dt", "dt"), ("cf", "cf"), ("yT", "yT"), ("2dF", "2dF"),
+            ("di", "di"), ("ca", "ca"),
+        ];
+        for (keys, shown) in states {
+            let mut vim = Vim::new("one, two\n");
+            vim.press(keys);
+            assert_eq!(vim.keys.pending_text(), shown, "after {keys}");
+        }
     }
 
     #[test]
