@@ -769,7 +769,7 @@ impl Editor {
 
     /// Run a `:` command. Unknown commands say so rather than doing nothing,
     /// which is the difference between a typo and a missing feature.
-    /// Run `~/.config/soda/init`: one command per line, written as it
+    /// Run `~/.config/jack/init`: one command per line, written as it
     /// would be typed after `:` - `set number`, `set emacs`. Blank lines and
     /// `#` comments are skipped. Missing is not an error; the whole point is
     /// that it need not exist.
@@ -1233,7 +1233,7 @@ impl Editor {
         let document = Document::open(path)?;
         // The buffer the editor starts with is somewhere to stand, not
         // something to keep: opening the first file takes its place, so
-        // `soda .` leaves one tab rather than two. In place, because the
+        // `jack .` leaves one tab rather than two. In place, because the
         // jump list addresses buffers by index.
         if self.views.len() == 1 && self.views[0].is_empty_scratch() {
             self.views[0] = View::new(document);
@@ -2674,7 +2674,7 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "soda_edit_buffers_{}_{:?}",
+            "jack_buffers_{}_{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

@@ -1,12 +1,7 @@
 [package]
-name = "soda_edit"
+name = "jack"
 version = "0.1.0"
 edition = "2024"
-
-# The crate is soda_edit; what you type is `soda`.
-[[bin]]
-name = "soda"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -95,14 +95,14 @@ impl Theme {
     }
 }
 
-/// Where the editor keeps its files: `$XDG_CONFIG_HOME/soda`, or
-/// `~/.config/soda`.
+/// Where the editor keeps its files: `$XDG_CONFIG_HOME/jack`, or
+/// `~/.config/jack`.
 pub fn config_dir() -> Option<PathBuf> {
     let config = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    Some(config.join("soda"))
+    Some(config.join("jack"))
 }
 
 fn user_theme_path() -> Option<PathBuf> {

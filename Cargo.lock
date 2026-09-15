@@ -283,6 +283,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jack"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "regex",
+ "ropey",
+ "serde",
+ "similar",
+ "streaming-iterator",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-rust",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -617,30 +641,6 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
-
-[[package]]
-name = "soda_edit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "regex",
- "ropey",
- "serde",
- "similar",
- "streaming-iterator",
- "toml",
- "tree-sitter",
- "tree-sitter-html",
- "tree-sitter-javascript",
- "tree-sitter-rust",
- "unicode-segmentation",
- "unicode-width",
-]
 
 [[package]]
 name = "str_indices"

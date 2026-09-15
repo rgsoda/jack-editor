@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn a_walk_finds_files_and_honours_gitignore() {
-        let dir = std::env::temp_dir().join(format!("soda_edit_walk_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("jack_walk_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
@@ -340,7 +340,7 @@ mod tests {
     }
 
     fn sample_tree(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("soda_edit_{name}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("jack_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn a_file_git_does_not_know_about_gets_no_signs() {
-        let dir = std::env::temp_dir().join(format!("soda_edit_nogit_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("jack_nogit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("loose.txt");
