@@ -13,6 +13,7 @@ mod screen;
 mod search;
 mod status;
 mod stream;
+mod substitute;
 mod syntax;
 mod theme;
 mod ui;

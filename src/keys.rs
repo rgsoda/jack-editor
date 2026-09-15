@@ -88,6 +88,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "c s", what: "delete it and start typing", mode: "visual" },
     Binding { keys: "y", what: "yank the selection", mode: "visual" },
     Binding { keys: "> <", what: "indent, dedent the lines ({n} steps)", mode: "visual" },
+    Binding { keys: ":", what: "a command over the selection ('<,'>)", mode: "visual" },
     Binding { keys: "=", what: "re-indent the lines", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
     Binding { keys: "D X Y C S", what: "the same, on whole lines", mode: "visual" },
@@ -114,6 +115,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":w [path] :w!", what: "write, or write over a changed file", mode: "command" },
     Binding { keys: ":q :q! :wq :x", what: "quit, discard changes, write and quit", mode: "command" },
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
+    Binding { keys: ":s/old/new/", what: "substitute on this line (g: every match)", mode: "command" },
+    Binding { keys: ":%s/old/new/g", what: "the whole file ({n},{m}s and '<,'> too)", mode: "command" },
+    Binding { keys: ":s//new/", what: "an empty pattern is the last search", mode: "command" },
     Binding { keys: ":set number", what: "nonumber, relativenumber, hybrid", mode: "command" },
     Binding { keys: ":set trim", what: "notrim: strip trailing space on save", mode: "command" },
     Binding { keys: ":set glyphs", what: "noglyphs: nerd font status line, or ascii", mode: "command" },
@@ -669,6 +673,11 @@ impl Keys {
             }
             KeyCode::Char('%') => editor.jump_to_matching_bracket(),
             KeyCode::Char('J') => editor.join_visual(),
+            // `:` over a selection writes the range in for you, as vim does.
+            KeyCode::Char(':') => {
+                editor.open_command_over_selection();
+                return;
+            }
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
                 editor.delete_visual(self.register)

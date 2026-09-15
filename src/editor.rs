@@ -1,4 +1,5 @@
 use anyhow::Result;
+use regex::RegexBuilder;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use crate::keys::BINDINGS;
 use crate::object::{self, Object};
 use crate::picker::{Item, Outcome, Picker, Source};
 use crate::search::{self, Search};
+use crate::substitute;
 use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers, SYSTEM};
 use crate::syntax::Highlights;
@@ -396,6 +398,17 @@ impl Editor {
 
     pub fn open_command(&mut self) {
         self.open_prompt(PromptKind::Command);
+    }
+
+    /// `:` from visual mode, which in vim writes the selection's range in for
+    /// you. Leaving visual mode is what records the selection, so this reads
+    /// the same `'<,'>` that a substitute would resolve.
+    pub fn open_command_over_selection(&mut self) {
+        self.set_mode(Mode::Normal);
+        self.open_prompt(PromptKind::Command);
+        if let Some(prompt) = self.prompt.as_mut() {
+            prompt.input.push_str("'<,'>");
+        }
     }
 
     fn open_prompt(&mut self, kind: PromptKind) {
@@ -829,6 +842,17 @@ impl Editor {
         if line.is_empty() {
             return;
         }
+        // `:s` before anything else: it has no whitespace to split on, and a
+        // pattern is allowed to contain any of the characters a command name
+        // is looked up by.
+        if let Some(parsed) = substitute::parse(line) {
+            match parsed {
+                Ok(command) => self.substitute(command),
+                Err(complaint) => self.message = complaint,
+            }
+            return;
+        }
+
         let (name, argument) = match line.split_once(char::is_whitespace) {
             Some((name, rest)) => (name, rest.trim()),
             None => (line, ""),
@@ -863,6 +887,121 @@ impl Editor {
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
         }
+    }
+
+    /// `:s` - the substitute command, over whatever lines the range names.
+    ///
+    /// One pass per line, from the last up, so that replacing text on one line
+    /// cannot move the line below it out from under the next edit. Every edit
+    /// is inside one undo group, so the whole command comes back with one `u`.
+    fn substitute(&mut self, command: substitute::Substitute) {
+        let Some((first, last)) = self.substitute_lines(command.lines) else {
+            return;
+        };
+
+        // An empty pattern means the last search, which is what makes `*` and
+        // then `:%s//new/g` a pair of keystrokes rather than retyping a word.
+        let pattern = match command.pattern.is_empty() {
+            true => self.search.pattern.clone(),
+            false => command.pattern.clone(),
+        };
+        if pattern.is_empty() {
+            self.message = "no pattern, and no previous search".into();
+            return;
+        }
+        // The same smart case as `/`: all lower case matches either, a capital
+        // means it. The `i` and `I` flags say so outright instead.
+        let insensitive = command
+            .flags
+            .insensitive
+            .unwrap_or_else(|| !pattern.chars().any(char::is_uppercase));
+        let regex = match RegexBuilder::new(&pattern).case_insensitive(insensitive).build() {
+            Ok(regex) => regex,
+            Err(_) => {
+                self.message = format!("not a pattern: {pattern}");
+                return;
+            }
+        };
+        let replacement = substitute::replacement(&command.replacement);
+
+        let (mut changes, mut lines, mut landed) = (0, 0, None);
+        self.begin_undo_group();
+        for line in (first..=last).rev() {
+            let text = self.view().doc.line_str(line).to_string();
+            let body = text.trim_end_matches('\n');
+            let here = match command.flags.global {
+                true => regex.find_iter(body).count(),
+                false => usize::from(regex.is_match(body)),
+            };
+            if here == 0 {
+                continue;
+            }
+            changes += here;
+            lines += 1;
+            landed = Some(line);
+            if command.flags.count_only {
+                continue;
+            }
+
+            let new = match command.flags.global {
+                true => regex.replace_all(body, replacement.as_str()),
+                false => regex.replace(body, replacement.as_str()),
+            };
+            let start = self.view().doc.line_to_char(line);
+            let count = body.chars().count();
+            self.view_mut().edit_at(start, count, &new, Some(start));
+        }
+        self.end_undo_group();
+
+        if let Some(line) = landed
+            && !command.flags.count_only
+        {
+            // Vim leaves the cursor on the last line it changed, which reading
+            // upwards means the first one found.
+            self.goto_line(line);
+        }
+        self.clamp_cursor();
+        self.message = match (changes, command.flags.count_only) {
+            (0, _) => format!("not found: {pattern}"),
+            (_, true) => format!("{changes} matches on {lines} lines"),
+            _ => format!("{changes} substitutions on {lines} lines"),
+        };
+    }
+
+    /// The first and last line a range names, zero-based and in order, or a
+    /// message about why it names nothing.
+    fn substitute_lines(&mut self, lines: substitute::Lines) -> Option<(usize, usize)> {
+        use substitute::{Address, Lines};
+        let last_line = self.last_line();
+        let resolve = |address: Address| match address {
+            Address::Line(number) => Some(number.saturating_sub(1).min(last_line)),
+            Address::Current => Some(self.view().cursor_coords().0),
+            Address::Last => Some(last_line),
+            Address::VisualStart | Address::VisualEnd => {
+                let (sel, _) = self.last_visual?;
+                let doc = &self.view().doc;
+                let (from, to) = (doc.char_to_line(sel.anchor), doc.char_to_line(sel.head));
+                Some(match address {
+                    Address::VisualStart => from.min(to),
+                    _ => from.max(to),
+                })
+            }
+        };
+        let (first, last) = match lines {
+            Lines::Current => {
+                let line = self.view().cursor_coords().0;
+                (line, line)
+            }
+            Lines::Whole => (0, last_line),
+            Lines::Range(first, last) => match (resolve(first), resolve(last)) {
+                (Some(first), Some(last)) => (first.min(last), first.max(last)),
+                _ => {
+                    self.message = "no previous selection".into();
+                    return None;
+                }
+            },
+        };
+        Some((first, last.min(last_line)))
     }
 
     /// `:config`: open the init file for editing, writing it out first if
@@ -2860,6 +2999,128 @@ mod tests {
         let at_start = e.cursor_mark();
         e.move_cursor(Move::Left, false);
         assert_eq!(e.cursor_mark(), at_start, "no room left to move");
+    }
+
+    #[test]
+    fn substitute_changes_the_line_it_is_on_and_says_what_it_did() {
+        let mut e = editor("one two one\nthree one\n");
+        e.run_command("s/one/X/");
+        assert_eq!(e.view().doc.text.to_string(), "X two one\nthree one\n");
+        assert!(e.message.contains('1'), "{}", e.message);
+
+        // `g` takes every match on the line, not just the first.
+        let mut e = editor("one two one\nthree one\n");
+        e.run_command("s/one/X/g");
+        assert_eq!(e.view().doc.text.to_string(), "X two X\nthree one\n");
+    }
+
+    #[test]
+    fn a_range_says_which_lines() {
+        let mut e = editor("a\na\na\na\n");
+        e.run_command("2,3s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "a\nb\nb\na\n");
+
+        let mut e = editor("a\na\na\n");
+        e.run_command("%s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "b\nb\nb\n");
+
+        // `.,$` from the second line down.
+        let mut e = editor("a\na\na\n");
+        e.goto_line(1);
+        e.run_command(".,$s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "a\nb\nb\n");
+
+        // A line number past the end is the end, not a panic.
+        let mut e = editor("a\na\n");
+        e.run_command("1,99s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "b\nb\n");
+    }
+
+    #[test]
+    fn the_whole_substitute_is_one_undo_step() {
+        let mut e = editor("a\na\na\n");
+        e.run_command("%s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "b\nb\nb\n");
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "a\na\na\n");
+    }
+
+    #[test]
+    fn capture_groups_and_the_whole_match_can_be_put_back() {
+        let mut e = editor("alpha beta\n");
+        e.run_command(r"s/(\w+) (\w+)/\2 \1/");
+        assert_eq!(e.view().doc.text.to_string(), "beta alpha\n");
+
+        let mut e = editor("total 42\n");
+        e.run_command("s/[0-9]+/[&]/");
+        assert_eq!(e.view().doc.text.to_string(), "total [42]\n");
+    }
+
+    #[test]
+    fn an_empty_pattern_means_the_last_search() {
+        let mut e = editor("one two\none three\n");
+        e.search.set_pattern("one").expect("a pattern");
+        e.run_command("%s//X/");
+        assert_eq!(e.view().doc.text.to_string(), "X two\nX three\n");
+
+        // And with nothing searched for either, it says so and changes
+        // nothing.
+        let mut e = editor("one\n");
+        e.run_command("%s//X/");
+        assert_eq!(e.view().doc.text.to_string(), "one\n");
+        assert!(!e.message.is_empty());
+    }
+
+    #[test]
+    fn case_follows_the_pattern_unless_a_flag_says_otherwise() {
+        // All lower case matches either case, as `/` does.
+        let mut e = editor("Foo foo\n");
+        e.run_command("s/foo/x/g");
+        assert_eq!(e.view().doc.text.to_string(), "x x\n");
+
+        // A capital in the pattern means it.
+        let mut e = editor("Foo foo\n");
+        e.run_command("s/Foo/x/g");
+        assert_eq!(e.view().doc.text.to_string(), "x foo\n");
+
+        // `I` insists even on a lower-case pattern.
+        let mut e = editor("Foo foo\n");
+        e.run_command("s/foo/x/gI");
+        assert_eq!(e.view().doc.text.to_string(), "Foo x\n");
+    }
+
+    #[test]
+    fn n_counts_without_changing_anything() {
+        let mut e = editor("one one\none\n");
+        e.run_command("%s/one/x/gn");
+        assert_eq!(e.view().doc.text.to_string(), "one one\none\n");
+        assert!(e.message.starts_with('3'), "{}", e.message);
+    }
+
+    #[test]
+    fn a_pattern_that_is_not_there_changes_nothing_and_says_so() {
+        let mut e = editor("one\n");
+        e.run_command("%s/zebra/x/");
+        assert_eq!(e.view().doc.text.to_string(), "one\n");
+        assert!(e.message.contains("zebra"), "{}", e.message);
+        assert!(!e.is_modified(), "nothing to save");
+
+        // A pattern that will not compile says that instead.
+        e.run_command("%s/(unclosed/x/");
+        assert!(e.message.contains("not a pattern"), "{}", e.message);
+    }
+
+    #[test]
+    fn colon_over_a_selection_writes_the_range_in() {
+        let mut e = editor("a\na\na\na\n");
+        e.set_mode(Mode::VisualLine);
+        e.move_cursor(Move::Down, true);
+        e.open_command_over_selection();
+        assert_eq!(e.prompt.as_ref().expect("a prompt").input, "'<,'>");
+        assert_eq!(e.mode, Mode::Normal);
+
+        e.run_command("'<,'>s/a/b/");
+        assert_eq!(e.view().doc.text.to_string(), "b\nb\na\na\n");
     }
 
     #[test]

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 33: one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 34: `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -119,6 +119,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
 | `:e path` `:e!` | open a file, reload this one from disk |
+| `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
+| `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
+| `:s//new/` | an empty pattern means the last search |
 | `:config` | open the config file, writing the documented defaults first |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
@@ -253,6 +256,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `search.rs` — in-file search: compiling a pattern, finding the next match
   from a position, and gathering the matches on a range of lines. It walks the
   rope line by line, so nothing ever builds a copy of the buffer to search.
+- `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
+  flags, and the translation from vim's replacement spellings into the regex
+  crate's. No document anywhere in it, which is why it is its own file.
 - `picker.rs` — the picker: its items, the query, the fuzzy matcher, and what a
   keypress means while it is open. It knows nothing about what an item *is* -
   a `Source` says that, and the editor acts on the chosen item's id.
@@ -493,6 +499,32 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## Substitute
+
+`:s/old/new/` on this line, `:%s/old/new/g` on the file, `:3,7s`, `:.,$s` and
+`:'<,'>s` in between — and `:` in visual mode writes that last range in for
+you, since leaving visual mode is already recorded for `gv`.
+
+The grammar lives in `substitute.rs` and never sees a document: a range, a
+delimiter that is whatever character follows the `s`, a pattern, a replacement
+and the flags. That is the fiddly half and the half worth testing on its own,
+so `:%s#/usr/bin#/opt#g` is six assertions rather than a buffer and a cursor.
+
+The replacement speaks vim and writes regex: `&` and `\0` are the whole match,
+`\1` a group, `\n` and `\t` what they look like, and a literal `$` is doubled
+on the way through so the regex crate does not read it as a group of its own.
+An escaped delimiter (`\/`) is a character in the pattern; every other
+backslash is left alone, because the regex wants it.
+
+Case follows the pattern, as `/` does — all lower case matches either case, a
+capital means it — and `i` or `I` says so outright instead. An empty pattern is
+the last search, which makes `*` then `:%s//new/g` two keystrokes and a command
+rather than typing the word twice. `n` counts the matches and changes nothing.
+
+The lines are rewritten from the last up, so replacing text on one line cannot
+move the line below out from under the next edit, and the whole command is one
+undo group: `:%s/a/b/g` across a thousand lines comes back with one `u`.
 
 ## One command, one undo
 
