@@ -1044,11 +1044,12 @@ blocks that share a background get a hairline instead, and a theme that leaves a
 block's colours to the terminal degrades to hairlines rather than to mud.
 
 The glyphs are Nerd Font code points — the Powerline wedges, the Devicons file
-icons, and `` / `` for line and column. If your terminal font is not patched
-you will see boxes, and `:set noglyphs` swaps in an ASCII set (`|`, `+`, `ln`,
-`col`) that keeps the colours and loses the pictures. Everything else is
-unaffected: the glyph set is eleven strings in `status.rs` and nothing else
-knows about it.
+icons, and `` in front of the position, which reads `12:13`: line and column
+the way every other tool writes them, one marker rather than a label on each
+number. If your terminal font is not patched you will see boxes, and `:set
+noglyphs` swaps in an ASCII set (`|`, `+`, and a bare `12:13`) that keeps the
+colours and loses the pictures. Everything else is unaffected: the glyph set is
+ten strings in `status.rs` and nothing else knows about it.
 
 `status.rs` decides *what* the line says, as a list of coloured blocks, and
 `ui.rs` decides how to paint them. That split is why the narrow-terminal rule is

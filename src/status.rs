@@ -33,8 +33,9 @@ pub struct Glyphs {
     pub thin_right: &'static str,
     pub thin_left: &'static str,
     pub modified: &'static str,
-    pub line: &'static str,
-    pub column: &'static str,
+    /// Marks the line:column at the end of the line. One glyph, not one per
+    /// number: `12:13` is what a position looks like everywhere else.
+    pub position: &'static str,
     pub scratch: &'static str,
     pub added: &'static str,
     pub modified_sign: &'static str,
@@ -59,8 +60,7 @@ pub const NERD: Glyphs = Glyphs {
     thin_right: "\u{e0b1}",
     thin_left: "\u{e0b3}",
     modified: "\u{25cf}",
-    line: "\u{e0a1}",
-    column: "\u{e0a3}",
+    position: "\u{e0a1}",
     scratch: "\u{f15b}",
     added: "\u{f457}",
     modified_sign: "\u{f459}",
@@ -75,8 +75,7 @@ pub const PLAIN: Glyphs = Glyphs {
     thin_right: "|",
     thin_left: "|",
     modified: "+",
-    line: "ln",
-    column: "col",
+    position: "",
     scratch: "",
     added: "+",
     modified_sign: "~",
@@ -212,8 +211,12 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
     let (line, column) = editor.cursor_coords();
     let last = editor.last_line();
     right.push(Segment { text: percentage(line, last), style: info });
+    let position = format!("{}:{}", line + 1, column + 1);
     right.push(Segment {
-        text: format!("{} {}  {} {}", glyphs.line, line + 1, glyphs.column, column + 1),
+        text: match glyphs.position.is_empty() {
+            true => position,
+            false => format!("{} {position}", glyphs.position),
+        },
         style: editor.theme.style("ui.statusline.position"),
     });
 
@@ -251,8 +254,9 @@ mod tests {
 
         assert_eq!(status.left[0].text, "ABNORMAL");
         assert!(status.left[1].text.contains("[scratch]"), "{}", status.left[1].text);
+        // The position reads like a position: line, colon, column.
         let position = &status.right.last().unwrap().text;
-        assert!(position.ends_with("1"), "{position}");
+        assert!(position.ends_with("1:1"), "{position}");
         // No path, so no language segment to name.
         assert_eq!(status.right.len(), 2);
     }
@@ -273,7 +277,7 @@ mod tests {
     fn the_plain_set_is_pure_ascii() {
         let plain = [
             PLAIN.section_right, PLAIN.section_left, PLAIN.thin_right, PLAIN.thin_left,
-            PLAIN.modified, PLAIN.line, PLAIN.column, PLAIN.scratch,
+            PLAIN.modified, PLAIN.position, PLAIN.scratch,
             PLAIN.added, PLAIN.modified_sign, PLAIN.deleted,
         ];
         for text in plain {

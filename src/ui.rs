@@ -779,7 +779,7 @@ mod tests {
         // rather than running off the end of its lane. The lane is the whole
         // gap the status line leaves, so a lap reaches both sides of it.
         let mut seen = vec![at.unwrap()];
-        for _ in 0..80 {
+        for _ in 0..120 {
             editor.dog_runs();
             let row: Vec<char> = status_row(&editor, &keys).chars().collect();
             seen.push(row.iter().position(|c| *c == status::DOG_RUNNING).unwrap());
