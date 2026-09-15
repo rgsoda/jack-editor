@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 29: a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 30: a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -89,6 +89,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
 | `:e path` `:e!` | open a file, reload this one from disk |
+| `:config` | open the config file, writing the documented defaults first |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
 | `:set dog` | `nodog`: the dog in the middle of the status line |
@@ -600,6 +601,30 @@ that would not open — and reports which line it was, because otherwise the nex
 line's message would wipe the complaint off the status line before anyone read
 it. This is also the answer to where settings live, which the `:set` commands
 had been deferring.
+
+`:config` opens that file, and writes it first if there is not one yet: every
+setting there is, at its default, with a line above it saying what it does and
+what else it takes.
+
+```
+# A dog in the status line. It runs while you type and sits in the middle
+# when you stop. Needs glyphs.
+# set dog | set nodog
+set dog
+```
+
+Written out rather than commented out, because changing a setting should be
+editing a word, not remembering a spelling. And since every line is a default,
+a freshly written file changes nothing — which is a property worth having a
+test for: applying the generated file to a new editor has to leave the `:set`
+report byte-for-byte what it already was. If a default in the table drifts from
+the default in the code, that test fails.
+
+The settings are one table in `command.rs` with three readers: `tab`
+completion, the generated file, and the tests that walk every entry through
+`:set` to check the editor really accepts it. Adding an option means adding a
+row — the completion, the documentation and the default file follow from it,
+which is the only way three lists like that stay in agreement.
 
 ## Indent and dedent
 

@@ -835,8 +835,36 @@ impl Editor {
                 }
             }
             ("set", option) => self.set_option(option),
+            ("config", _) => self.open_config(),
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
+        }
+    }
+
+    /// `:config`: open the init file for editing, writing it out first if
+    /// there is not one yet. What gets written is every setting at its
+    /// default with a line above it saying what it does, so the file is the
+    /// documentation as well as the configuration - and, being all defaults,
+    /// a fresh one changes nothing until you edit it.
+    pub fn open_config(&mut self) {
+        let Some(dir) = crate::theme::config_dir() else {
+            self.message = "no config directory: $HOME is not set".into();
+            return;
+        };
+        let path = dir.join("init");
+        let fresh = !path.exists();
+        if fresh {
+            let written = std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(&path, command::default_config()));
+            if let Err(err) = written {
+                self.message = format!("{}: {err}", path.display());
+                return;
+            }
+        }
+        match self.open_file(&path) {
+            Ok(()) if fresh => self.message = format!("wrote {}", path.display()),
+            Ok(()) => {}
+            Err(err) => self.message = format!("{err:#}"),
         }
     }
 
@@ -2498,8 +2526,38 @@ mod tests {
     }
 
     #[test]
+    fn the_generated_config_leaves_a_fresh_editor_exactly_as_it_was() {
+        // The point of the file: every line in it is what the editor already
+        // does, so a config written and not edited changes nothing. It is also
+        // the check that no default in the table has drifted from the code.
+        let mut untouched = Editor::scratch();
+        untouched.run_command("set");
+        let before = std::mem::take(&mut untouched.message);
+
+        let mut e = Editor::scratch();
+        e.apply_config(&crate::command::default_config());
+        assert_eq!(e.message, "", "the file runs clean");
+        e.run_command("set");
+        assert_eq!(e.message, before);
+    }
+
+    #[test]
+    fn every_setting_in_the_table_is_reported_by_bare_set() {
+        let mut e = Editor::scratch();
+        e.run_command("set");
+        for setting in crate::command::SETTINGS {
+            assert!(
+                e.message.contains(&format!("{}=", setting.name)),
+                "{} is in the report: {}",
+                setting.name,
+                e.message
+            );
+        }
+    }
+
+    #[test]
     fn every_option_the_completion_offers_is_an_option() {
-        for option in crate::command::OPTIONS {
+        for option in crate::command::option_names() {
             let mut e = Editor::scratch();
             // The ones that take a value are offered with their `=` on.
             let written = match option.ends_with('=') {

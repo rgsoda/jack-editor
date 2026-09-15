@@ -32,49 +32,197 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "wq", argument: Argument::None },
     Command { name: "edit", argument: Argument::Path },
     Command { name: "set", argument: Argument::Option },
+    Command { name: "config", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
 ];
 
-/// Every `:set` option, spelled the long way. The short forms (`nu`, `sw`,
-/// `ai`) still work; they are not offered, because a completion you have to
-/// decode is not help.
-pub static OPTIONS: &[&str] = &[
-    "autocomplete=",
-    "noautocomplete",
-    "autoindent",
-    "noautoindent",
-    "cursorline",
-    "nocursorline",
-    "dog",
-    "nodog",
-    "emacs",
-    "noemacs",
-    "expandtab",
-    "noexpandtab",
-    "glyphs",
-    "noglyphs",
-    "hybrid",
-    "number",
-    "nonumber",
-    "relativenumber",
-    "semicolon=",
-    "shiftwidth=",
-    "signs",
-    "nosigns",
-    "tabline=",
-    "notabline",
-    "trim",
-    "notrim",
+/// What one `:set` option takes.
+pub enum Kind {
+    /// On or off: `set trim`, `set notrim`. The bool is the default.
+    Flag(bool),
+    /// One word out of several, each spelled out in full: `set number`,
+    /// `set hybrid`. The first is the default.
+    Word(&'static [&'static str]),
+    /// `name=value`. The list is what `tab` offers; the string is the default,
+    /// which need not be one of them.
+    Value(&'static [&'static str], &'static str),
+}
+
+pub struct Setting {
+    pub name: &'static str,
+    pub kind: Kind,
+    /// One line, written to the config file above the setting. What it does,
+    /// not how to spell it - the spelling is on the line below it.
+    pub about: &'static str,
+}
+
+/// Every `:set` option, spelled the long way, with what it does and what it
+/// does by default. The short forms (`nu`, `sw`, `ai`) still work; they are
+/// not offered, because a completion you have to decode is not help.
+///
+/// One table, three readers: `tab` completion, the generated config file, and
+/// the tests that walk it through `:set` to check nothing here has drifted
+/// from what the editor actually accepts.
+pub static SETTINGS: &[Setting] = &[
+    Setting {
+        name: "number",
+        kind: Kind::Word(&["number", "nonumber", "relativenumber", "hybrid"]),
+        about: "Line numbers: absolute, off, relative, or hybrid (relative but                 the cursor's own line absolute).",
+    },
+    Setting {
+        name: "cursorline",
+        kind: Kind::Flag(true),
+        about: "Tint the row the cursor is on, the whole width of the screen.",
+    },
+    Setting {
+        name: "signs",
+        kind: Kind::Flag(true),
+        about: "Git signs in the gutter: + ~ _ for added, changed and deleted.",
+    },
+    Setting {
+        name: "glyphs",
+        kind: Kind::Flag(true),
+        about: "Draw the status line with Nerd Font glyphs. Off is plain ASCII,                 for a terminal whose font has not been patched.",
+    },
+    Setting {
+        name: "dog",
+        kind: Kind::Flag(true),
+        about: "A dog in the status line. It runs while you type and sits in                 the middle when you stop. Needs glyphs.",
+    },
+    Setting {
+        name: "tabline",
+        kind: Kind::Value(&["off", "auto", "always"], "auto"),
+        about: "The buffer list along the top: auto shows it once a second file                 is open.",
+    },
+    Setting {
+        name: "shiftwidth",
+        kind: Kind::Value(&["2", "4", "8"], "4"),
+        about: "How wide one step of indentation is, 1 to 16.",
+    },
+    Setting {
+        name: "expandtab",
+        kind: Kind::Flag(false),
+        about: "Indent with spaces rather than tabs.",
+    },
+    Setting {
+        name: "autoindent",
+        kind: Kind::Flag(true),
+        about: "Keep the indent on enter, and take it from the grammar where                 there is one.",
+    },
+    Setting {
+        name: "autocomplete",
+        kind: Kind::Value(&["0", "2", "3"], "2"),
+        about: "How many characters of a word bring the completion popup up on                 their own. 0 turns it off; ^n still works.",
+    },
+    Setting {
+        name: "trim",
+        kind: Kind::Flag(true),
+        about: "Strip trailing whitespace from changed lines when saving.",
+    },
+    Setting {
+        name: "emacs",
+        kind: Kind::Flag(false),
+        about: "Emacs chords in insert mode: ^a ^e ^k ^y and the rest. They                 win over the insert-mode keys they share.",
+    },
+    Setting {
+        name: "semicolon",
+        kind: Kind::Value(&["find", "command"], "find"),
+        about: "What ; does: repeat the last f/t, or open the command line the                 way : does.",
+    },
 ];
 
-/// The values the options that take one will accept, so `tab` can finish
-/// `:set tabline=` as well as reach it.
-static VALUES: &[(&str, &[&str])] = &[
-    ("tabline", &["off", "auto", "always"]),
-    ("semicolon", &["find", "command"]),
-    ("shiftwidth", &["2", "4", "8"]),
-    ("autocomplete", &["0", "2", "3"]),
-];
+/// The option names `tab` offers: a flag both ways round, a word for each of
+/// its spellings, and a `=` on the ones that take a value so another `tab`
+/// reaches the values.
+///
+/// Sorted, unlike the table itself. The file reads in the order a person would
+/// want to read it; a completion list reads in the order a person would look
+/// something up in.
+pub fn option_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for setting in SETTINGS {
+        match setting.kind {
+            Kind::Flag(_) => {
+                names.push(setting.name.to_string());
+                names.push(format!("no{}", setting.name));
+            }
+            Kind::Word(words) => names.extend(words.iter().map(|word| word.to_string())),
+            Kind::Value(..) => names.push(format!("{}=", setting.name)),
+        }
+    }
+    names.sort();
+    names
+}
+
+/// The `:set` line that puts a setting at its default - which is what the
+/// generated config file is made of.
+pub fn default_line(setting: &Setting) -> String {
+    match setting.kind {
+        Kind::Flag(true) => format!("set {}", setting.name),
+        Kind::Flag(false) => format!("set no{}", setting.name),
+        Kind::Word(words) => format!("set {}", words[0]),
+        Kind::Value(_, default) => format!("set {}={default}", setting.name),
+    }
+}
+
+/// The config file as it ships: every setting at its default, with a line
+/// above it saying what it does and what else it takes. Written out rather
+/// than commented out, so changing one is editing a word rather than
+/// remembering a spelling.
+pub fn default_config() -> String {
+    let mut out = String::new();
+    for line in [
+        "# jack's config: one command per line, written as it would be typed",
+        "# after `:`. Blank lines and lines starting with # are ignored, and a",
+        "# line that is not understood stops the file there and says so.",
+        "#",
+        "# Everything below is a default, so a fresh file changes nothing.",
+    ] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for setting in SETTINGS {
+        out.push('\n');
+        for line in wrap(setting.about, 72) {
+            out.push_str(&format!("# {line}\n"));
+        }
+        if let Some(alternatives) = alternatives(setting) {
+            out.push_str(&format!("# {alternatives}\n"));
+        }
+        out.push_str(&default_line(setting));
+        out.push('\n');
+    }
+    out
+}
+
+/// The other spellings of a setting, for the comment above it.
+fn alternatives(setting: &Setting) -> Option<String> {
+    match setting.kind {
+        Kind::Flag(_) => Some(format!("set {0} | set no{0}", setting.name)),
+        Kind::Word(words) => Some(format!("set {}", words.join(" | set "))),
+        Kind::Value(values, _) => {
+            Some(format!("set {}={}", setting.name, values.join(" | ")))
+        }
+    }
+}
+
+/// Wrap on spaces, for the comment lines. Long enough words are left long:
+/// breaking a path or an option name would be worse than a ragged edge.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("never empty");
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(word.to_string());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines
+}
 
 /// What `tab` should offer for `input`: where in it the replacement starts, and
 /// what could go there. Empty when there is nothing to offer.
@@ -131,7 +279,11 @@ fn argument_for(name: &str) -> Argument {
 /// named and given its `=`.
 fn options(word: &str) -> Vec<String> {
     if let Some((name, typed)) = word.split_once('=') {
-        let Some((_, values)) = VALUES.iter().find(|(option, _)| *option == name) else {
+        let values = SETTINGS.iter().find_map(|setting| match setting.kind {
+            Kind::Value(values, _) if setting.name == name => Some(values),
+            _ => None,
+        });
+        let Some(values) = values else {
             return Vec::new();
         };
         return values
@@ -140,10 +292,9 @@ fn options(word: &str) -> Vec<String> {
             .map(|value| format!("{name}={value}"))
             .collect();
     }
-    OPTIONS
-        .iter()
+    option_names()
+        .into_iter()
         .filter(|option| option.starts_with(word))
-        .map(|option| option.to_string())
         .collect()
 }
 
@@ -191,6 +342,33 @@ mod tests {
 
     fn names(input: &str) -> Vec<String> {
         complete(input).1
+    }
+
+    #[test]
+    fn the_config_file_is_every_setting_at_its_default() {
+        let config = default_config();
+        for setting in SETTINGS {
+            let line = default_line(setting);
+            assert!(config.contains(&format!("\n{line}\n")), "{line} is in the file");
+            assert!(config.contains(setting.about.split(' ').next().unwrap()));
+        }
+        // Every line is a comment or a command; nothing else is legal in it.
+        for line in config.lines().filter(|line| !line.trim().is_empty()) {
+            assert!(line.starts_with('#') || line.starts_with("set "), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn every_setting_offers_itself_for_completion() {
+        let names = option_names();
+        for setting in SETTINGS {
+            let spelled = match setting.kind {
+                Kind::Flag(_) => setting.name.to_string(),
+                Kind::Word(words) => words[0].to_string(),
+                Kind::Value(..) => format!("{}=", setting.name),
+            };
+            assert!(names.contains(&spelled), "{spelled} is offered");
+        }
     }
 
     #[test]

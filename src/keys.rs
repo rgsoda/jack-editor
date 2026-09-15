@@ -110,6 +110,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":set number", what: "nonumber, relativenumber, hybrid", mode: "command" },
     Binding { keys: ":set trim", what: "notrim: strip trailing space on save", mode: "command" },
     Binding { keys: ":set glyphs", what: "noglyphs: nerd font status line, or ascii", mode: "command" },
+    Binding { keys: ":config", what: "open the config file, writing the defaults first", mode: "command" },
     Binding { keys: ":set shiftwidth=4", what: "how wide one indent step is", mode: "command" },
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
     Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
