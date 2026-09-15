@@ -883,13 +883,28 @@ impl View {
         self.doc.path.is_none() && self.doc.len_chars() == 0 && !self.is_modified()
     }
 
-    fn apply_history(&mut self, tx: Transaction) {
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
+    /// One undo step, which is one command's worth of transactions. The
+    /// cursor ends where the last of them says, so a step that typed a word
+    /// leaves the caret where the typing began.
+    fn apply_history(&mut self, txs: Vec<Transaction>) {
+        for tx in &txs {
+            let edits = tx.apply(&mut self.doc);
+            if let Some(syntax) = self.syntax.as_mut() {
+                syntax.edit(&edits, &self.doc.text);
+            }
+            self.sel = tx.sel_after;
         }
-        self.sel = tx.sel_after;
         self.goal_col = None;
+    }
+
+    /// A command is starting: its edits are one undo step, however many
+    /// transactions it takes.
+    pub fn begin_undo_group(&mut self) {
+        self.history.begin_group();
+    }
+
+    pub fn end_undo_group(&mut self) {
+        self.history.end_group();
     }
     pub fn put_lines(&mut self, text: &str, after: bool) {
         let (line, _) = self.cursor_coords();

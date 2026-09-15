@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 32: `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 33: one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -225,10 +225,11 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `complete.rs` — the completion popup's candidates: every word in a window
   around the cursor, tagged with what the grammar calls it, ranked and filtered
   by prefix.
-- `history.rs` — `Change` / `Transaction` / `History`. A transaction carries its
-  own pre-edit coordinates and the selection either side of it, so it can be
-  inverted without the document and undo lands the cursor where you left it.
-  Runs of typing or deleting coalesce into a single undo step.
+- `history.rs` — `Change` / `Transaction` / `Step` / `History`. A transaction
+  carries its own pre-edit coordinates and the selection either side of it, so
+  it can be inverted without the document and undo lands the cursor where you
+  left it. A `Step` is one command's worth of them, and a step is what `u`
+  takes back.
 - `queries/<language>/indents.scm` — which nodes indent what they contain and
   which tokens come back out. Ours, not the grammar's.
 - `syntax.rs` — tree-sitter. Holds the parser and tree, patches the tree with
@@ -492,6 +493,31 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## One command, one undo
+
+`u` takes back a command, not a keystroke. Typing `ciwgamma<esc>` is a delete
+and then six inserts, and one `u` puts `alpha` back; `xxx` is three commands
+and takes three.
+
+The keys decide where the line falls, because they are the only thing that
+knows when a command begins and ends - the same boundary `.` is recorded
+against, found once and used twice. A command opens an undo group as its first
+key arrives and closes it when the command finishes, and everything edited in
+between becomes one `Step`.
+
+A step is a list of transactions rather than one merged transaction, which is
+the only part of this with a real decision in it. Merging would mean rewriting
+each transaction's coordinates into the step's frame, and a step that
+backspaces does not run in one direction; keeping the list means undo is each
+transaction inverted, last first, and nothing has to be recalculated. Runs of
+typing still coalesce into one transaction inside the step, which is now an
+optimisation rather than the mechanism.
+
+The one rule the save point imposes: a step that has been written to disk can
+never be added to, because the document would change while the undo depth
+stayed put, and `is_modified` would then be lying. A group that runs into that
+starts a new step and carries on there.
 
 ## Repeating a change
 

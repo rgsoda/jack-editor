@@ -1870,6 +1870,17 @@ impl Editor {
         }
     }
 
+    /// A command is starting: everything it edits is one undo step. The keys
+    /// know where a command begins and ends - that is what `.` is built on -
+    /// so they are what drives this, and `ciwword<esc>` comes back in one `u`.
+    pub fn begin_undo_group(&mut self) {
+        self.view_mut().begin_undo_group();
+    }
+
+    pub fn end_undo_group(&mut self) {
+        self.view_mut().end_undo_group();
+    }
+
     pub fn undo(&mut self) {
         if !self.view_mut().undo() {
             self.message = "nothing to undo".into();
@@ -2511,10 +2522,14 @@ mod tests {
         assert!(e.view().sel.is_empty());
     }
 
+    /// Typing, as one command: the keys open an undo group around an insert,
+    /// and these tests are below the keys.
     fn type_str(e: &mut Editor, text: &str) {
+        e.begin_undo_group();
         for ch in text.chars() {
             e.insert(&ch.to_string());
         }
+        e.end_undo_group();
     }
 
     #[test]
@@ -2542,14 +2557,25 @@ mod tests {
     }
 
     #[test]
-    fn a_newline_ends_the_coalescing_run() {
+    fn one_command_is_one_undo_step_however_it_is_typed() {
+        // A newline inside an insert does not end the step: the command does.
+        let mut e = editor("");
+        e.begin_undo_group();
+        for ch in "ab".chars() {
+            e.insert(&ch.to_string());
+        }
+        e.insert_newline();
+        for ch in "cd".chars() {
+            e.insert(&ch.to_string());
+        }
+        e.end_undo_group();
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "");
+
+        // And two commands are two steps, however alike their edits look.
         let mut e = editor("");
         type_str(&mut e, "ab");
-        e.insert_newline();
         type_str(&mut e, "cd");
-
-        e.undo();
-        assert_eq!(e.view().doc.text.to_string(), "ab\n");
         e.undo();
         assert_eq!(e.view().doc.text.to_string(), "ab");
         e.undo();
@@ -2560,9 +2586,11 @@ mod tests {
     fn a_run_of_backspaces_is_one_undo_step() {
         let mut e = editor("abcdef");
         e.move_cursor(Move::FileEnd, false);
+        e.begin_undo_group();
         e.delete_backward();
         e.delete_backward();
         e.delete_backward();
+        e.end_undo_group();
         assert_eq!(e.view().doc.text.to_string(), "abc");
         e.undo();
         assert_eq!(e.view().doc.text.to_string(), "abcdef");

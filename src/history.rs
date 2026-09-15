@@ -85,18 +85,54 @@ impl Transaction {
     }
 }
 
+/// One undo step: everything a single command did, in the order it did it.
+/// Usually one transaction; a command that types - `ciw`, `o`, `A` - is all
+/// of the transactions between entering insert mode and leaving it, which is
+/// why this is a list rather than one merged transaction. Merging them would
+/// mean rewriting each one's coordinates into the step's frame, and a step
+/// that backspaces does not run in one direction.
+#[derive(Clone, Debug, Default)]
+pub struct Step(Vec<Transaction>);
+
+impl Step {
+    /// The transactions that undo this step: each one inverted, last first.
+    fn invert(&self) -> Vec<Transaction> {
+        self.0.iter().rev().map(Transaction::invert).collect()
+    }
+}
+
 #[derive(Default)]
 pub struct History {
-    undo: Vec<Transaction>,
-    redo: Vec<Transaction>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// Undo depth the document was last saved at. `None` means the saved state
     /// is no longer reachable by undoing.
     saved_depth: Option<usize>,
+    /// How many `begin_group` calls are open. A command can start another
+    /// inside its own - `.` replaying an insert - and only the outermost one
+    /// closing ends the step.
+    grouping: usize,
+    /// The step the open group is filling, while it has one.
+    group: Option<usize>,
 }
 
 impl History {
     pub fn new() -> Self {
-        History { undo: Vec::new(), redo: Vec::new(), saved_depth: Some(0) }
+        History { saved_depth: Some(0), ..History::default() }
+    }
+
+    /// Start a command: everything pushed until the matching `end_group` is
+    /// one undo step.
+    pub fn begin_group(&mut self) {
+        self.grouping += 1;
+    }
+
+    /// End a command. The step closes when the last open group does.
+    pub fn end_group(&mut self) {
+        self.grouping = self.grouping.saturating_sub(1);
+        if self.grouping == 0 {
+            self.group = None;
+        }
     }
 
     pub fn push(&mut self, tx: Transaction) {
@@ -106,16 +142,36 @@ impl History {
             self.saved_depth = None;
         }
 
-        // Merging into the transaction at the save point would change the
-        // document without changing the depth, so `is_modified` would lie.
-        if self.saved_depth != Some(self.undo.len())
-            && let Some(last) = self.undo.last_mut()
+        // Runs of typing and deleting fold together, but only inside the
+        // command that is doing them: two commands are two undo steps however
+        // alike their edits look, which is why `xxx` takes three undos.
+        // Coalescing into the step at the save point would change the document
+        // without changing the depth, so `is_modified` would lie.
+        if self.grouping > 0
+            && self.group == Some(self.undo.len().saturating_sub(1))
+            && self.saved_depth != Some(self.undo.len())
+            && let Some(last) = self.undo.last_mut().and_then(|step| step.0.last_mut())
             && coalesce(last, &tx)
         {
             return;
         }
 
-        self.undo.push(tx);
+        // Inside a command: the same step takes it, however many transactions
+        // the command turns out to be made of. Adding to a step the save point
+        // sits on top of is the one thing that cannot be done - the document
+        // would change while the depth stayed put - so that starts a new step
+        // and the group follows it there.
+        if self.grouping > 0 {
+            match self.group {
+                Some(at) if at < self.undo.len() && self.saved_depth != Some(at + 1) => {
+                    self.undo[at].0.push(tx);
+                    return;
+                }
+                _ => self.group = Some(self.undo.len()),
+            }
+        }
+
+        self.undo.push(Step(vec![tx]));
     }
 
     /// Fold a transaction into the one before it when it only rewrites text
@@ -125,26 +181,28 @@ impl History {
     pub fn amend(&mut self, tx: Transaction) {
         self.redo.clear();
         if self.saved_depth != Some(self.undo.len())
-            && let Some(last) = self.undo.last_mut()
+            && let Some(last) = self.undo.last_mut().and_then(|step| step.0.last_mut())
             && last.absorb(&tx)
         {
             return;
         }
-        self.undo.push(tx);
+        self.push(tx);
     }
 
-    /// Pops the last transaction and returns its inverse, ready to apply.
-    pub fn undo(&mut self) -> Option<Transaction> {
-        let tx = self.undo.pop()?;
-        let inverse = tx.invert();
-        self.redo.push(tx);
+    /// Pops the last step and returns the transactions that undo it, in the
+    /// order they should be applied.
+    pub fn undo(&mut self) -> Option<Vec<Transaction>> {
+        let step = self.undo.pop()?;
+        let inverse = step.invert();
+        self.redo.push(step);
         Some(inverse)
     }
 
-    pub fn redo(&mut self) -> Option<Transaction> {
-        let tx = self.redo.pop()?;
-        self.undo.push(tx.clone());
-        Some(tx)
+    pub fn redo(&mut self) -> Option<Vec<Transaction>> {
+        let step = self.redo.pop()?;
+        let txs = step.0.clone();
+        self.undo.push(step);
+        Some(txs)
     }
 
     /// How many undo steps deep the document is. Cheap evidence that it has

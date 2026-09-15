@@ -198,6 +198,8 @@ pub struct Keys {
     /// Set by the commands that change the buffer without being a change you
     /// would want done twice - undo and redo.
     not_a_change: bool,
+    /// Whether an undo group is open for the command being typed.
+    grouped: bool,
     /// The register `"x` named for the command being typed.
     register: Option<char>,
 }
@@ -209,12 +211,12 @@ impl Keys {
         // An open picker or prompt owns the keyboard, including the chords
         // below: `^s` while typing a pattern is an `s`, not a save.
         if editor.picker.is_some() {
-            self.forget();
+            self.forget(editor);
             editor.picker_input(key);
             return Action::Continue;
         }
         if editor.prompt.is_some() {
-            self.forget();
+            self.forget(editor);
             editor.prompt_input(key);
             // `:q` has to reach the run loop, which is the only thing that can
             // actually stop.
@@ -255,6 +257,9 @@ impl Keys {
         if !self.replaying && !repeat {
             if self.recording.is_empty() {
                 self.recorded_at = Some(editor.revision());
+                // The same boundary serves undo: one command, one step.
+                editor.begin_undo_group();
+                self.grouped = true;
             }
             self.recording.push(key);
         }
@@ -278,17 +283,22 @@ impl Keys {
     }
 
     /// Throw away the half-recorded command: it was not a change, or it was
-    /// one nobody wants repeated.
-    fn forget(&mut self) {
+    /// one nobody wants repeated. Closes its undo step either way, since the
+    /// command is over whatever became of its keys.
+    fn forget(&mut self, editor: &mut Editor) {
         self.recording.clear();
         self.recorded_at = None;
+        if self.grouped {
+            editor.end_undo_group();
+            self.grouped = false;
+        }
     }
 
     /// After a key: decide whether what has been recorded is finished, and
     /// whether it changed anything.
-    fn remember(&mut self, editor: &Editor, repeat: bool) {
+    fn remember(&mut self, editor: &mut Editor, repeat: bool) {
         if repeat || std::mem::take(&mut self.not_a_change) {
-            self.forget();
+            self.forget(editor);
             return;
         }
         // Still being typed: a count or a register on its own, an operator
@@ -310,7 +320,7 @@ impl Keys {
         if self.recorded_at != Some(editor.revision()) {
             self.change = std::mem::take(&mut self.recording);
         }
-        self.forget();
+        self.forget(editor);
     }
 
     /// `.`: the last command that changed the buffer, done again here. A count
@@ -345,9 +355,13 @@ impl Keys {
         self.register = None;
         self.pending = None;
         self.replaying = true;
+        // The repeat is one command, so it is one undo step - even when the
+        // keys it plays back are an insert that made several.
+        editor.begin_undo_group();
         for key in keys {
             self.handle(editor, key);
         }
+        editor.end_undo_group();
         self.replaying = false;
     }
 
@@ -2905,13 +2919,57 @@ plain
 
 
     #[test]
-    fn a_completion_finishes_the_word_and_undoes_in_one_step() {
+    fn a_completion_finishes_the_word_and_undoes_with_the_insert() {
         let mut vim = Vim::new("render_widget\n");
         vim.press("Gorend<C-n><tab>");
         assert_eq!(vim.text(), "render_widget\nrender_widget\n");
 
+        // One `u` takes the whole insert, completion and all: the command was
+        // `o`, and it ended at `esc`.
         vim.press("<esc>u");
-        assert_eq!(vim.text(), "render_widget\nrend\n");
+        assert_eq!(vim.text(), "render_widget\n");
+    }
+
+    #[test]
+    fn an_insert_is_one_undo_step() {
+        // Typing, however many transactions it takes inside, is one command.
+        let mut vim = Vim::new("top\n");
+        vim.press("ohello there<esc>");
+        assert_eq!(vim.text(), "top\nhello there\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "top\n");
+
+        // The same for a change: `ciw` deletes and then types, and one `u`
+        // puts back what was there.
+        let mut vim = Vim::new("alpha beta\n");
+        vim.press("ciwgamma<esc>");
+        assert_eq!(vim.text(), "gamma beta\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "alpha beta\n");
+
+        // Backspacing inside the insert is part of it too - the step is not
+        // one direction of travel.
+        let mut vim = Vim::new("x\n");
+        vim.press("Aabc<bs><bs>d<esc>");
+        assert_eq!(vim.text(), "xad\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "x\n");
+
+        // And redo puts the whole thing back.
+        vim.press("<C-r>");
+        assert_eq!(vim.text(), "xad\n");
+    }
+
+    #[test]
+    fn a_repeat_is_one_undo_step_too() {
+        let mut vim = Vim::new("top\n");
+        vim.press("ohi<esc>");
+        vim.press(".");
+        assert_eq!(vim.text(), "top\nhi\nhi\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "top\nhi\n", "the repeat, not half of it");
+        vim.press("u");
+        assert_eq!(vim.text(), "top\n");
     }
 
     #[test]
