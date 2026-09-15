@@ -26,7 +26,8 @@ use std::io::{self, Write};
 
 use editor::{Editor, Mode};
 use keys::{Action, Keys};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 use stream::Message;
 
 /// Owns the raw-mode / alternate-screen state so it is undone on every exit
@@ -106,6 +107,11 @@ fn main() -> Result<()> {
     run(&mut editor, rx)
 }
 
+/// How long a pause in typing means the dog has stopped running. Long enough
+/// that it keeps going between words, short enough that it sits down while you
+/// are thinking.
+const DOG_REST: Duration = Duration::from_millis(700);
+
 fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
@@ -151,7 +157,20 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         // background job - then take everything else that is already waiting
         // before drawing again. A walk sending 512 paths at a time must not
         // cost 512 frames.
-        let mut message = rx.recv()?;
+        // While the dog is running, wait with a timeout rather than for ever:
+        // the moment nothing arrives is the moment typing has stopped, which
+        // is the one thing the dog needs a clock for.
+        let mut message = match editor.dog.running {
+            false => rx.recv()?,
+            true => match rx.recv_timeout(DOG_REST) {
+                Ok(message) => message,
+                Err(RecvTimeoutError::Timeout) => {
+                    editor.dog_rests();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            },
+        };
         // Batches waiting behind each other are merged, so a fast walk costs
         // one update rather than one per 512 paths.
         let mut streamed: Vec<String> = Vec::new();
@@ -160,6 +179,7 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         loop {
             if let Message::Key(key) = message {
                 editor.message.clear();
+                editor.dog_runs();
                 let was_armed = std::mem::take(&mut quit_armed);
 
                 match keys.handle(editor, key) {

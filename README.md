@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 29: a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 29: a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, HTML, JavaScript.
@@ -91,6 +91,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
+| `:set dog` | `nodog`: the dog in the middle of the status line |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
@@ -404,6 +405,27 @@ the terminal's width and the text's width stop being the same number:
 measured against, and `width` stays the terminal. Getting that wrong shows up
 as a cursor that drifts from the character it is on once a line is long enough
 to scroll.
+
+## The dog
+
+There is a dog in the middle of the status line. It sits there while you think,
+and runs while you type — a step along its lane on every key, so it goes as
+fast as you do, and it comes back to the middle and sits down when you stop.
+
+It needs no timer and no thread, because the keyboard is the only clock it
+wants: a key is a step, and the moment nothing arrives is the moment typing has
+stopped. The run loop already blocks waiting for the next message; while the
+dog is running it blocks with a 700ms timeout instead, and a timeout is the
+dog sitting down. One extra wake-up after the last key of a burst, and none at
+all while the editor is idle — the loop goes back to blocking for ever once the
+dog is sitting.
+
+It runs in a twelve-cell lane centred on the screen rather than the whole way
+across, so it stays where the eye expects it, and it is drawn only if the gap
+between the two sides of the status line has room: a long file name or a
+message pushes the dog out rather than being drawn over. Both glyphs are
+Material Design icons from the patched font, so `:set noglyphs` has no dog
+either, and `:set nodog` turns it off while keeping the pretty status line.
 
 ## The cursor line
 

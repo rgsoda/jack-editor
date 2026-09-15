@@ -45,6 +45,8 @@ pub static OPTIONS: &[&str] = &[
     "noautoindent",
     "cursorline",
     "nocursorline",
+    "dog",
+    "nodog",
     "emacs",
     "noemacs",
     "expandtab",

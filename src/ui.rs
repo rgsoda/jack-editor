@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use unicode_width::UnicodeWidthChar;
 
 use crate::editor::{Completing, Editor};
@@ -423,6 +425,28 @@ fn draw_line(
     }
 }
 
+/// The dog, in the gap the status line leaves in the middle: running while
+/// you type and sitting when you stop.
+///
+/// It runs in a lane centred on the screen rather than from one side to the
+/// other, so that it stays where the eye expects it and a long file name or a
+/// message pushes it out of the way instead of being drawn over.
+fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize>, bar: Style) {
+    let (width, _) = surface.size();
+    let centre = width / 2;
+    let lane = centre.saturating_sub(status::DOG_LANE / 2)..centre + status::DOG_LANE / 2;
+    // Nowhere to run: the sides have taken the middle of the line.
+    if gap.start > lane.start || gap.end <= lane.end {
+        return;
+    }
+
+    let (dog, x) = match editor.dog.running {
+        true => (status::DOG_RUNNING, lane.start + editor.dog.steps % status::DOG_LANE),
+        false => (status::DOG_SITTING, centre),
+    };
+    surface.put(x, row, dog, 1, bar);
+}
+
 /// What `tab` is offering on the `:` line, in the row above it, with the one
 /// it has put there highlighted. Vim calls this the wildmenu.
 fn draw_wildmenu(editor: &Editor, completing: &Completing, surface: &mut Surface, row: usize) {
@@ -516,9 +540,14 @@ fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         let message = format!(" {}", status.message);
         x = put_str(surface, x, row, &message, bar, start);
     }
+    let text_end = x;
     while x < start {
         surface.put(x, row, ' ', 1, bar);
         x += 1;
+    }
+
+    if editor.show_dog && glyphs.nerd {
+        draw_dog(editor, surface, row, text_end..start, bar);
     }
     for (text, style) in &right {
         x = put_str(surface, x, row, text, *style, width);
@@ -721,6 +750,62 @@ mod tests {
         let surface = screen.begin(width, height);
         draw(editor, keys, surface);
         (0..width).map(|x| surface.get(x, y).style.bg).collect()
+    }
+
+    #[test]
+    fn the_dog_sits_in_the_middle_and_runs_when_you_type() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        let row = editor.top() + editor.height;
+        let middle = editor.width / 2;
+
+        let sitting: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert_eq!(sitting[middle], status::DOG_SITTING);
+
+        // A key, and it is off - a different dog, and no longer in the middle.
+        editor.dog_runs();
+        let running: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert_eq!(running[middle], ' ');
+        let at = running.iter().position(|c| *c == status::DOG_RUNNING);
+        assert!(at.is_some(), "the dog is somewhere on the line");
+
+        // It keeps going while the keys keep coming, and comes back around
+        // rather than running off the end of its lane.
+        let mut seen = vec![at.unwrap()];
+        for _ in 0..status::DOG_LANE {
+            editor.dog_runs();
+            let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+            seen.push(row.iter().position(|c| *c == status::DOG_RUNNING).unwrap());
+        }
+        assert_eq!(seen.first(), seen.last(), "a lap of the lane");
+        assert!(seen.iter().all(|x| x.abs_diff(middle) <= status::DOG_LANE));
+
+        // And it sits back down where it started.
+        editor.dog_rests();
+        let resting: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert_eq!(resting[middle], status::DOG_SITTING);
+    }
+
+    #[test]
+    fn a_message_in_the_middle_keeps_the_dog_out_of_it() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        editor.message = "x".repeat(editor.width);
+
+        let row = status_row(&editor, &keys);
+        assert!(!row.contains(status::DOG_SITTING), "the message has the room");
+    }
+
+    #[test]
+    fn no_dog_without_a_patched_font_or_with_the_option_off() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        editor.show_dog = false;
+        assert!(!status_row(&editor, &keys).contains(status::DOG_SITTING));
+
+        editor.show_dog = true;
+        editor.glyphs = false;
+        assert!(!status_row(&editor, &keys).contains(status::DOG_SITTING));
     }
 
     #[test]

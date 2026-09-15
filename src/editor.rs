@@ -79,6 +79,19 @@ impl Prompt {
 /// finger already is and `:` is what it is usually reaching for, so this is a
 /// remap common enough to be worth an option rather than an init file full of
 /// them.
+/// The dog in the status line. It runs while you are typing - a step on every
+/// key, so it goes as fast as you do - and sits in the middle when you stop.
+///
+/// No timer and no thread: the only clock this needs is the keyboard, and the
+/// one moment nothing is arriving is the moment the dog should be sitting
+/// down, which the run loop notices by waiting with a timeout.
+#[derive(Default)]
+pub struct Dog {
+    /// How many keys have been pressed in this burst of typing.
+    pub steps: usize,
+    pub running: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Semicolon {
     /// Vim's: repeat the last find, with `,` reversing it.
@@ -251,6 +264,9 @@ pub struct Editor {
     pub glyphs: bool,
     /// Tint the row the cursor is on, the whole width of the screen.
     pub cursorline: bool,
+    /// The dog in the status line: whether to draw one, and what it is doing.
+    pub show_dog: bool,
+    pub dog: Dog,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
     /// An escape sequence the run loop should write out with the next frame.
@@ -325,6 +341,8 @@ impl Editor {
             trim_on_save: true,
             glyphs: true,
             cursorline: true,
+            show_dog: true,
+            dog: Dog::default(),
             semicolon: Semicolon::default(),
             tabline: Tabline::Auto,
             autoindent: true,
@@ -869,6 +887,8 @@ impl Editor {
             "hybrid" => self.numbers = Numbers::Hybrid,
             "trim" => self.trim_on_save = true,
             "notrim" => self.trim_on_save = false,
+            "dog" => self.show_dog = true,
+            "nodog" => self.show_dog = false,
             "cursorline" => self.cursorline = true,
             "nocursorline" => self.cursorline = false,
             "glyphs" => self.glyphs = true,
@@ -880,9 +900,10 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} cursorline={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
+                    self.show_dog,
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
@@ -1888,6 +1909,18 @@ impl Editor {
     /// written to it - which is what a `"+y` has to notice.
     pub fn system_register(&self) -> RegisterValue {
         self.registers.get(Some(SYSTEM))
+    }
+
+    /// A key was pressed: the dog takes a step.
+    pub fn dog_runs(&mut self) {
+        self.dog.steps = self.dog.steps.wrapping_add(1);
+        self.dog.running = true;
+    }
+
+    /// Typing stopped: the dog comes back to the middle and sits.
+    pub fn dog_rests(&mut self) {
+        self.dog.steps = 0;
+        self.dog.running = false;
     }
 
     /// True when something is selected outside visual mode - what shift and an

@@ -43,6 +43,14 @@ pub struct Glyphs {
     pub truncated: &'static str,
 }
 
+/// The dog: side-on while it runs, sitting when it stops. Material Design
+/// icons, so they need the patched font the rest of the pretty glyphs do.
+pub const DOG_RUNNING: char = '\u{f0a44}';
+pub const DOG_SITTING: char = '\u{f0a43}';
+/// How far the dog runs before it comes back around, in cells. Wide enough to
+/// read as running, narrow enough to stay out of a message's way.
+pub const DOG_LANE: usize = 12;
+
 /// Nerd Font code points, all from the Powerline and Devicons ranges.
 pub const NERD: Glyphs = Glyphs {
     nerd: true,
