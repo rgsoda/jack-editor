@@ -1,0 +1,135 @@
+use std::collections::HashMap;
+
+/// Where text goes when no register is named.
+pub const UNNAMED: char = '"';
+/// The last yank, kept apart so a later delete does not clobber it.
+pub const YANK: char = '0';
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegisterValue {
+    pub text: String,
+    /// Whole lines. `p` puts these on a new line rather than inline, which is
+    /// the difference between putting back a `dd` and a `dw`.
+    pub linewise: bool,
+}
+
+impl RegisterValue {
+    pub fn charwise(text: String) -> Self {
+        RegisterValue { text, linewise: false }
+    }
+
+    /// Linewise text always ends with a newline, so putting it back cannot
+    /// join two lines together.
+    pub fn linewise(mut text: String) -> Self {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        RegisterValue { text, linewise: true }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+#[derive(Default)]
+pub struct Registers {
+    map: HashMap<char, RegisterValue>,
+}
+
+impl Registers {
+    pub fn get(&self, name: Option<char>) -> RegisterValue {
+        let name = name.map_or(UNNAMED, |c| c.to_ascii_lowercase());
+        self.map.get(&name).cloned().unwrap_or_default()
+    }
+
+    pub fn record_delete(&mut self, name: Option<char>, value: RegisterValue) {
+        self.store(name, value);
+    }
+
+    /// A yank also lands in register `0`, so it is still there after the next
+    /// delete has overwritten the unnamed register.
+    pub fn record_yank(&mut self, name: Option<char>, value: RegisterValue) {
+        let stored = self.store(name, value);
+        if name.is_none() {
+            self.map.insert(YANK, stored);
+        }
+    }
+
+    /// Writes to the named register if there is one, and always to the unnamed
+    /// register. An uppercase name appends instead of replacing.
+    fn store(&mut self, name: Option<char>, value: RegisterValue) -> RegisterValue {
+        let unnamed = match name {
+            None => value,
+            Some(name) if name.is_ascii_uppercase() => {
+                let entry = self.map.entry(name.to_ascii_lowercase()).or_default();
+                entry.text.push_str(&value.text);
+                entry.linewise |= value.linewise;
+                entry.clone()
+            }
+            Some(name) => {
+                self.map.insert(name, value.clone());
+                value
+            }
+        };
+        self.map.insert(UNNAMED, unnamed.clone());
+        unnamed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_delete_without_a_name_goes_to_the_unnamed_register() {
+        let mut registers = Registers::default();
+        registers.record_delete(None, RegisterValue::charwise("gone".into()));
+        assert_eq!(registers.get(None).text, "gone");
+    }
+
+    #[test]
+    fn a_named_delete_lands_in_both_registers() {
+        let mut registers = Registers::default();
+        registers.record_delete(Some('a'), RegisterValue::charwise("x".into()));
+        assert_eq!(registers.get(Some('a')).text, "x");
+        assert_eq!(registers.get(None).text, "x");
+    }
+
+    #[test]
+    fn a_yank_survives_a_later_delete_in_register_zero() {
+        let mut registers = Registers::default();
+        registers.record_yank(None, RegisterValue::charwise("kept".into()));
+        registers.record_delete(None, RegisterValue::charwise("junk".into()));
+
+        assert_eq!(registers.get(None).text, "junk");
+        assert_eq!(registers.get(Some(YANK)).text, "kept");
+    }
+
+    #[test]
+    fn an_uppercase_name_appends() {
+        let mut registers = Registers::default();
+        registers.record_yank(Some('a'), RegisterValue::charwise("one ".into()));
+        registers.record_yank(Some('A'), RegisterValue::charwise("two".into()));
+        assert_eq!(registers.get(Some('a')).text, "one two");
+        // The unnamed register sees the whole appended contents.
+        assert_eq!(registers.get(None).text, "one two");
+    }
+
+    #[test]
+    fn linewise_text_always_ends_with_a_newline() {
+        let value = RegisterValue::linewise("no newline".into());
+        assert_eq!(value.text, "no newline\n");
+        assert!(value.linewise);
+
+        // One already there is not doubled.
+        assert_eq!(RegisterValue::linewise("has one\n".into()).text, "has one\n");
+    }
+
+    #[test]
+    fn an_unset_register_reads_as_empty() {
+        let registers = Registers::default();
+        assert!(registers.get(Some('z')).is_empty());
+        assert!(registers.get(None).is_empty());
+    }
+}

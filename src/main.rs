@@ -1,19 +1,26 @@
 mod buffer;
 mod editor;
 mod history;
+mod keys;
+mod picker;
+mod register;
 mod screen;
+mod stream;
 mod syntax;
 mod theme;
 mod ui;
+mod view;
 
 use anyhow::Result;
-use crossterm::cursor::Show;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::execute;
+use crossterm::cursor::{SetCursorStyle, Show};
+use crossterm::{execute, queue};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use std::io::{self, Write};
 
-use editor::{Editor, Move};
+use editor::{Editor, Mode};
+use keys::{Action, Keys};
+use std::sync::mpsc::Receiver;
+use stream::Message;
 
 /// Owns the raw-mode / alternate-screen state so it is undone on every exit
 /// path, including `?` returning an error out of `run`.
@@ -34,15 +41,18 @@ impl Drop for TerminalGuard {
 }
 
 fn restore() {
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        SetCursorStyle::DefaultUserShape,
+        Show
+    );
     let _ = terminal::disable_raw_mode();
 }
 
 fn main() -> Result<()> {
-    let mut editor = match std::env::args().nth(1) {
-        Some(path) => Editor::open(path)?,
-        None => Editor::scratch(),
-    };
+    let paths: Vec<String> = std::env::args().skip(1).collect();
+    let mut editor = Editor::open(&paths)?;
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
     // screen, with no echo and no visible prompt.
@@ -52,15 +62,21 @@ fn main() -> Result<()> {
         default_hook(info);
     }));
 
+    let (tx, rx) = stream::channels();
+    editor.set_jobs(tx.clone());
+
     let _guard = TerminalGuard::enter()?;
-    run(&mut editor)
+    stream::spawn_input(tx);
+    run(&mut editor, rx)
 }
 
-fn run(editor: &mut Editor) -> Result<()> {
+fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
+    let mut keys = Keys::default();
     // Set once a quit is attempted with unsaved changes; any other key clears it.
     let mut quit_armed = false;
+    let mut shown_mode = None;
 
     loop {
         let (cols, rows) = terminal::size()?;
@@ -69,95 +85,73 @@ fn run(editor: &mut Editor) -> Result<()> {
         editor.set_viewport(cols, rows - 1);
         editor.scroll_to_cursor();
 
-        ui::draw(editor, screen.begin(cols, rows));
+        ui::draw(editor, &keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
+
+        // A block cursor in normal mode, a bar in insert, as the mode changes.
+        // A bar while typing in the picker, otherwise the mode's cursor.
+        let wanted = match editor.picker.is_some() {
+            true => Mode::Insert,
+            false => editor.mode,
+        };
+        if shown_mode != Some(wanted) {
+            queue!(out, cursor_style(wanted))?;
+            shown_mode = Some(wanted);
+        }
         out.flush()?;
 
-        // Resize events just fall through and redraw on the next iteration.
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            editor.message.clear();
-            let was_armed = std::mem::take(&mut quit_armed);
+        // Block until something happens - a key, a resize, or a batch from a
+        // background job - then take everything else that is already waiting
+        // before drawing again. A walk sending 512 paths at a time must not
+        // cost 512 frames.
+        let mut message = rx.recv()?;
+        // Batches waiting behind each other are merged, so a fast walk costs
+        // one update rather than one per 512 paths.
+        let mut streamed: Vec<String> = Vec::new();
+        let mut streamed_token = 0;
+        let mut streamed_done = false;
+        loop {
+            if let Message::Key(key) = message {
+                editor.message.clear();
+                let was_armed = std::mem::take(&mut quit_armed);
 
-            match handle_key(editor, key) {
-                Action::Continue => {}
-                Action::Quit => {
-                    if was_armed || !editor.is_modified() {
-                        return Ok(());
+                match keys.handle(editor, key) {
+                    Action::Continue => {}
+                    Action::Quit => {
+                        if was_armed || !editor.any_modified() {
+                            return Ok(());
+                        }
+                        editor.message = "unsaved changes - press ^Q again to quit".into();
+                        quit_armed = true;
                     }
-                    editor.message = "unsaved changes - press ^Q again to quit".into();
-                    quit_armed = true;
                 }
+            } else if let Message::Items { token, items, done } = message {
+                if token != streamed_token {
+                    editor.stream_items(streamed_token, std::mem::take(&mut streamed), streamed_done);
+                    streamed_token = token;
+                }
+                streamed.extend(items);
+                streamed_done = done;
+            } else if let Message::Failed { token, error } = message {
+                editor.job_failed(token, error);
             }
+            // Resize needs nothing: the next frame re-reads the terminal size.
+
+            match rx.try_recv() {
+                Ok(next) => message = next,
+                Err(_) => break,
+            }
+        }
+        if !streamed.is_empty() || streamed_done {
+            editor.stream_items(streamed_token, streamed, streamed_done);
         }
     }
 }
 
-enum Action {
-    Continue,
-    Quit,
-}
-
-fn handle_key(editor: &mut Editor, key: KeyEvent) -> Action {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let extend = key.modifiers.contains(KeyModifiers::SHIFT);
-
-    if ctrl {
-        match key.code {
-            KeyCode::Char('q') => return Action::Quit,
-            KeyCode::Char('s') => {
-                editor.save();
-                return Action::Continue;
-            }
-            KeyCode::Char('z') => {
-                editor.undo();
-                return Action::Continue;
-            }
-            KeyCode::Char('y') => {
-                editor.redo();
-                return Action::Continue;
-            }
-            _ => {}
-        }
+fn cursor_style(mode: Mode) -> SetCursorStyle {
+    match mode {
+        Mode::Insert => SetCursorStyle::SteadyBar,
+        // Visual mode's cursor sits on a character, like normal mode's.
+        _ => SetCursorStyle::SteadyBlock,
     }
-
-    let motion = match key.code {
-        // Ctrl/Alt chords that got this far are unbound, not text to insert.
-        KeyCode::Char(c) if !ctrl && !alt => {
-            editor.insert(&c.to_string());
-            return Action::Continue;
-        }
-        KeyCode::Enter => {
-            editor.insert_newline();
-            return Action::Continue;
-        }
-        KeyCode::Tab => {
-            editor.insert("\t");
-            return Action::Continue;
-        }
-        KeyCode::Backspace => {
-            editor.delete_backward();
-            return Action::Continue;
-        }
-        KeyCode::Delete => {
-            editor.delete_forward();
-            return Action::Continue;
-        }
-        KeyCode::Left => Move::Left,
-        KeyCode::Right => Move::Right,
-        KeyCode::Up => Move::Up,
-        KeyCode::Down => Move::Down,
-        KeyCode::Home if ctrl => Move::FileStart,
-        KeyCode::End if ctrl => Move::FileEnd,
-        KeyCode::Home => Move::LineStart,
-        KeyCode::End => Move::LineEnd,
-        KeyCode::PageUp => Move::PageUp,
-        KeyCode::PageDown => Move::PageDown,
-        _ => return Action::Continue,
-    };
-
-    editor.move_cursor(motion, extend);
-    Action::Continue
 }

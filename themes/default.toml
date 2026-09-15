@@ -28,3 +28,14 @@
 "ui.statusline"    = { reverse = true }
 "ui.selection"     = { reverse = true }
 "ui.eof"           = "dark_grey"
+"ui.mode.normal"   = { fg = "black", bg = "blue", bold = true }
+"ui.mode.insert"   = { fg = "black", bg = "green", bold = true }
+
+"ui.picker" = { fg = "#f8f8f2", bg = "#282a36" }
+"ui.picker.prompt" = { fg = "#282a36", bg = "#bd93f9", bold = true }
+"ui.picker.selected" = { fg = "#f8f8f2", bg = "#44475a", bold = true }
+"ui.picker.match" = { fg = "#50fa7b" }
+"ui.picker.detail" = { fg = "#6272a4" }
+"ui.mode.visual" = { fg = "#282a36", bg = "#ffb86c", bold = true }
+"ui.linenr" = { fg = "#6272a4" }
+"ui.linenr.selected" = { fg = "#f8f8f2", bold = true }

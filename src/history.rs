@@ -1,5 +1,5 @@
 use crate::buffer::{Document, Edit};
-use crate::editor::Selection;
+use crate::view::Selection;
 
 /// One replacement: at `pos`, `removed` becomes `inserted`.
 ///

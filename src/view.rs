@@ -1,0 +1,599 @@
+use anyhow::Result;
+use std::ops::Range;
+use unicode_segmentation::GraphemeCursor;
+use unicode_width::UnicodeWidthChar;
+
+use crate::buffer::Document;
+use crate::history::{Change, History, Transaction};
+use crate::syntax::{Highlights, Syntax, language_for_path};
+use crate::theme::Theme;
+
+pub const TAB_WIDTH: usize = 4;
+/// Rows kept between the cursor and the top/bottom edge when scrolling.
+const SCROLLOFF: usize = 3;
+
+/// A cursor plus the region it has selected. `head` is where the cursor is
+/// drawn; `anchor` is where the selection started. Equal means no selection.
+///
+/// Every command operates on a `Selection`, so growing this into a
+/// `Vec<Selection>` for multi-cursor later is mechanical rather than a rewrite.
+#[derive(Clone, Copy, Debug)]
+pub struct Selection {
+    pub anchor: usize,
+    pub head: usize,
+}
+
+impl Selection {
+    pub fn point(pos: usize) -> Self {
+        Selection { anchor: pos, head: pos }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+
+    /// The selected char range, normalized so start <= end.
+    pub fn range(&self) -> (usize, usize) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Move {
+    Left,
+    Right,
+    Up,
+    Down,
+    LineStart,
+    FirstNonBlank,
+    LineEnd,
+    WordForward,
+    WordBack,
+    WordEnd,
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
+    FileStart,
+    FileEnd,
+}
+
+/// One open document and everything about how it is being looked at: where the
+/// cursor is, where the viewport is scrolled to, its undo history and its
+/// syntax tree.
+///
+/// Splitting a window would mean several views over one `Document`; for now
+/// there is exactly one view per open file, and `Editor` holds the list.
+pub struct View {
+    pub doc: Document,
+    pub sel: Selection,
+    /// Display column vertical movement tries to return to, so moving down
+    /// through a short line and back out keeps the original column.
+    goal_col: Option<usize>,
+    pub scroll_top: usize,
+    pub scroll_left: usize,
+    history: History,
+    syntax: Option<Syntax>,
+}
+
+impl View {
+    pub fn new(doc: Document) -> Self {
+        View {
+            doc,
+            sel: Selection::point(0),
+            goal_col: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            history: History::new(),
+            syntax: None,
+        }
+    }
+
+    /// Set up highlighting for the document's language, if we know it. Returns
+    /// a warning to show rather than failing: a broken grammar or query should
+    /// never stop you editing the file.
+    pub fn attach_syntax(&mut self, theme: &Theme) -> Option<String> {
+        let config = language_for_path(self.doc.path.as_deref())?;
+        match Syntax::new(config, &self.doc.text, theme) {
+            Ok(syntax) => {
+                self.syntax = Some(syntax);
+                None
+            }
+            Err(err) => Some(format!("highlighting off: {err:#}")),
+        }
+    }
+
+    pub fn highlights(&self, range: Range<usize>, theme: &Theme) -> Highlights {
+        match &self.syntax {
+            Some(syntax) => syntax.highlights(&self.doc.text, range, theme),
+            None => Highlights::none(),
+        }
+    }
+
+    pub fn save(&mut self) -> Result<()> {
+        self.doc.save()?;
+        self.history.mark_saved();
+        Ok(())
+    }
+
+    /// True if there was anything to undo.
+    pub fn undo(&mut self) -> bool {
+        match self.history.undo() {
+            Some(inverse) => {
+                self.apply_history(inverse);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn redo(&mut self) -> bool {
+        match self.history.redo() {
+            Some(tx) => {
+                self.apply_history(tx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Normal mode's cursor sits on a character, so it may rest neither after
+    /// the last one on a line nor on the empty line that a trailing newline
+    /// leaves at the end of the rope. The caller decides when this applies;
+    /// a view does not know about modes.
+    pub fn clamp_cursor(&mut self) {
+        let last = self.last_line();
+        if self.doc.char_to_line(self.sel.head) > last {
+            self.sel = Selection::point(self.doc.line_to_char(last));
+        }
+
+        let (line, column) = self.cursor_coords();
+        let len = self.doc.line_len_chars(line);
+        if column >= len && len > 0 {
+            self.sel.head = self.grapheme_left(self.doc.line_to_char(line) + len);
+        }
+    }
+
+    /// Leaving insert mode steps back onto the last character typed.
+    pub fn step_back_from_insert(&mut self) {
+        let (_, column) = self.cursor_coords();
+        if column > 0 {
+            self.sel = Selection::point(self.grapheme_left(self.sel.head));
+        }
+    }
+
+    /// Remove `start..end` and hand back what was there, for a register.
+    pub fn cut(&mut self, start: usize, end: usize) -> String {
+        let text = self.doc.slice_str(start, end);
+        self.edit(start, end - start, "");
+        text
+    }
+
+    pub fn move_cursor(&mut self, m: Move, extend: bool, height: usize) {
+        let head = match m {
+            Move::Left => self.grapheme_left(self.sel.head),
+            Move::Right => self.grapheme_right(self.sel.head),
+            Move::Up => self.vertical(-1),
+            Move::Down => self.vertical(1),
+            Move::LineStart => {
+                let (line, _) = self.cursor_coords();
+                self.doc.line_to_char(line)
+            }
+            Move::FirstNonBlank => {
+                let (line, _) = self.cursor_coords();
+                let start = self.doc.line_to_char(line);
+                let blanks = self
+                    .doc
+                    .line_str(line)
+                    .chars()
+                    .take_while(|c| matches!(c, ' ' | '\t'))
+                    .count();
+                start + blanks.min(self.doc.line_len_chars(line))
+            }
+            Move::LineEnd => {
+                let (line, _) = self.cursor_coords();
+                self.doc.line_to_char(line) + self.doc.line_len_chars(line)
+            }
+            Move::WordForward => self.word_forward(self.sel.head),
+            Move::WordBack => self.word_back(self.sel.head),
+            Move::WordEnd => self.word_end(self.sel.head),
+            Move::HalfPageUp => self.vertical(-((height / 2).max(1) as isize)),
+            Move::HalfPageDown => self.vertical((height / 2).max(1) as isize),
+            Move::PageUp => self.vertical(-(height as isize)),
+            Move::PageDown => self.vertical(height as isize),
+            Move::FileStart => 0,
+            Move::FileEnd => self.doc.len_chars(),
+        };
+
+        // Vertical moves preserve the goal column; everything else resets it.
+        if !matches!(
+            m,
+            Move::Up
+                | Move::Down
+                | Move::PageUp
+                | Move::PageDown
+                | Move::HalfPageUp
+                | Move::HalfPageDown
+        ) {
+            self.goal_col = None;
+        }
+
+        self.sel.head = head;
+        if !extend {
+            self.sel.anchor = head;
+        }
+    }
+    /// Scroll the viewport so the cursor is visible, keeping SCROLLOFF rows of
+    /// context where the buffer allows it.
+    pub fn scroll_to_cursor(&mut self, width: usize, height: usize) {
+        let (line, _) = self.cursor_coords();
+        let col = self.cursor_display_col();
+
+        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        if line < self.scroll_top + pad {
+            self.scroll_top = line.saturating_sub(pad);
+        }
+        let bottom = self.scroll_top + height;
+        if line + pad >= bottom {
+            self.scroll_top = (line + pad + 1).saturating_sub(height);
+        }
+        // Never scroll past the last line.
+        let max_top = self.doc.len_lines().saturating_sub(1);
+        self.scroll_top = self.scroll_top.min(max_top);
+
+        if col < self.scroll_left {
+            self.scroll_left = col;
+        } else if col >= self.scroll_left + width {
+            self.scroll_left = col + 1 - width;
+        }
+    }
+    /// (line, char offset in line) of the cursor.
+    pub fn cursor_coords(&self) -> (usize, usize) {
+        self.doc.coords(self.sel.head)
+    }
+    /// Where to leave the terminal cursor, in screen coordinates.
+    pub fn cursor_screen(&self) -> (u16, u16) {
+        let (line, _) = self.cursor_coords();
+        (
+            self.cursor_display_col().saturating_sub(self.scroll_left) as u16,
+            line.saturating_sub(self.scroll_top) as u16,
+        )
+    }
+    /// Screen column of the cursor, with tabs expanded.
+    pub fn cursor_display_col(&self) -> usize {
+        let (line, col) = self.cursor_coords();
+        display_col(&self.doc.line_str(line), col)
+    }
+    /// Move `delta` lines, landing as close as possible to the goal column.
+    fn vertical(&mut self, delta: isize) -> usize {
+        let (line, col) = self.cursor_coords();
+        let goal = *self
+            .goal_col
+            .get_or_insert_with(|| display_col(&self.doc.line_str(line), col));
+
+        let last = self.doc.len_lines().saturating_sub(1);
+        let target = (line as isize + delta).clamp(0, last as isize) as usize;
+
+        let text = self.doc.line_str(target);
+        self.doc.line_to_char(target) + char_col_at_display(&text, goal)
+    }
+    pub fn grapheme_left(&self, pos: usize) -> usize {
+        let (line, col) = self.doc.coords(pos);
+        if col == 0 {
+            if line == 0 {
+                return 0;
+            }
+            let prev = line - 1;
+            return self.doc.line_to_char(prev) + self.doc.line_len_chars(prev);
+        }
+        let text = self.doc.line_str(line);
+        let byte = byte_of_char(&text, col);
+        let prev_byte = prev_boundary(&text, byte);
+        pos - (char_of_byte(&text, byte) - char_of_byte(&text, prev_byte))
+    }
+    pub fn grapheme_right(&self, pos: usize) -> usize {
+        let (line, col) = self.doc.coords(pos);
+        let line_len = self.doc.line_len_chars(line);
+        if col >= line_len {
+            if line + 1 >= self.doc.len_lines() {
+                return pos;
+            }
+            return self.doc.line_to_char(line + 1);
+        }
+        let text = self.doc.line_str(line);
+        let byte = byte_of_char(&text, col);
+        let next_byte = next_boundary(&text, byte);
+        pos + (char_of_byte(&text, next_byte) - char_of_byte(&text, byte))
+    }
+    fn char_at(&self, pos: usize) -> Option<char> {
+        (pos < self.doc.len_chars()).then(|| self.doc.text.char(pos))
+    }
+    /// Start of the next word.
+    fn word_forward(&self, mut pos: usize) -> usize {
+        let len = self.doc.len_chars();
+        if let Some(class) = self.char_at(pos).map(class_of)
+            && class != CharClass::Space
+        {
+            while self.char_at(pos).map(class_of) == Some(class) {
+                pos += 1;
+            }
+        }
+        while self.char_at(pos).map(class_of) == Some(CharClass::Space) {
+            pos += 1;
+        }
+        pos.min(len)
+    }
+    /// Start of the word before the cursor.
+    fn word_back(&self, mut pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        pos -= 1;
+        while pos > 0 && self.char_at(pos).map(class_of) == Some(CharClass::Space) {
+            pos -= 1;
+        }
+        let Some(class) = self.char_at(pos).map(class_of) else {
+            return pos;
+        };
+        while pos > 0 && self.char_at(pos - 1).map(class_of) == Some(class) {
+            pos -= 1;
+        }
+        pos
+    }
+    /// Last character of the current or next word.
+    fn word_end(&self, mut pos: usize) -> usize {
+        let len = self.doc.len_chars();
+        pos += 1;
+        while self.char_at(pos).map(class_of) == Some(CharClass::Space) {
+            pos += 1;
+        }
+        let Some(class) = self.char_at(pos).map(class_of) else {
+            return len.saturating_sub(1);
+        };
+        while self.char_at(pos + 1).map(class_of) == Some(class) {
+            pos += 1;
+        }
+        pos
+    }
+    /// The single funnel for every edit: builds a transaction, applies it,
+    /// moves the cursor, and records it for undo.
+    fn edit(&mut self, pos: usize, remove_chars: usize, insert: &str) {
+        self.edit_at(pos, remove_chars, insert, None);
+    }
+    /// `cursor` overrides where the caret lands; by default it follows the
+    /// inserted text, which is what typing wants but `O` and `cc` do not.
+    pub fn edit_at(&mut self, pos: usize, remove_chars: usize, insert: &str, cursor: Option<usize>) {
+        let removed = self.doc.slice_str(pos, pos + remove_chars);
+        if removed.is_empty() && insert.is_empty() {
+            return;
+        }
+
+        let sel_before = self.sel;
+        let sel_after = Selection::point(cursor.unwrap_or(pos + insert.chars().count()));
+        let tx = Transaction::new(
+            vec![Change { pos, removed, inserted: insert.to_string() }],
+            sel_before,
+            sel_after,
+        );
+
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        self.sel = sel_after;
+        self.goal_col = None;
+        self.history.push(tx);
+    }
+    /// Insert text, replacing the selection if there is one.
+    pub fn insert(&mut self, text: &str) {
+        let (start, end) = self.sel.range();
+        self.edit(start, end - start, text);
+    }
+    /// Enter, carrying the current line's leading whitespace onto the new line.
+    pub fn insert_newline(&mut self) {
+        let (start, end) = self.sel.range();
+        let (line, col) = self.doc.coords(start);
+        let text = self.doc.line_str(line);
+        let indent: String = text
+            .chars()
+            .take(col)
+            .take_while(|c| matches!(c, ' ' | '\t'))
+            .collect();
+        self.edit(start, end - start, &format!("\n{indent}"));
+    }
+    pub fn delete_backward(&mut self) {
+        if !self.sel.is_empty() {
+            let (start, end) = self.sel.range();
+            self.edit(start, end - start, "");
+            return;
+        }
+        let head = self.sel.head;
+        let prev = self.grapheme_left(head);
+        if prev < head {
+            self.edit(prev, head - prev, "");
+        }
+    }
+    pub fn delete_forward(&mut self) {
+        if !self.sel.is_empty() {
+            let (start, end) = self.sel.range();
+            self.edit(start, end - start, "");
+            return;
+        }
+        let head = self.sel.head;
+        let next = self.grapheme_right(head);
+        if next > head {
+            self.edit(head, next - head, "");
+        }
+    }
+    /// The char range covering `count` whole lines from the cursor.
+    pub fn line_range(&self, count: usize) -> (usize, usize) {
+        let (line, _) = self.cursor_coords();
+        let total = self.doc.len_lines();
+        let end_line = (line + count).min(total);
+        let start = self.doc.line_to_char(line);
+        let end = if end_line >= total {
+            self.doc.len_chars()
+        } else {
+            self.doc.line_to_char(end_line)
+        };
+        (start, end)
+    }
+    /// The last line with content. A buffer ending in a newline has a trailing
+    /// empty line in the rope that is not a line as far as the user is
+    /// concerned, and `G` should not land on it.
+    pub fn last_line(&self) -> usize {
+        let total = self.doc.len_lines();
+        if total > 1 && self.doc.line_len_chars(total - 1) == 0 {
+            total - 2
+        } else {
+            total - 1
+        }
+    }
+    /// Jump to a line's first non-blank character, as `gg` and `G` do.
+    pub fn goto_line(&mut self, line: usize) {
+        let line = line.min(self.last_line());
+        self.sel = Selection::point(self.doc.line_to_char(line));
+        self.move_cursor(Move::FirstNonBlank, false, 0);
+    }
+    pub fn is_modified(&self) -> bool {
+        self.history.is_modified()
+    }
+    fn apply_history(&mut self, tx: Transaction) {
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        self.sel = tx.sel_after;
+        self.goal_col = None;
+    }
+    pub fn put_lines(&mut self, text: &str, after: bool) {
+        let (line, _) = self.cursor_coords();
+        let total = self.doc.len_lines();
+
+        // Putting after the last line of a buffer with no trailing newline has
+        // no line to start at, so the newline goes in front instead.
+        let (at, text, first_line) = if after && line + 1 >= total {
+            let at = self.doc.len_chars();
+            let trimmed = text.trim_end_matches('\n').to_string();
+            (at, format!("\n{trimmed}"), at + 1)
+        } else {
+            let at = match after {
+                true => self.doc.line_to_char(line + 1),
+                false => self.doc.line_to_char(line),
+            };
+            (at, text.to_string(), at)
+        };
+
+        // Land on the first non-blank of what was put, as vim does.
+        let indent = text
+            .trim_start_matches('\n')
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '\t'))
+            .count();
+        self.edit_at(at, 0, &text, Some(first_line + indent));
+    }
+    /// Insert lines at an exact position, for putting over a selection that
+    /// has just been cut away.
+    pub fn put_lines_at(&mut self, at: usize, text: &str) {
+        let at = at.min(self.doc.len_chars());
+        let indent = text
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '\t'))
+            .count();
+        self.edit_at(at, 0, text, Some(at + indent));
+    }
+
+    /// Insert text at an exact position, leaving the cursor on its last
+    /// character rather than after it.
+    pub fn put_inline_at(&mut self, at: usize, text: &str) {
+        let at = at.min(self.doc.len_chars());
+        let len = text.chars().count();
+        self.edit_at(at, 0, text, Some(at + len.saturating_sub(1)));
+    }
+
+    pub fn put_inline(&mut self, text: &str, after: bool) {
+        let (line, column) = self.cursor_coords();
+        let line_end = self.doc.line_to_char(line) + self.doc.line_len_chars(line);
+        let at = match after && column < self.doc.line_len_chars(line) {
+            true => self.grapheme_right(self.sel.head).min(line_end),
+            false => self.sel.head,
+        };
+
+        let len = text.chars().count();
+        // The cursor ends on the last character put, not after it.
+        self.edit_at(at, 0, text, Some(at + len.saturating_sub(1)));
+    }
+}
+
+pub fn char_width(ch: char, at: usize) -> usize {
+    if ch == '\t' {
+        TAB_WIDTH - (at % TAB_WIDTH)
+    } else {
+        // TODO: width should be measured per grapheme cluster, not per char;
+        // this is wrong for emoji ZWJ sequences and combining marks.
+        UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
+}
+
+/// Screen column of char offset `char_col` within `line`.
+pub fn display_col(line: &str, char_col: usize) -> usize {
+    let mut w = 0;
+    for ch in line.chars().take(char_col) {
+        w += char_width(ch, w);
+    }
+    w
+}
+
+/// Char offset in `line` whose screen column is at or just past `target`.
+pub fn char_col_at_display(line: &str, target: usize) -> usize {
+    let mut w = 0;
+    let mut col = 0;
+    for ch in line.chars() {
+        if w >= target {
+            break;
+        }
+        w += char_width(ch, w);
+        col += 1;
+    }
+    col
+}
+
+fn byte_of_char(s: &str, char_idx: usize) -> usize {
+    s.char_indices().nth(char_idx).map_or(s.len(), |(b, _)| b)
+}
+
+fn char_of_byte(s: &str, byte_idx: usize) -> usize {
+    s[..byte_idx].chars().count()
+}
+
+fn next_boundary(s: &str, byte: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(byte, s.len(), true);
+    cursor.next_boundary(s, 0).ok().flatten().unwrap_or(s.len())
+}
+
+fn prev_boundary(s: &str, byte: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(byte, s.len(), true);
+    cursor.prev_boundary(s, 0).ok().flatten().unwrap_or(0)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Space,
+    Word,
+    Punct,
+}
+
+/// Word motions step between runs of one class, so `foo.bar` is three words.
+fn class_of(ch: char) -> CharClass {
+    if ch.is_whitespace() {
+        CharClass::Space
+    } else if ch.is_alphanumeric() || ch == '_' {
+        CharClass::Word
+    } else {
+        CharClass::Punct
+    }
+}
