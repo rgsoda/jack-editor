@@ -16,7 +16,7 @@ mod theme;
 mod ui;
 mod view;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::{execute, queue};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -55,9 +55,33 @@ fn restore() {
     let _ = terminal::disable_raw_mode();
 }
 
+/// The directory to start in, when that is what the arguments name. One
+/// directory and nothing else: `soda_edit .` is a way of saying "this project",
+/// and mixing it with file names would be asking for two things at once.
+fn start_directory(paths: &[String]) -> Option<&String> {
+    match paths {
+        [only] if std::path::Path::new(only).is_dir() => Some(only),
+        _ => None,
+    }
+}
+
 fn main() -> Result<()> {
     let paths: Vec<String> = std::env::args().skip(1).collect();
-    let mut editor = Editor::open(&paths)?;
+
+    // A directory is not a buffer: it means start in that project with the
+    // file picker open. Nothing here is a mode - the picker already walks the
+    // working directory, so this is a `cd` and an empty editor.
+    let directory = start_directory(&paths).cloned();
+    if let Some(directory) = &directory {
+        std::env::set_current_dir(directory)
+            .with_context(|| format!("entering {directory}"))?;
+    }
+
+    let files: &[String] = match directory {
+        Some(_) => &[],
+        None => &paths,
+    };
+    let mut editor = Editor::open(files)?;
     editor.load_config();
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
@@ -70,6 +94,10 @@ fn main() -> Result<()> {
 
     let (tx, rx) = stream::channels();
     editor.set_jobs(tx.clone());
+    // After `set_jobs`, because the picker needs somewhere to send the walk.
+    if directory.is_some() {
+        editor.open_file_picker();
+    }
 
     let _guard = TerminalGuard::enter()?;
     stream::spawn_input(tx);
@@ -166,5 +194,24 @@ fn cursor_style(mode: Mode) -> SetCursorStyle {
         Mode::Insert => SetCursorStyle::SteadyBar,
         // Visual mode's cursor sits on a character, like normal mode's.
         _ => SetCursorStyle::SteadyBlock,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_directory;
+
+    #[test]
+    fn one_directory_argument_names_where_to_start() {
+        assert_eq!(start_directory(&["src".to_string()]), Some(&"src".to_string()));
+        assert_eq!(start_directory(&[".".to_string()]), Some(&".".to_string()));
+    }
+
+    #[test]
+    fn a_file_or_a_list_is_not_a_directory_to_start_in() {
+        assert_eq!(start_directory(&["src/main.rs".to_string()]), None);
+        assert_eq!(start_directory(&[]), None);
+        // Asking for a directory *and* a file is asking for two things.
+        assert_eq!(start_directory(&["src".to_string(), "src/main.rs".to_string()]), None);
     }
 }

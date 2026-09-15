@@ -857,6 +857,14 @@ impl View {
     pub fn is_modified(&self) -> bool {
         self.history.is_modified()
     }
+
+    /// Whether this is the empty buffer the editor starts with: no file, and
+    /// nothing typed into it. Opening a file replaces one of these rather than
+    /// leaving a dead tab beside it.
+    pub fn is_empty_scratch(&self) -> bool {
+        self.doc.path.is_none() && self.doc.len_chars() == 0 && !self.is_modified()
+    }
+
     fn apply_history(&mut self, tx: Transaction) {
         let edits = tx.apply(&mut self.doc);
         if let Some(syntax) = self.syntax.as_mut() {

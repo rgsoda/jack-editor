@@ -10,10 +10,17 @@ with cross-language injections, damage-tracked rendering, and themes.
 Languages: Rust, HTML, JavaScript.
 
 ```sh
-cargo run -- src/main.rs src/view.rs
+cargo run -- src/main.rs src/view.rs   # files
+cargo run -- .                         # a directory: the file picker, there
 ```
 
 Starts in normal mode, like vim.
+
+A single directory argument is not a buffer, it is a project: the editor
+changes into it and opens the file picker, because the picker already walks the
+working directory and nothing else has to know. The empty buffer it starts with
+is somewhere to stand, not something to keep — the first file you open takes
+its place, so you get one tab rather than a dead `[scratch]` beside it.
 
 ### Normal mode
 

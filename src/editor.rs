@@ -1063,7 +1063,19 @@ impl Editor {
             return Ok(());
         }
 
-        self.views.push(View::new(Document::open(path)?));
+        let document = Document::open(path)?;
+        // The buffer the editor starts with is somewhere to stand, not
+        // something to keep: opening the first file takes its place, so
+        // `soda_edit .` leaves one tab rather than two. In place, because the
+        // jump list addresses buffers by index.
+        if self.views.len() == 1 && self.views[0].is_empty_scratch() {
+            self.views[0] = View::new(document);
+            self.attach_syntax(0);
+            self.switch_to(0);
+            return Ok(());
+        }
+
+        self.views.push(View::new(document));
         let index = self.views.len() - 1;
         self.attach_syntax(index);
         self.switch_to(index);
@@ -2168,6 +2180,33 @@ mod tests {
         assert_eq!(e.views().len(), 2);
         assert_eq!(e.current_index(), 0);
         assert_eq!(e.views()[0].doc.path.as_ref(), Some(&one));
+    }
+
+    #[test]
+    fn the_first_file_replaces_the_buffer_the_editor_started_with() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "one\n");
+        let two = write_file(&dir, "two.txt", "two\n");
+
+        let mut e = Editor::scratch();
+        e.open_file(&one).unwrap();
+        assert_eq!(e.views().len(), 1, "no dead [scratch] tab beside it");
+        assert_eq!(e.view().doc.text.to_string(), "one\n");
+
+        // Only the empty one, though: a second file is a second buffer.
+        e.open_file(&two).unwrap();
+        assert_eq!(e.views().len(), 2);
+    }
+
+    #[test]
+    fn a_scratch_buffer_that_has_been_typed_into_is_kept() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "one\n");
+
+        let mut e = Editor::scratch();
+        e.insert("notes");
+        e.open_file(&one).unwrap();
+        assert_eq!(e.views().len(), 2, "what was typed is still open");
     }
 
     #[test]
