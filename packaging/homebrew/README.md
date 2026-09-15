@@ -1,15 +1,15 @@
 # The tap
 
 Homebrew installs from a *tap*, which is a repository whose name begins with
-`homebrew-`. One-off setup:
+`homebrew-`. `rgsoda/homebrew-tap` already exists and already holds a formula
+(`Formula/vil2svg.rb`), so there is nothing to create — adding jack to it is
+adding one file:
 
 ```sh
-gh repo create homebrew-tap --public --description "Homebrew formulae"
 git clone https://github.com/rgsoda/homebrew-tap && cd homebrew-tap
-mkdir Formula
 ```
 
-Then `brew install rgsoda/tap/jack` works for anyone, on macOS and on Linux —
+`brew install rgsoda/tap/jack` then works for anyone, on macOS and on Linux —
 Homebrew expands `rgsoda/tap` to `github.com/rgsoda/homebrew-tap`.
 
 ## Per release
@@ -20,7 +20,7 @@ file rather than pasting four hashes:
 
 ```sh
 gh release download v0.1.0 --repo rgsoda/jack-editor --pattern jack.rb --dir Formula --clobber
-git -C . commit -am "jack 0.1.0" && git push
+git commit -am "jack 0.1.0" && git push
 ```
 
 By hand, from the checksums alone:
@@ -40,6 +40,22 @@ need it because it brings its own.
 
 `brew test jack` runs `jack --version` and expects the version back, which is
 why that flag exists.
+
+## The other kind of formula
+
+`vil2svg.rb` in the same tap builds from source, and jack can be packaged that
+way too:
+
+```sh
+./packaging/homebrew/render-formula.sh --source 0.1.0 > ../homebrew-tap/Formula/jack.rb
+```
+
+That fetches the tag's tarball, hashes it, and writes a formula with
+`depends_on "rust" => :build` and a `head` line. It depends on nothing but the
+tag, so it works before the release workflow has ever run — at the cost of the
+installing machine needing Rust and a C compiler (the grammars are C) and a
+few minutes of building. The prebuilt version is the better default once
+there are release artifacts.
 
 ## homebrew-core
 
