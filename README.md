@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 31: `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 32: `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -96,6 +96,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
+| `.` | do the last change again (`{n}.` repeats it with a new count) |
 | `u` `^r` | undo / redo |
 | `{count}` before a command | repeat it |
 | `esc` | abandon a half-typed command, stop highlighting matches |
@@ -491,6 +492,29 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## Repeating a change
+
+`.` does the last change again. It is a keystroke recorder, not a description
+of the edit: the keys of the command being typed are kept, and when the command
+finishes and the buffer has moved, they become the thing `.` plays back. So
+`.` knows nothing about operators, text objects or the text an insert put in,
+and never has to - `ciwname<esc>` replays as those keys and works out to the
+same command somewhere else.
+
+What counts as one command is the part that is hard, and it is all in one
+function. A key that leaves something half-typed - a count, a register, an
+operator waiting for a motion, a find waiting for its character, insert or
+visual mode - keeps the recording open. Anything else closes it, and the
+recording is kept only if the document's fingerprint changed, so `w` and `/`
+and `esc` never displace the change you still want back. Undo and redo say so
+explicitly: they move the buffer without being a change, so `.` after a `u`
+does the edit again rather than undoing something else, which is vim's rule.
+
+A count replaces the one the command was typed with, as vim does: `2dw` then
+`3.` deletes three words, not two. The leading digits are dropped from the
+replay and the new ones put in their place - a `0` at the front is left alone,
+being the motion to the start of the line rather than a count.
 
 ## The cursor line
 

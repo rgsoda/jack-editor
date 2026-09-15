@@ -2093,6 +2093,15 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// The current buffer's state, for telling whether a command changed
+    /// anything: which buffer it was, how many edits deep, and how long it is.
+    /// Switching buffers counts as a change of state, which is the point: the
+    /// comparison is only ever between two moments of the same command.
+    pub fn revision(&self) -> (usize, usize, usize) {
+        let (depth, len) = self.view().revision();
+        (self.current, depth, len)
+    }
+
     /// Where the cursor is, in a form that can be compared before and after a
     /// key: which buffer, and where in it. The dog runs on this changing
     /// rather than on the keystroke, so holding a key that goes nowhere - `l`

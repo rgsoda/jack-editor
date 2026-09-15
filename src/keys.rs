@@ -59,6 +59,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "d c y + ip ap", what: "the paragraph, with the blank line after", mode: "normal" },
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
     Binding { keys: "\"+y \"+p", what: "yank to, put from the system clipboard", mode: "normal" },
+    Binding { keys: ".", what: "do the last change again ({n}. counts it anew)", mode: "normal" },
     Binding { keys: "u ^r", what: "undo, redo", mode: "normal" },
     Binding { keys: "{count}", what: "repeat the next command", mode: "normal" },
     Binding { keys: "esc", what: "abandon a command, stop highlighting matches", mode: "normal" },
@@ -181,6 +182,22 @@ enum Pending {
 pub struct Keys {
     count: Option<usize>,
     pending: Option<Pending>,
+    /// The keys of the command being typed, kept so `.` can do it again. A
+    /// command is its keystrokes: replaying them repeats whatever they meant,
+    /// including the text an insert put in, and nothing has to describe what
+    /// it did in some second language.
+    recording: Vec<KeyEvent>,
+    /// What the document looked like when the recording began. A command that
+    /// leaves it alone was a movement, and `.` is not interested in it.
+    recorded_at: Option<(usize, usize, usize)>,
+    /// The last command that changed the buffer, ready to be replayed.
+    change: Vec<KeyEvent>,
+    /// True while `.` is replaying: nothing is recorded, or the repeat would
+    /// become the thing to repeat.
+    replaying: bool,
+    /// Set by the commands that change the buffer without being a change you
+    /// would want done twice - undo and redo.
+    not_a_change: bool,
     /// The register `"x` named for the command being typed.
     register: Option<char>,
 }
@@ -192,10 +209,12 @@ impl Keys {
         // An open picker or prompt owns the keyboard, including the chords
         // below: `^s` while typing a pattern is an `s`, not a save.
         if editor.picker.is_some() {
+            self.forget();
             editor.picker_input(key);
             return Action::Continue;
         }
         if editor.prompt.is_some() {
+            self.forget();
             editor.prompt_input(key);
             // `:q` has to reach the run loop, which is the only thing that can
             // actually stop.
@@ -224,10 +243,30 @@ impl Keys {
         // what it just pasted.
         let watched = (self.register == Some(SYSTEM)).then(|| editor.system_register());
 
+        // `.` is the one key that must not end up in the recording: it is the
+        // command that plays it back. Any other reading of `.` - the character
+        // `f.` is looking for, the one `r.` puts down - has a pending state
+        // waiting for it, and is recorded like anything else.
+        let repeat = !self.replaying
+            && !ctrl
+            && key.code == KeyCode::Char('.')
+            && editor.mode == Mode::Normal
+            && self.pending.is_none();
+        if !self.replaying && !repeat {
+            if self.recording.is_empty() {
+                self.recorded_at = Some(editor.revision());
+            }
+            self.recording.push(key);
+        }
+
         match editor.mode {
             Mode::Normal => self.normal(editor, key, ctrl),
             Mode::Insert => insert(editor, key, ctrl),
             Mode::Visual | Mode::VisualLine => self.visual(editor, key, ctrl),
+        }
+
+        if !self.replaying {
+            self.remember(editor, repeat);
         }
 
         if let Some(before) = watched
@@ -236,6 +275,80 @@ impl Keys {
             editor.push_clipboard();
         }
         Action::Continue
+    }
+
+    /// Throw away the half-recorded command: it was not a change, or it was
+    /// one nobody wants repeated.
+    fn forget(&mut self) {
+        self.recording.clear();
+        self.recorded_at = None;
+    }
+
+    /// After a key: decide whether what has been recorded is finished, and
+    /// whether it changed anything.
+    fn remember(&mut self, editor: &Editor, repeat: bool) {
+        if repeat || std::mem::take(&mut self.not_a_change) {
+            self.forget();
+            return;
+        }
+        // Still being typed: a count or a register on its own, an operator
+        // waiting for its motion, a find waiting for its character, insert and
+        // visual mode, which end when the mode does. Every one of these keeps
+        // its keys - the count especially, since `.` repeats `2dw` as `2dw`.
+        if self.count.is_some()
+            || self.register.is_some()
+            || self.pending.is_some()
+            || editor.mode != Mode::Normal
+            || editor.picker.is_some()
+            || editor.prompt.is_some()
+        {
+            return;
+        }
+        if self.recording.is_empty() {
+            return;
+        }
+        if self.recorded_at != Some(editor.revision()) {
+            self.change = std::mem::take(&mut self.recording);
+        }
+        self.forget();
+    }
+
+    /// `.`: the last command that changed the buffer, done again here. A count
+    /// replaces the one it was typed with, as vim does - `3.` is that edit
+    /// three times, not three repeats of it.
+    fn repeat_change(&mut self, editor: &mut Editor, count: Option<usize>) {
+        if self.change.is_empty() {
+            editor.message = "nothing to repeat".into();
+            return;
+        }
+        let keys = match count {
+            Some(n) => {
+                let mut rest = self.change.as_slice();
+                // Only a leading count is replaced: a `0` at the front is the
+                // motion to the start of the line, and no count starts with it.
+                while let Some(KeyEvent { code: KeyCode::Char(c), .. }) = rest.first()
+                    && c.is_ascii_digit()
+                    && (*c != '0' || rest.len() < self.change.len())
+                {
+                    rest = &rest[1..];
+                }
+                let count = n.to_string();
+                let digits = count
+                    .chars()
+                    .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                digits.chain(rest.iter().copied()).collect()
+            }
+            None => self.change.clone(),
+        };
+
+        self.count = None;
+        self.register = None;
+        self.pending = None;
+        self.replaying = true;
+        for key in keys {
+            self.handle(editor, key);
+        }
+        self.replaying = false;
     }
 
     /// True while a command is half-typed, so the caller can show it.
@@ -692,8 +805,18 @@ impl Keys {
                 editor.repeat_to_char(reverse, repeat, false);
             }
 
-            KeyCode::Char('u') => editor.undo(),
-            KeyCode::Char('r') if ctrl => editor.redo(),
+            // Undo and redo change the buffer without being a change: `.`
+            // after a `u` repeats what you undid, not the undo.
+            KeyCode::Char('u') => {
+                editor.undo();
+                self.not_a_change = true;
+            }
+            KeyCode::Char('r') if ctrl => {
+                editor.redo();
+                self.not_a_change = true;
+            }
+            // The last change, again.
+            KeyCode::Char('.') => self.repeat_change(editor, count),
 
             KeyCode::Char('d') => self.pending = Some(Pending::Delete),
             KeyCode::Char('c') => self.pending = Some(Pending::Change),
@@ -1669,6 +1792,102 @@ mod tests {
         // goes the way the original `f` went.
         vim.press(";");
         assert_eq!(vim.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn dot_does_the_last_change_again() {
+        // An operator and a motion.
+        let mut vim = Vim::new("one two three four\n");
+        vim.press("dw");
+        assert_eq!(vim.text(), "two three four\n");
+        vim.press(".");
+        assert_eq!(vim.text(), "three four\n");
+        vim.press(".");
+        assert_eq!(vim.text(), "four\n");
+
+        // An insert: the text it put in comes with it, because the keys are
+        // the command.
+        let mut vim = Vim::new("a\nb\n");
+        vim.press("ohello<esc>");
+        assert_eq!(vim.text(), "a\nhello\nb\n");
+        vim.press(".");
+        assert_eq!(vim.text(), "a\nhello\nhello\nb\n");
+
+        // The small verbs too.
+        let mut vim = Vim::new("abcd\n");
+        vim.press("rx");
+        vim.press("l.");
+        assert_eq!(vim.text(), "xxcd\n");
+    }
+
+    #[test]
+    fn a_movement_is_not_a_change_to_repeat() {
+        let mut vim = Vim::new("one two\nthree four\n");
+        vim.press("x");
+        assert_eq!(vim.text(), "ne two\nthree four\n");
+
+        // Moving about, searching, changing mode: none of it displaces the
+        // change that `.` still has to give back.
+        vim.press("jw");
+        vim.press("v<esc>");
+        vim.press(".");
+        assert_eq!(vim.text(), "ne two\nthree our\n");
+    }
+
+    #[test]
+    fn undo_is_not_the_change_that_dot_repeats() {
+        let mut vim = Vim::new("one two\n");
+        vim.press("dw");
+        assert_eq!(vim.text(), "two\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "one two\n");
+
+        // Vim's rule: `.` after a `u` does the edit again rather than undoing
+        // something else. Where it lands is wherever undo left the cursor -
+        // here the end of what came back, because undo restores the selection
+        // the change was made over - so it takes the second word this time.
+        vim.press(".");
+        assert_eq!(vim.text(), "one ");
+        assert_ne!(vim.text(), "one two\n", "not another undo");
+    }
+
+    #[test]
+    fn a_count_on_dot_replaces_the_one_it_was_typed_with() {
+        let mut vim = Vim::new("one two three four five six\n");
+        vim.press("2dw");
+        assert_eq!(vim.text(), "three four five six\n");
+        vim.press("3.");
+        assert_eq!(vim.text(), "six\n");
+
+        // Without a count it keeps the one it had.
+        let mut vim = Vim::new("one two three four five\n");
+        vim.press("2dw");
+        vim.press(".");
+        assert_eq!(vim.text(), "five\n");
+    }
+
+    #[test]
+    fn dot_with_nothing_to_repeat_says_so() {
+        let mut vim = Vim::new("one\n");
+        vim.press(".");
+        assert_eq!(vim.text(), "one\n");
+        assert!(!vim.editor.message.is_empty());
+    }
+
+    #[test]
+    fn a_dot_that_is_an_argument_is_not_the_repeat() {
+        // `f.` is looking for a full stop, and `r.` puts one down. Neither is
+        // the repeat command, because both have something waiting for a key.
+        let mut vim = Vim::new("one.two\n");
+        vim.press("df.");
+        assert_eq!(vim.text(), "two\n");
+
+        let mut vim = Vim::new("abc\n");
+        vim.press("r.");
+        assert_eq!(vim.text(), ".bc\n");
+        // And that replace is now the change to repeat.
+        vim.press("l.");
+        assert_eq!(vim.text(), "..c\n");
     }
 
     #[test]
