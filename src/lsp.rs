@@ -251,6 +251,18 @@ pub struct Suggestion {
     pub kind: Option<&'static str>,
 }
 
+/// A call's signature as the server wrote it, and which parameter of it the
+/// cursor is in - as a range of chars in the label, since that is what has to
+/// be pointed at on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signature {
+    pub label: String,
+    pub active: Option<std::ops::Range<usize>>,
+    /// Which of several overloads this is, and how many there are: `1/3`.
+    pub index: usize,
+    pub count: usize,
+}
+
 /// What a request was for, so the answer can be taken to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -259,6 +271,14 @@ pub enum Request {
     /// buffer had had, so an answer that arrives after you have moved on is
     /// dropped rather than yanking you back.
     Definition { view: usize, head: usize, edits: u64 },
+    /// `K`: what the server says about the thing under the cursor. Dropped
+    /// the same way a definition is when you have moved on since.
+    Hover { view: usize, head: usize, edits: u64 },
+    /// The call being typed, and where it was asked from - the bracket, or
+    /// the comma. Unlike the rest, what has been typed since does not make the
+    /// answer stale: typing arguments is exactly what happens while it is in
+    /// flight, and the signature is for the call, not for a character in it.
+    Signature { view: usize, head: usize },
     /// The popup asked what the server would offer. `start` is where the word
     /// being completed begins, which is what says whether the answer is still
     /// about the same word - typing more of it since is fine and expected,
@@ -274,6 +294,10 @@ pub enum Event {
     Diagnostics { path: PathBuf, diagnostics: Vec<RawDiagnostic> },
     Definition { request: Request, locations: Vec<Location> },
     Completion { request: Request, items: Vec<Suggestion> },
+    /// What the server says about the thing under the cursor, still in its
+    /// markdown. `None` when it had nothing to say about it.
+    Hover { request: Request, markup: Option<String> },
+    Signature { request: Request, help: Option<Signature> },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -400,6 +424,18 @@ impl Client {
                     "synchronization": { "didSave": true },
                     "publishDiagnostics": { "versionSupport": false },
                     "definition": { "linkSupport": true },
+                    "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    "signatureHelp": {
+                        "contextSupport": true,
+                        "signatureInformation": {
+                            "documentationFormat": ["plaintext"],
+                            // The offsets, rather than the parameter's label
+                            // repeated as text: a signature with the same name
+                            // twice in it cannot be marked by searching.
+                            "parameterInformation": { "labelOffsetSupport": true },
+                            "activeParameterSupport": true,
+                        },
+                    },
                     // Without this a server may decide the client is too
                     // simple to be worth completing properly: pyright answers
                     // a bare keyword list rather than what is on the thing
@@ -443,15 +479,27 @@ impl Client {
     /// A notification, held back until the server is ready for it.
     /// Stop waiting on answers about buffers by index, once a buffer has
     /// closed and the indexes have moved. The answers are ignored on arrival.
-    pub fn forget_definitions(&mut self) {
-        self.pending.retain(|_, request| !matches!(request, Request::Definition { .. }));
+    pub fn forget_about_buffers(&mut self) {
+        self.pending.retain(|_, request| matches!(request, Request::Initialize));
     }
 
     /// The characters this server wants to be asked after - `.` for Python,
     /// and often `(` or `:` elsewhere. Empty when it named none, which means
     /// a word is the only thing worth asking about.
     pub fn completion_triggers(&self) -> Vec<char> {
-        self.capabilities["completionProvider"]["triggerCharacters"]
+        self.triggers("completionProvider", "triggerCharacters")
+    }
+
+    /// The characters that open a signature - `(` and `,` nearly everywhere -
+    /// and the ones that mean the same call has moved on to another argument.
+    pub fn signature_triggers(&self) -> Vec<char> {
+        let mut chars = self.triggers("signatureHelpProvider", "triggerCharacters");
+        chars.extend(self.triggers("signatureHelpProvider", "retriggerCharacters"));
+        chars
+    }
+
+    fn triggers(&self, provider: &str, field: &str) -> Vec<char> {
+        self.capabilities[provider][field]
             .as_array()
             .map(|list| {
                 list.iter()
@@ -548,6 +596,8 @@ impl Client {
             }
             Request::Definition { .. } => Event::Definition { request, locations: locations(&result) },
             Request::Completion { .. } => Event::Completion { request, items: suggestions(&result) },
+            Request::Hover { .. } => Event::Hover { request, markup: hover_markup(&result) },
+            Request::Signature { .. } => Event::Signature { request, help: signature(&result) },
         }
     }
 
@@ -715,6 +765,79 @@ fn suggestions(result: &Value) -> Vec<Suggestion> {
     items.into_iter().map(|(_, item)| item).collect()
 }
 
+/// A hover answer's text, in any of the shapes the protocol has collected over
+/// the years: the markup object it has now, the string it used to be, the
+/// `{language, value}` pair it used to be before that, and a list of any of
+/// those.
+fn hover_markup(result: &Value) -> Option<String> {
+    fn one(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            // `kind` is markdown or plaintext; both are rendered the same way,
+            // which is to say down to lines of text.
+            Value::Object(_) => value["value"].as_str().map(str::to_string),
+            _ => None,
+        }
+    }
+    let contents = result.get("contents")?;
+    let text = match contents {
+        Value::Array(list) => {
+            list.iter().filter_map(one).collect::<Vec<String>>().join("\n\n")
+        }
+        other => one(other)?,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// The signature the cursor is in, out of however many the server sent.
+///
+/// `activeParameter` may be on the signature or on the answer as a whole, and
+/// the newer of the two wins where a server sends both. A parameter names
+/// itself either as offsets into the label or as the text of it - the offsets
+/// being the only one that works when the same name appears twice.
+fn signature(result: &Value) -> Option<Signature> {
+    let signatures = result.get("signatures")?.as_array()?;
+    let count = signatures.len();
+    let index = (result["activeSignature"].as_u64().unwrap_or(0) as usize).min(count.saturating_sub(1));
+    let chosen = signatures.get(index)?;
+    let label = chosen["label"].as_str()?.to_string();
+
+    let active = chosen["activeParameter"]
+        .as_u64()
+        .or_else(|| result["activeParameter"].as_u64())
+        .map(|active| active as usize);
+    let parameter = active.and_then(|active| chosen["parameters"].as_array()?.get(active).cloned());
+    let range = parameter.and_then(|parameter| match &parameter["label"] {
+        Value::Array(pair) => {
+            let start = pair.first()?.as_u64()? as usize;
+            let end = pair.get(1)?.as_u64()? as usize;
+            // The offsets are counted the way the server counts columns.
+            Some(units_to_chars(&label, start)..units_to_chars(&label, end))
+        }
+        Value::String(text) => {
+            let at = label.find(text.as_str())?;
+            let start = label[..at].chars().count();
+            Some(start..start + text.chars().count())
+        }
+        _ => None,
+    });
+
+    Some(Signature { label, active: range, index, count })
+}
+
+/// A UTF-16 offset into `text` as a char offset, which is what a range of it
+/// has to be to be drawn. Past the end clamps to the end.
+fn units_to_chars(text: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (chars, c) in text.chars().enumerate() {
+        if seen >= units {
+            return chars;
+        }
+        seen += c.len_utf16();
+    }
+    text.chars().count()
+}
+
 /// `CompletionItemKind`, in the words the popup already uses for what the
 /// grammar finds. The numbers are the protocol's, and the ones that would say
 /// nothing useful in three letters are left unnamed.
@@ -873,6 +996,69 @@ pub(crate) mod tests {
         let mut unlabelled = value;
         unlabelled.as_object_mut().unwrap().remove("severity");
         assert_eq!(diagnostic(&unlabelled).unwrap().severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_hover_answer_is_read_in_every_shape_the_protocol_has_had() {
+        let markup = json!({ "contents": { "kind": "markdown", "value": "```rust\nfn f()\n```" } });
+        assert_eq!(hover_markup(&markup).as_deref(), Some("```rust\nfn f()\n```"));
+        // The string it used to be, and the pair it used to be before that.
+        assert_eq!(hover_markup(&json!({ "contents": "plain words" })).as_deref(), Some("plain words"));
+        let pair = json!({ "contents": { "language": "rust", "value": "fn f()" } });
+        assert_eq!(hover_markup(&pair).as_deref(), Some("fn f()"));
+        // A list of them, joined into paragraphs.
+        let list = json!({ "contents": ["one", { "value": "two" }] });
+        assert_eq!(hover_markup(&list).as_deref(), Some("one\n\ntwo"));
+        // Nothing to say says nothing, rather than an empty box.
+        assert_eq!(hover_markup(&json!({ "contents": "  " })), None);
+        assert_eq!(hover_markup(&Value::Null), None);
+    }
+
+    #[test]
+    fn a_signature_marks_the_parameter_being_typed() {
+        let help = json!({
+            "signatures": [{
+                "label": "f(a: int, b: str) -> None",
+                "parameters": [{ "label": [2, 8] }, { "label": [10, 16] }],
+            }],
+            "activeSignature": 0,
+            "activeParameter": 1,
+        });
+        let read = signature(&help).expect("a signature");
+        assert_eq!(read.label, "f(a: int, b: str) -> None");
+        let active = read.active.clone().expect("a parameter");
+        assert_eq!(&read.label[active], "b: str");
+        assert_eq!((read.index, read.count), (0, 1));
+    }
+
+    #[test]
+    fn the_signature_the_cursor_is_in_is_the_one_read() {
+        let one = |label: &str| json!({ "label": label, "parameters": [{ "label": "a" }] });
+        let help = json!({
+            "signatures": [one("f(a: int)"), one("f(a: str)")],
+            "activeSignature": 1,
+            "activeParameter": 0,
+        });
+        let read = signature(&help).expect("a signature");
+        assert_eq!(read.label, "f(a: str)");
+        assert_eq!((read.index, read.count), (1, 2));
+        // A parameter named by its text rather than by offsets is found in it.
+        assert_eq!(read.active, Some(2..3));
+
+        // A server that says nothing, and one that points past what it sent.
+        assert_eq!(signature(&json!({ "signatures": [] })), None);
+        let past = json!({ "signatures": [one("f(a: int)")], "activeParameter": 7 });
+        assert_eq!(signature(&past).expect("still a signature").active, None);
+    }
+
+    #[test]
+    fn parameter_offsets_are_counted_the_way_the_protocol_counts_columns() {
+        // Two chars, four UTF-16 units: the offsets after them are not the
+        // columns they are at.
+        let label = "f(🙂🙂, b)";
+        assert_eq!(units_to_chars(label, 2), 2);
+        assert_eq!(units_to_chars(label, 6), 4, "past both faces");
+        assert_eq!(units_to_chars(label, 99), label.chars().count());
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::path::Path;
 
 use super::{Editor, Mode};
 use crate::complete::{self, Completion};
-use crate::lsp::{self, Client, Encoding, Event, Location, RawDiagnostic, Request, State, Suggestion};
+use crate::info::{self, Info};
+use crate::lsp::{self, Client, Encoding, Event, Location, RawDiagnostic, Request, Signature, State, Suggestion};
 use crate::syntax::language_for_path;
 use crate::view::{Diagnostic, Lsp, Selection};
 
@@ -115,7 +116,7 @@ impl Editor {
     /// for by buffer index are no longer to be trusted.
     pub(super) fn lsp_closed(&mut self, index: usize) {
         for client in &mut self.servers {
-            client.forget_definitions();
+            client.forget_about_buffers();
         }
         if let (Lsp::Open { server, .. }, Some(path)) = (self.views[index].lsp, self.views[index].doc.path.clone()) {
             self.servers[server].notify(
@@ -148,6 +149,8 @@ impl Editor {
             Event::Diagnostics { path, diagnostics } => self.set_diagnostics(&path, diagnostics, encoding),
             Event::Definition { request, locations } => self.definition_answer(request, locations, encoding),
             Event::Completion { request, items } => self.completion_answer(request, items),
+            Event::Hover { request, markup } => self.hover_answer(request, markup),
+            Event::Signature { request, help } => self.signature_answer(request, help),
         }
     }
 
@@ -272,6 +275,126 @@ impl Editor {
             Some(_) => {}
             None => self.completion = Completion::from_server(start, items),
         }
+    }
+
+    /// `K`: ask the server what the thing under the cursor is. `false` when
+    /// there is no server to ask, which is all the caller needs to know to say
+    /// so.
+    pub(super) fn lsp_hover(&mut self) -> bool {
+        let Some((server, params, head, edits)) = self.at_cursor() else {
+            return false;
+        };
+        let request = Request::Hover { view: self.current, head, edits };
+        self.servers[server].request("textDocument/hover", "hoverProvider", params, request)
+    }
+
+    /// The call being typed: ask what it takes. Nothing is said when there is
+    /// no server - a signature is offered, not asked for, and a buffer without
+    /// one should not be reporting that on every bracket.
+    pub(super) fn lsp_signature(&mut self, trigger: Option<char>) {
+        let Some((server, mut params, head, _)) = self.at_cursor() else {
+            return;
+        };
+        // Why it is being asked: a server answers a fresh `(` differently from
+        // a `,` inside a call it has already described.
+        params["context"] = match trigger {
+            Some(c) => json!({ "triggerKind": 2, "triggerCharacter": c.to_string(), "isRetrigger": false }),
+            None => json!({ "triggerKind": 1, "isRetrigger": false }),
+        };
+        let request = Request::Signature { view: self.current, head };
+        self.servers[server].request("textDocument/signatureHelp", "signatureHelpProvider", params, request);
+    }
+
+    /// The characters this buffer's server wants to be shown a signature for:
+    /// `(` and `,` nearly everywhere, and whatever else a language brackets
+    /// its arguments with.
+    pub(super) fn signature_triggers(&self) -> Vec<char> {
+        if !self.lsp_enabled {
+            return Vec::new();
+        }
+        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
+            return Vec::new();
+        };
+        match self.servers.get(server) {
+            Some(client) => client.signature_triggers(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The server, and a `textDocument`/`position` for the cursor, once the
+    /// buffer is in step with it. What every question about the place the
+    /// cursor is in starts with.
+    fn at_cursor(&mut self) -> Option<(usize, Value, usize, u64)> {
+        if !self.lsp_enabled {
+            return None;
+        }
+        self.lsp_sync();
+        let view = &self.views[self.current];
+        let (Lsp::Open { server, .. }, Some(path)) = (view.lsp, view.doc.path.as_deref()) else {
+            return None;
+        };
+        let (head, edits) = (view.sel.head, view.edits());
+        let (line, character) = lsp::to_position(&view.doc.text, head, self.servers[server].encoding);
+        let params = json!({
+            "textDocument": { "uri": lsp::uri(path) },
+            "position": { "line": line, "character": character },
+        });
+        Some((server, params, head, edits))
+    }
+
+    /// What the server said about the thing under the cursor, in a box beside
+    /// it - or a word in the status line when it said nothing, because `K` was
+    /// asked for and silence is not an answer.
+    fn hover_answer(&mut self, request: Request, markup: Option<String>) {
+        let Request::Hover { view, head, edits } = request else {
+            return;
+        };
+        if !self.still_asking(view, head, edits) {
+            return;
+        }
+        self.message.clear();
+        match markup.as_deref().and_then(|markup| Info::hover(markup, head)) {
+            Some(info) => self.info = Some(info),
+            None => self.message = "nothing known about that".into(),
+        }
+    }
+
+    /// The signature of the call being typed. Unlike `K` this was not asked
+    /// for, so a server with nothing to say about the bracket you just typed
+    /// says nothing: the box simply does not appear.
+    fn signature_answer(&mut self, request: Request, help: Option<Signature>) {
+        let Request::Signature { view, head } = request else {
+            return;
+        };
+        // Still typing the call it is about. Not the same position and not the
+        // same text - both have moved on by the time an answer lands, because
+        // typing an argument is what you were doing when you asked - but the
+        // same buffer, still in insert mode, and still inside the call.
+        if self.current != view || self.mode != Mode::Insert || self.view().sel.head < head {
+            return;
+        }
+        let Some(help) = help else {
+            // The call is over - a `)` is a character servers ask to hear
+            // about too - and a signature for a call that has been closed is
+            // a box in the way.
+            if self.info.as_ref().is_some_and(|info| info.kind == info::Kind::Signature) {
+                self.info = None;
+            }
+            return;
+        };
+        // Which overload, when there is more than one, so a wrong-looking
+        // signature is recognisable as one of several rather than the answer.
+        let label = match help.count > 1 {
+            true => format!("{} ({}/{})", help.label, help.index + 1, help.count),
+            false => help.label.clone(),
+        };
+        self.info = Info::signature(&label, help.active, head);
+    }
+
+    /// Whether the answer to a question about a place is still about where the
+    /// cursor is: same buffer, same spot, nothing typed since.
+    fn still_asking(&self, view: usize, head: usize, edits: u64) -> bool {
+        self.current == view && self.view().sel.head == head && self.view().edits() == edits
     }
 
     fn definition_answer(&mut self, request: Request, locations: Vec<Location>, encoding: Encoding) {
@@ -589,6 +712,183 @@ va");
         let id = sent(&written).into_iter().find(|m| m["method"] == "textDocument/definition").unwrap()["id"].clone();
         editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })));
         assert_eq!(editor.cursor_coords(), (0, 3), "tree-sitter found it in the file");
+    }
+
+    /// A scratch editor whose server answers hovers and signatures.
+    fn editor_asking(text: &str) -> (Editor, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let mut editor = Editor::scratch();
+        let view = editor.view_mut();
+        view.doc.text = ropey::Rope::from_str(text);
+        view.doc.path = Some("/nowhere/a.py".into());
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({
+            "hoverProvider": true,
+            "signatureHelpProvider": { "triggerCharacters": ["(", ","] },
+        }));
+        editor.servers.push(client);
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 0, synced: 0 };
+        (editor, written)
+    }
+
+    /// The id of the one request of `method` that was sent.
+    fn asked_for(written: &std::sync::mpsc::Receiver<Vec<u8>>, method: &str) -> Value {
+        let sent = sent(written);
+        let request = sent.iter().find(|m| m["method"] == method).expect("the request");
+        request["id"].clone()
+    }
+
+    #[test]
+    fn k_puts_what_the_server_says_in_a_box_by_the_cursor() {
+        let (mut editor, written) = editor_asking("count = 1\n");
+        editor.view_mut().sel = Selection::point(2);
+        editor.hover();
+        assert_eq!(editor.message, "asking...");
+
+        let id = asked_for(&written, "textDocument/hover");
+        let markup = "```python\n(variable) count: int\n```\n---\nHow many.";
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "contents": { "kind": "markdown", "value": markup },
+        }})));
+
+        let info = editor.info.as_ref().expect("a box");
+        let lines: Vec<&str> = info.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(lines, ["(variable) count: int", "", "How many."]);
+        assert_eq!(info.kind, crate::info::Kind::Hover);
+        assert_eq!(editor.message, "", "the box is the answer, not the status line");
+
+        // Read once: the next key takes it away again.
+        editor.dismiss_hover();
+        assert_eq!(editor.info, None);
+    }
+
+    #[test]
+    fn a_hover_answer_about_where_you_no_longer_are_is_dropped() {
+        let (mut editor, written) = editor_asking("count = 1\n");
+        editor.hover();
+        let id = asked_for(&written, "textDocument/hover");
+        editor.view_mut().sel = Selection::point(7);
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "contents": "about somewhere else",
+        }})));
+        assert_eq!(editor.info, None);
+    }
+
+    #[test]
+    fn a_server_with_nothing_to_say_says_so_rather_than_nothing() {
+        let (mut editor, written) = editor_asking("count = 1\n");
+        editor.hover();
+        let id = asked_for(&written, "textDocument/hover");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })));
+        assert_eq!(editor.info, None);
+        assert_eq!(editor.message, "nothing known about that");
+    }
+
+    #[test]
+    fn k_without_a_server_says_there_is_none() {
+        let mut editor = Editor::scratch();
+        editor.hover();
+        assert_eq!(editor.message, "no language server for this buffer");
+        assert_eq!(editor.info, None);
+    }
+
+    #[test]
+    fn a_bracket_asks_for_the_signature_of_the_call_being_typed() {
+        let (mut editor, written) = editor_asking("f(\n");
+        editor.set_mode(Mode::Insert);
+        editor.view_mut().sel = Selection::point(2);
+        editor.signature_hint('(');
+
+        let id = asked_for(&written, "textDocument/signatureHelp");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "signatures": [{
+                "label": "f(a: int, b: str) -> None",
+                "parameters": [{ "label": [2, 8] }, { "label": [10, 16] }],
+            }],
+            "activeParameter": 0,
+        }})));
+
+        let info = editor.info.as_ref().expect("a box");
+        assert_eq!(info.kind, crate::info::Kind::Signature);
+        let line = &info.lines[0];
+        assert_eq!(line.text, "f(a: int, b: str) -> None");
+        let active = line.active.clone().expect("the parameter being typed");
+        assert_eq!(&line.text[active], "a: int");
+
+        // And it goes away with the call it is about: `esc` ends insert mode.
+        editor.set_mode(Mode::Normal);
+        assert_eq!(editor.info, None);
+    }
+
+    #[test]
+    fn typing_the_argument_does_not_make_the_answer_stale() {
+        let (mut editor, written) = editor_asking("f(\n");
+        editor.set_mode(Mode::Insert);
+        editor.view_mut().sel = Selection::point(2);
+        editor.signature_hint('(');
+        let id = asked_for(&written, "textDocument/signatureHelp");
+
+        // What you do while waiting for it is type the argument it is about.
+        editor.insert("1, ");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "signatures": [{ "label": "f(a: int, b: str)" }],
+        }})));
+        assert!(editor.info.is_some(), "still the call being typed");
+    }
+
+    #[test]
+    fn closing_the_call_takes_its_signature_down() {
+        let (mut editor, written) = editor_asking("f(\n");
+        editor.set_mode(Mode::Insert);
+        editor.view_mut().sel = Selection::point(2);
+        editor.signature_hint('(');
+        let first = asked_for(&written, "textDocument/signatureHelp");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": first, "result": {
+            "signatures": [{ "label": "f(a: int)" }],
+        }})));
+        assert!(editor.info.is_some());
+
+        // A `)` is asked about too, and the answer to it is that there is no
+        // call being typed any more.
+        editor.insert("1)");
+        editor.signature_hint(',');
+        let ids: Vec<Value> = sent(&written)
+            .iter()
+            .filter(|m| m["method"] == "textDocument/signatureHelp")
+            .map(|m| m["id"].clone())
+            .collect();
+        let last = ids.last().expect("a second request").clone();
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": last, "result": null })));
+        assert_eq!(editor.info, None);
+    }
+
+    #[test]
+    fn a_character_the_server_did_not_ask_about_asks_nothing() {
+        let (mut editor, written) = editor_asking("f(\n");
+        editor.set_mode(Mode::Insert);
+        editor.signature_hint('x');
+        assert!(!sent(&written).iter().any(|m| m["method"] == "textDocument/signatureHelp"));
+    }
+
+    #[test]
+    fn deleting_back_past_the_bracket_takes_the_signature_with_it() {
+        let (mut editor, written) = editor_asking("f(\n");
+        editor.set_mode(Mode::Insert);
+        editor.view_mut().sel = Selection::point(2);
+        editor.signature_hint('(');
+        let id = asked_for(&written, "textDocument/signatureHelp");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "signatures": [{ "label": "f(a: int)" }],
+        }})));
+        assert!(editor.info.is_some());
+
+        // Still inside the call: the signature is still what you are typing.
+        editor.view_mut().sel = Selection::point(3);
+        editor.update_info();
+        assert!(editor.info.is_some());
+
+        editor.view_mut().sel = Selection::point(1);
+        editor.update_info();
+        assert_eq!(editor.info, None, "back out of the call, and it is about nothing");
     }
 
     #[test]

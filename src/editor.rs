@@ -10,6 +10,7 @@ use crate::clipboard;
 use crate::command;
 use crate::comment::{self, Toggled};
 use crate::complete::{self, Completion, Pick};
+use crate::info::{self, Info};
 use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
@@ -332,6 +333,9 @@ pub struct Editor {
     /// buys you one keystroke of quiet, and a name nothing matches costs a
     /// gather per character.
     dismissed: Option<usize>,
+    /// The box beside the cursor: what `K` asked the server, or the signature
+    /// of the call being typed.
+    pub info: Option<Info>,
     /// The status-line prompt, when one is open. It owns the keyboard too.
     pub prompt: Option<Prompt>,
     pub search: Search,
@@ -412,6 +416,7 @@ impl Editor {
             last_find: None,
             jumps: Jumps::default(),
             completion: None,
+            info: None,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -2070,6 +2075,47 @@ impl Editor {
         self.lsp_complete(self.view().sel.head, Some(typed));
     }
 
+    /// `K`: what the server says the thing under the cursor is, in a box
+    /// beside it. The answer comes back later, which is why this only says
+    /// that it asked.
+    pub fn hover(&mut self) {
+        self.info = None;
+        match self.lsp_hover() {
+            true => self.message = "asking...".into(),
+            false => self.message = "no language server for this buffer".into(),
+        }
+    }
+
+    /// A character the server wants to show a signature after - a `(`, or a
+    /// `,` moving on to the next argument. Nothing appears until the answer
+    /// lands, and nothing at all when the server has none to give.
+    pub fn signature_hint(&mut self, typed: char) {
+        if self.mode != Mode::Insert || !self.signature_triggers().contains(&typed) {
+            return;
+        }
+        self.lsp_signature(Some(typed));
+    }
+
+    /// The box goes away with the next key, the way a message does - but only
+    /// the answer to a `K`. A signature is for the call being typed, so it
+    /// stands while you type it.
+    pub fn dismiss_hover(&mut self) {
+        if self.info.as_ref().is_some_and(|info| info.kind == info::Kind::Hover) {
+            self.info = None;
+        }
+    }
+
+    /// A signature is about the call it was asked in: back out past the
+    /// bracket that opened the call and it is about nothing.
+    pub fn update_info(&mut self) {
+        if let Some(info) = self.info.as_ref()
+            && info.kind == info::Kind::Signature
+            && self.view().sel.head < info.anchor
+        {
+            self.info = None;
+        }
+    }
+
     pub fn completion_step(&mut self, forward: bool) {
         if let Some(completion) = self.completion.as_mut() {
             completion.step(forward);
@@ -2385,9 +2431,11 @@ impl Editor {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
-        // The popup belongs to insert mode, whichever way you leave it.
+        // The popup belongs to insert mode, whichever way you leave it, and so
+        // does the signature of the call that was being typed.
         if mode != Mode::Insert {
             self.completion = None;
+            self.info = None;
         }
         // Leaving insert mode with something selected keeps the selection and
         // hands it to visual mode, so `shift`-arrow, `esc`, `y` does what it

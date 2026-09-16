@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 41: completion from a language server, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 42: hover and signatures from a language server, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -69,6 +69,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
 | `gd` `gD` | go to the definition: the language server's, or in scope / in the file |
+| `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
@@ -1001,6 +1002,10 @@ What it gives you, so far:
 - **Completion.** The popup asks the server as well as the buffer, so `self.`
   in Python offers what is actually on `self` rather than words that happen to
   be lying around the file. See below.
+- **Hover.** `K` asks what the thing under the cursor is, and puts the answer
+  in a box beside it. See below.
+- **Signatures.** Typing a `(` shows what the call takes, with the argument you
+  are on marked. See below.
 - **What it is doing.** A server that is indexing says so in the status line,
   which is why `gd` is not answering yet. `:lsp` lists the servers running.
 
@@ -1042,9 +1047,44 @@ to promise. Positions go over in whichever of UTF-8 and UTF-16 the server
 takes, converted at the boundary. Saving tells the server, which is when
 rust-analyzer runs `cargo check`. Quitting stops it.
 
-Not yet: hover, completion from the server, rename, code actions, formatting,
-references. Each of these is one request and an answer to draw, on top of
-what is here.
+Not yet: rename, code actions, formatting, references. Each of these is one
+request and an answer to draw, on top of what is here.
+
+## What that is, and what it takes
+
+Two questions the server can answer about the place the cursor is in, in the
+same box: `K` asks what a thing *is*, and a `(` asks what a call *takes*.
+
+`K` is the question you ask often enough for a bare key. The answer arrives a
+moment later - it is a request like any other - and appears above the cursor
+line rather than below it, because what it is about is the line you are on and
+a box under that line covers what you are about to type. It is read once and
+goes with the next key, the way a message in the status line does. A server
+that has nothing to say about the name says so, rather than leaving you
+wondering whether it was asked.
+
+The signature is not asked for, so it does not announce itself: type a `(` and
+what the call takes appears, with the parameter you are in marked; type the
+comma and the mark moves on to the next one. Where there are overloads, the box
+says which of them this is. Close the call and it goes; leave insert mode and
+it goes; delete back past the bracket that opened the call and it goes, because
+the box is about that call and nothing else.
+
+What is in flight when you keep typing is the difference between the two. An
+answer to `K` about a name you have since moved off is dropped, because it is
+about where you *were*. A signature is not: typing the argument is exactly what
+you do while waiting for one, so an answer that lands three characters later is
+still the signature of the call you are still inside. Only leaving the call -
+or the buffer, or insert mode - makes it stale.
+
+Servers write markdown, sometimes elaborately, and a terminal box is not a
+markdown renderer. The fences, the rules and the emphasis markers are the parts
+that were only ever there to be formatted away, so they go and what they were
+wrapped around stays. Long lines wrap at a space where there is one to wrap at,
+and the mark on the active parameter is carried across the break with the text
+it was on.
+
+The popup wins any row they both want: it is the thing being typed into.
 
 ## Go to definition
 
@@ -1391,8 +1431,8 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- More from the language server: hover on `K`, its completions in the popup,
-  rename, references in a picker.
+- More from the language server: rename, references in a picker, code actions
+  on the diagnostics already in the gutter, formatting.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

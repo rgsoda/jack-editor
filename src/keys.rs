@@ -34,6 +34,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "*", what: "search for the word under the cursor", mode: "normal" },
     Binding { keys: "%", what: "jump to the matching bracket", mode: "normal" },
     Binding { keys: "gd gD", what: "go to the definition: the language server's, or in scope; in the file", mode: "normal" },
+    Binding { keys: "K", what: "what the language server says this is", mode: "normal" },
     Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
@@ -905,6 +906,9 @@ impl Keys {
             // where the cursor is. Small commands, all of them counted.
             KeyCode::Char('J') => editor.join_lines(repeat),
             KeyCode::Char('~') => editor.toggle_case(repeat),
+            // `K` asks the server what the thing under the cursor is, which is
+            // the one question you ask often enough to want a bare key for.
+            KeyCode::Char('K') => editor.hover(),
             // `^r` is redo, and lives further down: a chord is not the
             // character `r` is waiting for.
             KeyCode::Char('r') if !ctrl => {
@@ -1396,6 +1400,7 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     // Typing and deleting change the word under the popup - and typing a word
     // character is also what brings one up in the first place.
     editor.update_completion();
+    editor.update_info();
     if let KeyCode::Char(c) = key.code
         && !ctrl
         && !alt
@@ -1408,6 +1413,9 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
             // typed a dot after.
             false => editor.suggest_from_server(c),
         }
+        // A `(` or a `,` is also the server being told which argument of the
+        // call you have got to, whether or not it had a word to complete.
+        editor.signature_hint(c);
     }
 }
 
@@ -2434,6 +2442,17 @@ mod tests {
         let mut vim = Vim::new("call(a,\n    )\n");
         vim.press("J");
         assert_eq!(vim.text(), "call(a,)\n");
+    }
+
+    #[test]
+    fn k_asks_about_the_thing_under_the_cursor() {
+        let mut vim = Vim::new("count = 1\n");
+        vim.press("K");
+        // No server in a scratch buffer, so what it has to report is that.
+        assert_eq!(vim.editor.message, "no language server for this buffer");
+        // And it is a command of its own, not a count or a pending anything.
+        assert!(vim.keys.pending.is_none());
+        assert_eq!(vim.editor.cursor_coords(), (0, 0), "K moves nothing");
     }
 
     #[test]

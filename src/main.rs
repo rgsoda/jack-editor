@@ -4,6 +4,7 @@ mod comment;
 mod command;
 mod complete;
 mod editor;
+mod info;
 mod history;
 mod jump;
 mod keys;
@@ -224,6 +225,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         loop {
             if let Message::Key(key) = message {
                 editor.message.clear();
+                // The box from a `K` is read and gone, the same as a message.
+                editor.dismiss_hover();
                 let was_armed = std::mem::take(&mut quit_armed);
                 // The dog runs on the cursor, not on the keyboard: a key that
                 // moves nothing - `esc`, a `:w`, `l` at the end of a line -

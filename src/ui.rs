@@ -10,6 +10,7 @@ use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
 use crate::complete::{Candidate, Completion};
+use crate::info::Info;
 use crate::screen::{Style, Surface};
 use crate::status::{self, Glyphs, Segment};
 use crate::stream::Sign;
@@ -39,8 +40,12 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         draw_tabline(editor, surface);
     }
 
-    if let Some(completion) = editor.completion.as_ref() {
-        draw_completion(editor, completion, surface);
+    // The box and the popup want the same few rows beside the cursor. The
+    // popup is the one being typed into, so it wins them.
+    match (editor.completion.as_ref(), editor.info.as_ref()) {
+        (Some(completion), _) => draw_completion(editor, completion, surface),
+        (None, Some(info)) => draw_info(editor, info, surface),
+        (None, None) => {}
     }
 
     if let Some(picker) = editor.picker.as_ref() {
@@ -328,6 +333,58 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
         }
         while x < right {
             surface.put(x, y, ' ', 1, style);
+            x += 1;
+        }
+    }
+}
+
+/// The box beside the cursor: what `K` asked the server, or the signature of
+/// the call being typed.
+///
+/// Above the cursor by preference, unlike the completion popup: what it is
+/// about is the line the cursor is on, and a box under that line covers what
+/// you are about to type into.
+fn draw_info(editor: &Editor, info: &Info, surface: &mut Surface) {
+    let (screen_width, _) = surface.size();
+    if info.lines.is_empty() || editor.height == 0 {
+        return;
+    }
+
+    let base = editor.theme.style("ui.info");
+    let active = editor.theme.style("ui.info.active");
+
+    // A space of padding each side, and never wider than the screen.
+    let width = (info.width() + 2).min(screen_width);
+    let (cursor_x, cursor_y) = editor.cursor_screen();
+    let left = (cursor_x as usize).min(screen_width.saturating_sub(width));
+
+    let rect = editor.window_rect(editor.focus());
+    let bottom = rect.y + rect.text_height();
+    let rows = info.lines.len().min(bottom.saturating_sub(rect.y));
+    let above = (cursor_y as usize).saturating_sub(rows);
+    // Above unless there is no room up there, in which case under the cursor,
+    // and pushed up off the bottom if it has to be.
+    let top = match cursor_y as usize >= rect.y + rows {
+        true => above,
+        false => (cursor_y as usize + 1).min(bottom.saturating_sub(rows)),
+    };
+
+    for (row, line) in info.lines.iter().take(rows).enumerate() {
+        let y = top + row;
+        if y >= bottom {
+            break;
+        }
+        let right = left + width;
+        let mut x = put_str(surface, left, y, " ", base, right);
+        for (column, c) in line.text.chars().enumerate() {
+            let style = match line.active.as_ref().is_some_and(|range| range.contains(&column)) {
+                true => base.patch(active),
+                false => base,
+            };
+            x = put_str(surface, x, y, &c.to_string(), style, right);
+        }
+        while x < right {
+            surface.put(x, y, ' ', 1, base);
             x += 1;
         }
     }
@@ -925,6 +982,47 @@ mod tests {
         let moved: Vec<char> = status_row(&editor, &keys).chars().collect();
         let now = moved.iter().position(|c| *c == status::DOG_RUNNING).unwrap();
         assert_eq!(now, stopped + 1);
+    }
+
+    #[test]
+    fn the_info_box_sits_above_the_line_it_is_about() {
+        let mut editor = editor_with_lines(20);
+        editor.goto_line(5);
+        editor.info = crate::info::Info::hover("what this is\n\nand why", 0);
+        let keys = Keys::default();
+        // The cursor is on screen row 5; the box takes the three rows above.
+        assert!(row_text(&editor, &keys, 2).contains(" what this is "));
+        // The blank line between the paragraphs is a row of the box, not a
+        // row of the file showing through it.
+        assert!(!row_text(&editor, &keys, 3).contains("line 4"));
+        assert!(row_text(&editor, &keys, 4).contains(" and why "));
+        assert!(row_text(&editor, &keys, 5).contains("line 6 of text"), "the cursor line is clear");
+    }
+
+    #[test]
+    fn a_box_with_no_room_above_it_goes_below() {
+        let mut editor = editor_with_lines(20);
+        editor.goto_line(0);
+        editor.info = crate::info::Info::hover("one\ntwo", 0);
+        let keys = Keys::default();
+        assert!(row_text(&editor, &keys, 0).contains("line 1 of text"));
+        assert!(row_text(&editor, &keys, 1).contains(" one "));
+        assert!(row_text(&editor, &keys, 2).contains(" two "));
+    }
+
+    #[test]
+    fn the_popup_takes_the_space_from_the_box() {
+        let mut editor = editor_with_lines(20);
+        editor.goto_line(5);
+        editor.info = crate::info::Info::hover("what this is", 0);
+        editor.set_mode(crate::editor::Mode::Insert);
+        editor.open_completion(false);
+        assert!(editor.completion.is_some(), "a popup of the buffer's own words");
+        let keys = Keys::default();
+        for row in 0..6 {
+            let text = row_text(&editor, &keys, row);
+            assert!(!text.contains("what this is"), "row {row}: {text}");
+        }
     }
 
     #[test]
