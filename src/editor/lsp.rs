@@ -243,16 +243,7 @@ impl Editor {
     /// The characters this buffer's server wants to be asked after: `.` for
     /// Python, where there is no word yet but plenty to offer.
     pub(super) fn completion_triggers(&self) -> Vec<char> {
-        if !self.lsp_enabled {
-            return Vec::new();
-        }
-        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
-            return Vec::new();
-        };
-        match self.servers.get(server) {
-            Some(client) => client.completion_triggers(),
-            None => Vec::new(),
-        }
+        self.client().map(Client::completion_triggers).unwrap_or_default()
     }
 
     /// What the server offered, folded into the popup that asked - or opening
@@ -313,15 +304,18 @@ impl Editor {
     /// `(` and `,` nearly everywhere, and whatever else a language brackets
     /// its arguments with.
     pub(super) fn signature_triggers(&self) -> Vec<char> {
+        self.client().map(Client::signature_triggers).unwrap_or_default()
+    }
+
+    /// The server this buffer is open in, when there is one and servers are
+    /// on at all. What every "can it answer this?" question starts with.
+    fn client(&self) -> Option<&Client> {
         if !self.lsp_enabled {
-            return Vec::new();
+            return None;
         }
-        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
-            return Vec::new();
-        };
-        match self.servers.get(server) {
-            Some(client) => client.signature_triggers(),
-            None => Vec::new(),
+        match self.views[self.current].lsp {
+            Lsp::Open { server, .. } => self.servers.get(server),
+            _ => None,
         }
     }
 

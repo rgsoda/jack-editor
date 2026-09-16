@@ -462,15 +462,13 @@ impl Keys {
         text
     }
 
-    fn normal(&mut self, editor: &mut Editor, key: KeyEvent, ctrl: bool) {
-        if key.code == KeyCode::Esc {
-            self.count = None;
-            self.pending = None;
-            self.register = None;
-            editor.clear_search_highlight();
-            return;
-        }
-
+    /// The keys that build a command up rather than being one: the name of a
+    /// register after `"`, and the digits of a count. `true` when the key was
+    /// one of those and there is nothing else to do with it.
+    ///
+    /// Normal and visual mode read these the same way, which is the point of
+    /// them being here: `"a3d` means what it means in either.
+    fn prefix(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         // `"x` names the register for whatever command comes next, so it does
         // not end the command the way an operator or motion does.
         if self.pending == Some(Pending::Register) {
@@ -478,7 +476,7 @@ impl Keys {
             if let KeyCode::Char(name) = key.code {
                 self.register = Some(name);
             }
-            return;
+            return true;
         }
 
         // Digits build a count, except a leading `0`, which is a motion.
@@ -489,6 +487,21 @@ impl Keys {
         {
             let digit = c.to_digit(10).unwrap() as usize;
             self.count = Some(self.count.unwrap_or(0).saturating_mul(10) + digit);
+            return true;
+        }
+        false
+    }
+
+    fn normal(&mut self, editor: &mut Editor, key: KeyEvent, ctrl: bool) {
+        if key.code == KeyCode::Esc {
+            self.count = None;
+            self.pending = None;
+            self.register = None;
+            editor.clear_search_highlight();
+            return;
+        }
+
+        if self.prefix(key, ctrl) {
             return;
         }
 
@@ -648,21 +661,7 @@ impl Keys {
             return;
         }
 
-        if self.pending == Some(Pending::Register) {
-            self.pending = None;
-            if let KeyCode::Char(name) = key.code {
-                self.register = Some(name);
-            }
-            return;
-        }
-
-        if let KeyCode::Char(c) = key.code
-            && !ctrl
-            && c.is_ascii_digit()
-            && !(c == '0' && self.count.is_none())
-        {
-            let digit = c.to_digit(10).unwrap() as usize;
-            self.count = Some(self.count.unwrap_or(0).saturating_mul(10) + digit);
+        if self.prefix(key, ctrl) {
             return;
         }
 

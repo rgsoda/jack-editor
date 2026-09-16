@@ -382,7 +382,6 @@ const GAP: i32 = 3;
 /// in which case it is taken to mean it.
 pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     let smart_case = query.chars().any(char::is_uppercase);
-    let chars: Vec<char> = text.chars().collect();
     let needles: Vec<char> = query.chars().collect();
     if needles.is_empty() {
         return Some((0, Vec::new()));
@@ -390,12 +389,21 @@ pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
 
     let eq = |a: char, b: char| match smart_case {
         true => a == b,
-        false => a.eq_ignore_ascii_case(&b) || a.to_lowercase().eq(b.to_lowercase()),
+        // `to_lowercase` is an iterator, because a character can lower-case
+        // into several - and running one per character compared is most of
+        // what a search over a whole repository costs. For ASCII, which is
+        // nearly every path there is, the cheap answer is the whole answer.
+        false if a.is_ascii() && b.is_ascii() => a.eq_ignore_ascii_case(&b),
+        false => a.to_lowercase().eq(b.to_lowercase()),
     };
 
+    // Does the query appear in this at all, in order? Over the characters as
+    // they come, because most of the list is not a match and an answer of "no"
+    // should not cost a copy of the text: with a whole repository in the
+    // picker this runs on every item on every keystroke.
     let mut needle = 0;
     let mut end = None;
-    for (i, &c) in chars.iter().enumerate() {
+    for (i, c) in text.chars().enumerate() {
         if eq(c, needles[needle]) {
             needle += 1;
             if needle == needles.len() {
@@ -405,6 +413,15 @@ pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
         }
     }
     let end = end?;
+
+    // It matches, so now it is worth having the characters to hand: the rest
+    // of this walks them backwards and forwards to find the tightest run.
+    // With capacity, not `collect`: an iterator of characters cannot say how
+    // many it has, so collecting one grows and copies its way there - four,
+    // eight, sixteen - and this runs once per item that matches. The length in
+    // bytes is an upper bound on the count, and never a bad one for a path.
+    let mut chars: Vec<char> = Vec::with_capacity(text.len());
+    chars.extend(text.chars());
 
     let mut needle = needles.len();
     let mut start = 0;
@@ -831,4 +848,32 @@ mod tests {
             assert_eq!(p.cursor_screen(20).0 as usize, p.prompt_text().chars().count());
         }
     }
+
+    /// A whole repository in the picker, filtered on every keystroke.
+    #[test]
+    fn a_repository_is_ranked_between_keystrokes() {
+        let items: Vec<Item> = (0..20_000)
+            .map(|n| Item {
+                text: format!("src/module{}/component_{}/handler_{n}.rs", n % 97, n % 31),
+                detail: String::new(),
+                target: String::new(),
+                id: n,
+            })
+            .collect();
+        let mut p = Picker::new(Source::Files, items);
+
+        // A query most of the list matches, and one none of it does - the miss
+        // is the expensive one, because nothing can stop early.
+        for (query, hits) in [("mod", true), ("zqxj", false)] {
+            p.query = query.into();
+            let start = std::time::Instant::now();
+            p.rank();
+            let took = start.elapsed();
+            assert_eq!(!p.matches().is_empty(), hits);
+            // 11ms and 7ms release for five times this many; the bound is for
+            // a debug build on a slow machine.
+            assert!(took.as_millis() < 500, "{query:?} took {took:?}");
+        }
+    }
 }
+
