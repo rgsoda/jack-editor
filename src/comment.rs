@@ -116,7 +116,7 @@ pub fn toggle(lines: &[String], first: usize, marker: Marker) -> (Vec<Edit>, Tog
 }
 
 fn leading(text: &str) -> usize {
-    text.chars().take_while(|c| c.is_whitespace()).count()
+    crate::buffer::indent_of(text).chars().count()
 }
 
 fn is_commented(text: &str, marker: Marker) -> bool {

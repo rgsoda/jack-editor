@@ -35,7 +35,7 @@ pub fn detect(doc: &Document) -> Option<Indent> {
         if text.trim().is_empty() {
             continue;
         }
-        let white: String = text.chars().take_while(|c| matches!(c, ' ' | '\t')).collect();
+        let white = crate::buffer::indent_of(text);
         if white.starts_with('\t') {
             tabs += 1;
             continue;

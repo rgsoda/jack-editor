@@ -43,6 +43,15 @@ impl Stamp {
     }
 }
 
+/// The whitespace a line begins with: spaces and tabs, and nothing else.
+/// Indentation is what a line is pushed across by, not every character that
+/// happens to be blank - and a line break is not indentation at all, which is
+/// what counting `char::is_whitespace` here would make it.
+pub fn indent_of(text: &str) -> &str {
+    let end = text.find(|c| !matches!(c, ' ' | '\t')).unwrap_or(text.len());
+    &text[..end]
+}
+
 impl Document {
     pub fn scratch() -> Self {
         Document { text: Rope::new(), path: None, disk: None }
@@ -71,6 +80,18 @@ impl Document {
     }
 
     /// The line's text with any trailing line break removed.
+    /// The whitespace `line` begins with: what a line opened beside it should
+    /// copy, and what its indentation is made of.
+    pub fn line_indent(&self, line: usize) -> String {
+        indent_of(&self.line_str(line)).to_string()
+    }
+
+    /// How many characters of that there are - where the text on a line
+    /// actually starts.
+    pub fn line_indent_len(&self, line: usize) -> usize {
+        indent_of(&self.line_str(line)).chars().count()
+    }
+
     pub fn line_str(&self, line: usize) -> Cow<'_, str> {
         let slice = self.text.line(line);
         match Cow::<str>::from(slice) {
@@ -199,5 +220,33 @@ impl Document {
             .and_then(Path::file_name)
             .and_then(|n| n.to_str())
             .unwrap_or("[scratch]")
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indentation_is_spaces_and_tabs_and_nothing_else() {
+        assert_eq!(indent_of("    text"), "    ");
+        assert_eq!(indent_of("\t\tlet x = 1;"), "\t\t");
+        assert_eq!(indent_of("text"), "");
+        assert_eq!(indent_of("   "), "   ", "a line of nothing but indent");
+        assert_eq!(indent_of(""), "");
+        // A line break is not indentation, whatever `is_whitespace` says.
+        assert_eq!(indent_of("\n"), "");
+    }
+
+    #[test]
+    fn a_line_says_what_it_is_indented_by() {
+        let mut doc = Document::scratch();
+        doc.text = Rope::from_str("fn a() {\n    let x = 1;\n\n\t\tdeep\n");
+        assert_eq!(doc.line_indent(0), "");
+        assert_eq!(doc.line_indent(1), "    ");
+        assert_eq!(doc.line_indent_len(1), 4);
+        assert_eq!(doc.line_indent_len(2), 0, "an empty line indents by nothing");
+        assert_eq!(doc.line_indent_len(3), 2, "in characters, not columns");
     }
 }

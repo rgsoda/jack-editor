@@ -372,8 +372,7 @@ impl View {
     /// `None` when there is no indent query for the language.
     pub fn indent_level(&self, line: usize) -> Option<usize> {
         let syntax = self.syntax.as_ref()?;
-        let text = self.doc.line_str(line);
-        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        let blank = self.doc.line_indent_len(line);
         let base = self.doc.line_to_char(line);
         let at = self.doc.text.char_to_byte(base + blank);
 
@@ -420,8 +419,7 @@ impl View {
         // is where vim leaves it and the only column that still means the same
         // thing after the line has moved sideways.
         let base = self.doc.line_to_char(line);
-        let text = self.doc.line_str(line);
-        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        let blank = self.doc.line_indent_len(line);
         self.sel = Selection::point(base + blank.min(self.doc.line_len_chars(line)));
         self.goal_col = None;
         self.history.push(Transaction { sel_after: self.sel, ..tx });
@@ -475,8 +473,7 @@ impl View {
         let tx = Transaction::new(changes, self.sel, self.sel);
         self.apply_tx(&tx);
         let base = self.doc.line_to_char(first);
-        let text = self.doc.line_str(first);
-        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        let blank = self.doc.line_indent_len(first);
         self.sel = Selection::point(base + blank.min(self.doc.line_len_chars(first)));
         self.goal_col = None;
         self.history.push(Transaction { sel_after: self.sel, ..tx });
@@ -628,12 +625,7 @@ impl View {
             Move::FirstNonBlank => {
                 let (line, _) = self.cursor_coords();
                 let start = self.doc.line_to_char(line);
-                let blanks = self
-                    .doc
-                    .line_str(line)
-                    .chars()
-                    .take_while(|c| matches!(c, ' ' | '\t'))
-                    .count();
+                let blanks = self.doc.line_indent_len(line);
                 start + blanks.min(self.doc.line_len_chars(line))
             }
             Move::LineEnd => {
@@ -939,12 +931,9 @@ impl View {
     pub fn insert_newline(&mut self) {
         let (start, end) = self.sel.range();
         let (line, col) = self.doc.coords(start);
-        let text = self.doc.line_str(line);
-        let indent: String = text
-            .chars()
-            .take(col)
-            .take_while(|c| matches!(c, ' ' | '\t'))
-            .collect();
+        // Only as far as the cursor: splitting a line in the middle of its
+        // indentation carries across what is behind the cursor, not all of it.
+        let indent: String = self.doc.line_indent(line).chars().take(col).collect();
         self.edit(start, end - start, &format!("\n{indent}"));
     }
     pub fn delete_backward(&mut self) {
@@ -1178,21 +1167,14 @@ impl View {
         };
 
         // Land on the first non-blank of what was put, as vim does.
-        let indent = text
-            .trim_start_matches('\n')
-            .chars()
-            .take_while(|c| matches!(c, ' ' | '\t'))
-            .count();
+        let indent = crate::buffer::indent_of(text.trim_start_matches('\n')).chars().count();
         self.edit_at(at, 0, &text, Some(first_line + indent));
     }
     /// Insert lines at an exact position, for putting over a selection that
     /// has just been cut away.
     pub fn put_lines_at(&mut self, at: usize, text: &str) {
         let at = at.min(self.doc.len_chars());
-        let indent = text
-            .chars()
-            .take_while(|c| matches!(c, ' ' | '\t'))
-            .count();
+        let indent = crate::buffer::indent_of(text).chars().count();
         self.edit_at(at, 0, text, Some(at + indent));
     }
 

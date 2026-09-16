@@ -2861,7 +2861,7 @@ impl Editor {
         let at = start + content.chars().count();
 
         let next = view.doc.line_str(line + 1);
-        let blank = next.chars().take_while(|c| matches!(c, ' ' | '\t')).count();
+        let blank = crate::buffer::indent_of(&next).chars().count();
         let end = view.doc.line_to_char(line + 1) + blank;
         let rest = next.trim_start_matches([' ', '\t']);
 
@@ -3212,12 +3212,7 @@ impl Editor {
         let (line, _) = view.cursor_coords();
         let last = view.doc.len_lines().saturating_sub(1);
         let end_line = (line + count - 1).min(last);
-        let indent: String = view
-            .doc
-            .line_str(line)
-            .chars()
-            .take_while(|c| matches!(c, ' ' | '\t'))
-            .collect();
+        let indent = view.doc.line_indent(line);
 
         let start = view.doc.line_to_char(line);
         let end = view.doc.line_to_char(end_line) + view.doc.line_len_chars(end_line);
@@ -3254,12 +3249,7 @@ impl Editor {
     pub fn open_line_above(&mut self) {
         let view = self.view_mut();
         let (line, _) = view.cursor_coords();
-        let indent: String = view
-            .doc
-            .line_str(line)
-            .chars()
-            .take_while(|c| matches!(c, ' ' | '\t'))
-            .collect();
+        let indent = view.doc.line_indent(line);
         let start = view.doc.line_to_char(line);
         let cursor = start + indent.chars().count();
         view.edit_at(start, 0, &format!("{indent}\n"), Some(cursor));
