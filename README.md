@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 45: a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 46: bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -1218,6 +1218,22 @@ method with that name rather than the one for the receiver's type; and it looks
 at one file, not the project. Those are where a real index begins — and this is
 what is worth having before one.
 
+## Pasting from outside
+
+A terminal that supports bracketed paste — and they all do — wraps pasted text
+in two markers when the program asks it to, and jack asks. What arrives is then
+text rather than a very fast typist: one event carrying the whole paste, one
+undo step to take it back, and no auto-indent, so pasted code keeps the shape
+it had where you copied it instead of walking off the right of the screen a
+line at a time. Nothing in it is read as a command either — a pasted `dd` is
+two letters, in normal mode as much as in insert.
+
+Where it goes depends on where you are. In insert mode it goes in at the
+cursor. In normal mode it goes in beside the cursor, the way `p` does: on a
+line of its own when the paste ends in a newline, and inside the line when it
+does not. Into a prompt or a picker's query it goes as its first line, because
+those are one line each and a query with a newline in it matches nothing.
+
 ## The system clipboard
 
 `^c` copies, `^x` cuts, `^v` pastes — the selection when there is one, and the
@@ -1532,8 +1548,6 @@ was at first:
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's
   cursor, not move it.
-- Bracketed paste, so a multi-line paste is one transaction and does not
-  auto-indent itself into a staircase.
 - `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
   kind. `:sh` is the same thing from the other end and needs nothing.
 - More languages. Cross-language injection (JS in HTML, SQL in strings) is the

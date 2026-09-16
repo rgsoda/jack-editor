@@ -30,6 +30,7 @@ use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::{execute, queue};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use std::io::{self, Write};
 
@@ -46,7 +47,11 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        // Bracketed paste: the terminal wraps pasted text in markers, so it
+        // arrives as one event rather than as a burst of keystrokes that
+        // normal mode would read as commands and insert mode would auto-indent
+        // line by line.
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
         Ok(TerminalGuard)
     }
 }
@@ -60,6 +65,7 @@ impl Drop for TerminalGuard {
 fn restore() {
     let _ = execute!(
         io::stdout(),
+        DisableBracketedPaste,
         LeaveAlternateScreen,
         SetCursorStyle::DefaultUserShape,
         Show
@@ -262,6 +268,11 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
                 if editor.cursor_mark() != was_at {
                     editor.dog_runs();
                 }
+            } else if let Message::Paste(text) = message {
+                editor.message.clear();
+                editor.dismiss_hover();
+                editor.paste(&text);
+                editor.dog_runs();
             } else if let Message::Items { token, items, done } = message {
                 if token != streamed_token {
                     editor.stream_items(streamed_token, std::mem::take(&mut streamed), streamed_done);
@@ -336,7 +347,7 @@ fn hand_over(editor: &mut Editor, command: &str, input: &stream::Input) -> Resul
             break;
         }
     }
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
     input.resume();
     // What it did to the files that are open here.
     editor.reload_changed_files();

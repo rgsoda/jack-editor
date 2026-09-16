@@ -273,6 +273,16 @@ impl Picker {
         Outcome::Continue
     }
 
+    /// Text pasted onto the end of the query, which is a query that grew by
+    /// more than a character but is otherwise no different.
+    pub fn extend_query(&mut self, text: &str) -> Outcome {
+        if text.is_empty() {
+            return Outcome::Continue;
+        }
+        self.query.push_str(text);
+        self.requery()
+    }
+
     /// The query changed. A live source throws away what it has and asks for
     /// the search to be run again; anything else just re-filters.
     fn requery(&mut self) -> Outcome {

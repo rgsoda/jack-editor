@@ -11,6 +11,10 @@ use std::thread;
 pub enum Message {
     Key(KeyEvent),
     Resize,
+    /// Text the terminal delivered in one piece, between the markers that
+    /// bracketed paste wraps it in. It is text and never keystrokes: the
+    /// editor is spared interpreting a pasted `dd` as a command.
+    Paste(String),
     /// How the current buffer differs from what git has, as one sign per
     /// changed line. `token` identifies the view that asked.
     Signs { token: u64, signs: Vec<(usize, Sign)> },
@@ -125,6 +129,7 @@ pub fn spawn_input(tx: Sender<Message>, input: Arc<Input>) {
             let message = match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Message::Key(key),
                 Ok(Event::Resize(..)) => Message::Resize,
+                Ok(Event::Paste(text)) => Message::Paste(text),
                 Ok(_) => continue,
                 // The terminal is gone; the main thread will find out too.
                 Err(_) => return,

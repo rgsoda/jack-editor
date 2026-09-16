@@ -509,7 +509,12 @@ impl Editor {
             KeyCode::Char(c) if !ctrl => prompt.input.push(c),
             _ => return,
         }
-        // Only a search shows its answer as you type; a command waits.
+        self.prompt_changed();
+    }
+
+    /// What happens after the `:` or `/` line changes. Only a search shows its
+    /// answer as you type; a command waits.
+    fn prompt_changed(&mut self) {
         if self.prompt.as_ref().is_some_and(Prompt::is_search) {
             self.preview_search();
         }
@@ -1583,7 +1588,13 @@ impl Editor {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        match picker.input(key, rows) {
+        let outcome = picker.input(key, rows);
+        self.picker_outcome(outcome);
+    }
+
+    /// What the picker asked for after a key, or after a paste into its query.
+    fn picker_outcome(&mut self, outcome: Outcome) {
+        match outcome {
             Outcome::Continue => {}
             // Retiring the token stops a walk still in flight from feeding
             // whatever picker opens next.
@@ -2564,6 +2575,47 @@ impl Editor {
         self.view_mut().sel = Selection::point(base + moved);
     }
 
+    /// Text the terminal handed over in one piece, between the markers a
+    /// bracketed paste is wrapped in. It is text, not keystrokes: nothing in
+    /// it is a command, and none of it goes through the auto-indent - which is
+    /// the whole point, because indented code typed a character at a time is
+    /// how a paste ends up as a staircase.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.is_empty() {
+            return;
+        }
+
+        // A prompt and a picker are one line each, so a multi-line paste into
+        // one is taken as its first line: the alternative is a query with a
+        // newline in it, which can match nothing.
+        let line = text.lines().next().unwrap_or_default();
+        if let Some(picker) = self.picker.as_mut() {
+            let outcome = picker.extend_query(line);
+            self.picker_outcome(outcome);
+            return;
+        }
+        if let Some(prompt) = self.prompt.as_mut() {
+            prompt.input.push_str(line);
+            prompt.completion = None;
+            self.prompt_changed();
+            return;
+        }
+
+        self.begin_undo_group();
+        match self.mode {
+            Mode::Insert => self.view_mut().insert(&text),
+            // In normal mode a paste goes in beside the cursor, like `p`: a
+            // paste that ends in a newline is whole lines and belongs on their
+            // own, and anything else belongs where the cursor is.
+            _ => match text.ends_with('\n') {
+                true => self.view_mut().put_lines(&text, true),
+                false => self.view_mut().put_inline(&text, true),
+            },
+        }
+        self.end_undo_group();
+    }
+
     pub fn insert(&mut self, text: &str) {
         self.view_mut().insert(text);
         // A closing bracket typed at the start of a line belongs under what it
@@ -3469,6 +3521,63 @@ mod tests {
         type_str(&mut e, "abc");
         e.undo();
         assert_eq!(e.view().doc.text.to_string(), "");
+    }
+
+    #[test]
+    fn a_paste_keeps_its_own_shape_and_is_one_undo_step() {
+        // Typed a character at a time, the second line would be indented by
+        // the grammar and land under the first. Pasted, it arrives as written.
+        let mut e = editor("");
+        e.set_mode(Mode::Insert);
+        e.paste("fn main() {\n    let x = 1;\n}\n");
+        assert_eq!(e.view().doc.text.to_string(), "fn main() {\n    let x = 1;\n}\n");
+
+        // One step, however many lines it was.
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "");
+
+        // Carriage returns are the terminal's, not the text's.
+        e.paste("one\r\ntwo\r");
+        assert_eq!(e.view().doc.text.to_string(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn a_paste_in_normal_mode_goes_in_beside_the_cursor() {
+        // Whole lines - it ends in a newline - go on a line of their own,
+        // below the cursor's, the way `p` puts them.
+        let mut e = editor("one\ntwo\n");
+        e.paste("new\n");
+        assert_eq!(e.view().doc.text.to_string(), "one\nnew\ntwo\n");
+
+        // Anything else goes in the line, after the cursor.
+        let mut e = editor("one\n");
+        e.paste("XY");
+        assert_eq!(e.view().doc.text.to_string(), "oXYne\n");
+
+        // And none of it is read as commands: a pasted `dd` is two letters.
+        let mut e = editor("one\ntwo\n");
+        e.paste("dd");
+        assert_eq!(e.view().doc.text.to_string(), "oddne\ntwo\n");
+    }
+
+    #[test]
+    fn a_paste_into_a_prompt_is_one_line_of_it() {
+        let mut e = editor("alpha\n");
+        e.open_command();
+        e.paste("w foo.txt\nand more");
+        assert_eq!(e.prompt.as_ref().expect("a prompt").input, "w foo.txt");
+        // The buffer is untouched: the prompt owns the paste.
+        assert_eq!(e.view().doc.text.to_string(), "alpha\n");
+    }
+
+    #[test]
+    fn a_paste_into_a_picker_filters_by_it() {
+        let mut e = editor("");
+        e.open_help_picker();
+        e.paste("undo");
+        let picker = e.picker.as_ref().expect("a picker");
+        assert!(!picker.matches().is_empty(), "the help list mentions undo");
+        assert!(picker.prompt_text().ends_with("undo"), "{}", picker.prompt_text());
     }
 
     #[test]
