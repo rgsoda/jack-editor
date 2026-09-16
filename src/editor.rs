@@ -22,6 +22,8 @@ use crate::theme::Theme;
 use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH, View};
 use crate::window::{self, Direction, Layout, Rect, Window};
 
+mod lsp;
+
 /// How many characters of a word bring the completion popup up on its own.
 /// Two, because one character narrows a buffer to hundreds of words and three
 /// is most of a short name already typed.
@@ -259,6 +261,11 @@ pub struct Editor {
     /// The buffer an undo group was opened on, so it is closed on the same one
     /// even when the command in between went to another buffer.
     grouped_view: Option<usize>,
+    /// Running language servers. Indexes stay put: a stopped one is kept,
+    /// marked, so the buffers pointing at it can tell.
+    servers: Vec<crate::lsp::Client>,
+    /// Start language servers for the files that have one.
+    pub lsp_enabled: bool,
     pub width: usize,
     /// Text rows only; the status line is not part of this.
     pub height: usize,
@@ -370,6 +377,8 @@ impl Editor {
             focus: 0,
             screen: (80, 25),
             grouped_view: None,
+            servers: Vec::new(),
+            lsp_enabled: true,
             width: 80,
             height: 24,
             mode: Mode::default(),
@@ -809,7 +818,16 @@ impl Editor {
 
     /// `gd`: the definition of the word under the cursor, and `gD` for the
     /// file's own rather than a binding in scope. A jump, so `^o` comes back.
+    /// `gd` asks the language server when there is one, which knows about
+    /// other files; `gD`, and `gd` without a server, read the tree.
     pub fn goto_definition(&mut self, local: bool) {
+        if local && self.lsp_definition() {
+            return;
+        }
+        self.goto_definition_in_tree(local);
+    }
+
+    fn goto_definition_in_tree(&mut self, local: bool) {
         let Some(word) = self.view().word_under_cursor() else {
             self.message = "no word under the cursor".into();
             return;
@@ -913,6 +931,7 @@ impl Editor {
                 self.close_window();
             }
             ("on" | "only", _) => self.only_window(),
+            ("lsp", _) => self.lsp_report(),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
                 if let Err(err) = self.open_file(path) {
@@ -1105,6 +1124,11 @@ impl Editor {
             "noautoindent" | "noai" => self.autoindent = false,
             "emacs" => self.emacs = true,
             "noemacs" => self.emacs = false,
+            "lsp" => {
+                self.lsp_enabled = true;
+                self.lsp_turned_on();
+            }
+            "nolsp" => self.lsp_enabled = false,
             "autocomplete" | "ac" => self.autocomplete = DEFAULT_AUTOCOMPLETE,
             "noautocomplete" | "noac" => self.autocomplete = 0,
             "expandtab" | "et" => self.indent.tabs = false,
@@ -1128,7 +1152,7 @@ impl Editor {
             }
             "" => {
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1139,6 +1163,7 @@ impl Editor {
                     !self.indent.tabs,
                     self.autoindent,
                     self.emacs,
+                    self.lsp_enabled,
                     self.tabline.name(),
                     self.autocomplete,
                     self.semicolon.name()
@@ -2387,7 +2412,8 @@ impl Editor {
                     0 => format!("wrote {name}"),
                     1 => format!("wrote {name}, trimmed 1 line"),
                     n => format!("wrote {name}, trimmed {n} lines"),
-                }
+                };
+                self.lsp_saved();
             }
             Err(err) => self.message = format!("{err:#}"),
         }
@@ -2402,7 +2428,10 @@ impl Editor {
         }
         let name = self.view().doc.display_name().to_string();
         match self.view_mut().doc.reload() {
-            Ok(()) => self.message = format!("reloaded {name}"),
+            Ok(()) => {
+                self.view_mut().touch();
+                self.message = format!("reloaded {name}");
+            }
             Err(err) => self.message = format!("{err:#}"),
         }
         self.clamp_cursor();

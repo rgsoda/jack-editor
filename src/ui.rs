@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
 use crate::editor::{Completing, Editor, Prompt};
+use crate::view::Diagnostic;
 use crate::window::Rect;
 use crate::view::char_width;
 use crate::keys::Keys;
@@ -95,6 +97,31 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
 
     let selection = editor.selection_range().filter(|_| focused);
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
+
+    // The diagnostics on screen: their ranges to underline, and for each line
+    // the worst of them, for the gutter and the message after the text.
+    let screen_start = view.doc.line_to_char(scroll_top.min(total_lines.saturating_sub(1)));
+    let screen_end = match last_row >= total_lines {
+        true => view.doc.len_chars(),
+        false => view.doc.line_to_char(last_row),
+    };
+    let mut underlines = Vec::new();
+    let mut worst: HashMap<usize, &Diagnostic> = HashMap::new();
+    for diagnostic in &view.diagnostics {
+        if diagnostic.start > screen_end || diagnostic.end.max(diagnostic.start + 1) <= screen_start {
+            continue;
+        }
+        let key = format!("diagnostic.underline.{}", diagnostic.severity.name());
+        // A diagnostic with no width still marks a character.
+        underlines.push((diagnostic.start, diagnostic.end.max(diagnostic.start + 1), editor.theme.style(&key)));
+        let line = view.doc.char_to_line(diagnostic.start);
+        let entry = worst.entry(line).or_insert(diagnostic);
+        if diagnostic.severity < entry.severity {
+            *entry = diagnostic;
+        }
+    }
+    let glyphs = status::glyphs(editor);
+
     let styling = LineStyling {
         highlights: &highlights,
         selection: editor.theme.style("ui.selection"),
@@ -105,6 +132,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         match_style: editor.theme.style("ui.search.match"),
         brackets,
         bracket_style: editor.theme.style("ui.bracket.match"),
+        diagnostics: &underlines,
     };
 
     for row in rect.y..rect.y + height {
@@ -128,6 +156,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             }
         }
 
+        let diagnostic = worst.get(&line).copied();
         if signs > 0 {
             let (ch, key) = match view.signs.get(&line) {
                 Some(Sign::Added) => ('+', "ui.gutter.added"),
@@ -135,7 +164,13 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                 Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
                 None => (' ', "ui.linenr"),
             };
-            let style = editor.theme.style(key);
+            // A diagnostic has the column over the git sign: the one needs
+            // doing something about, the other is only news.
+            let (ch, key) = match diagnostic {
+                Some(d) => (glyphs.diagnostic.chars().next().unwrap_or('!'), format!("diagnostic.{}", d.severity.name())),
+                None => (ch, key.to_string()),
+            };
+            let style = editor.theme.style(&key);
             surface.put(rect.x, row, ch, 1, under(here, style));
         }
 
@@ -174,7 +209,25 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             here,
             &styling,
         );
+
+        // The worst diagnostic's message, after the text where there is room.
+        // Its first line: the rest is for `]d`.
+        if let Some(d) = diagnostic {
+            let end = char_col_width(&text);
+            let x = styling.left + end.saturating_sub(scroll_left) + 2;
+            let right = rect.x + rect.width;
+            if x < right {
+                let style = under(here, editor.theme.style(&format!("diagnostic.{}", d.severity.name())));
+                let message = format!("{} {}", glyphs.diagnostic, d.message.lines().next().unwrap_or(""));
+                put_str(surface, x, row, &message, style, right);
+            }
+        }
     }
+}
+
+/// How wide a line's text is on screen, tabs expanded.
+fn char_col_width(text: &str) -> usize {
+    crate::view::display_col(text, text.chars().count())
 }
 
 /// The picker panel, drawn over the bottom rows of the text area. It is opaque:
@@ -379,6 +432,8 @@ struct LineStyling<'a> {
     match_style: Style,
     brackets: Option<(usize, usize)>,
     bracket_style: Style,
+    /// Ranges a diagnostic covers, with the style to underline them in.
+    diagnostics: &'a [(usize, usize, Style)],
 }
 
 /// `style` over the cursor line's tint, when this row has one. The tint is a
@@ -430,6 +485,9 @@ fn draw_line(
         let at = line_start + char_idx;
         if styling.matches.iter().any(|&(s, e)| at >= s && at < e) {
             style = style.patch(styling.match_style);
+        }
+        if let Some(&(_, _, underline)) = styling.diagnostics.iter().find(|&&(s, e, _)| at >= s && at < e) {
+            style = style.patch(underline);
         }
         if styling.brackets.is_some_and(|(a, b)| at == a || at == b) {
             style = style.patch(styling.bracket_style);
@@ -948,6 +1006,35 @@ mod tests {
         // Two rows repaint rather than none, which is the whole cost of it.
         assert!(on > off, "on {on} vs off {off}");
         assert!(on < off + 2000, "a cursor move costs {} bytes more", on - off);
+    }
+
+    #[test]
+    fn a_diagnostic_is_marked_underlined_and_said_after_its_line() {
+        let mut editor = editor_with_lines(5);
+        editor.set_viewport(60, 6);
+        let start = editor.view().doc.line_to_char(1) + 5;
+        editor.view_mut().diagnostics = vec![crate::view::Diagnostic {
+            start,
+            end: start + 1,
+            severity: crate::lsp::Severity::Warning,
+            message: "two is suspicious\nsecond line".into(),
+        }];
+        let keys = Keys::default();
+
+        let row = row_text(&editor, &keys, 1);
+        assert_eq!(row.chars().next(), Some('\u{25cf}'), "the gutter mark: {row}");
+        assert!(row.contains("line 2 of text  \u{25cf} two is suspicious"), "{row}");
+        assert!(!row.contains("second line"));
+
+        let mut screen = Screen::new();
+        let surface = screen.begin(60, 7);
+        draw(&editor, &keys, surface);
+        let x = editor.gutter_width() + 5;
+        assert!(surface.get(x, 1).style.underline, "the character it is about");
+        assert!(!surface.get(x + 1, 1).style.underline);
+
+        // And counted in the status line.
+        assert!(status_row(&editor, &keys).contains('1'));
     }
 
     #[test]

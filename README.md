@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 37: window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 38: language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -68,7 +68,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `n` `N` | repeat the search / reverse it |
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
-| `gd` `gD` | go to the definition: in scope / in the file |
+| `gd` `gD` | go to the definition: the language server's, or in scope / in the file |
+| `]d` `[d` | next / previous diagnostic, and what it says |
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
@@ -130,6 +131,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit — or close the window, while there is more than one |
 | `:sp [path]` `:vs [path]` | split below / beside, onto this file or another |
 | `:close` `:only` | close this window / every other one |
+| `:lsp` | which language servers are running, and this buffer's |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
@@ -140,6 +142,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set dog` | `nodog`: the dog in the status line |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
+| `:set lsp` | `nolsp`: start language servers for files that have one |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is |
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
@@ -220,6 +223,12 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   undo history and syntax tree. Movement is grapheme-aware and vertical
   movement keeps a sticky goal column. Every edit funnels through one `edit()`
   method. A `View` knows nothing about modes or registers.
+- `lsp.rs` — language servers: which one for which language, where its
+  project starts, the process and its reader and writer threads, JSON-RPC
+  framing, positions in the server's units, and each message turned into a
+  plain event. No buffers in it.
+- `editor/lsp.rs` — the editor's side: opening buffers in servers, sending
+  their text when it changes, putting diagnostics on their text, and `gd`.
 - `window.rs` — how the screen is divided: a tree of splits with window ids at
   the leaves, the rectangles it works out to, and which window is beside which.
   Arithmetic only; what a window shows is the editor's.
@@ -945,6 +954,51 @@ and it looks at one buffer, not the project. Those want a language server, which
 is a different piece of machinery — this is the tier that is worth having before
 one.
 
+## Language servers
+
+Open a file that has a language server installed and jack starts it, in the
+project the file belongs to - the nearest `Cargo.toml`, `go.mod`,
+`pyproject.toml` or the like above it, else the repository. One server per
+project, shared by every file in it. Nothing to configure; `:set nolsp` in the
+config file if you would rather not.
+
+| language | server |
+|---|---|
+| Rust | `rust-analyzer` |
+| C, C++ | `clangd` |
+| Go | `gopls` |
+| Python | `pyright-langserver`, else `pylsp` |
+| JavaScript | `typescript-language-server` |
+
+What it gives you, so far:
+
+- **Diagnostics.** A mark in the gutter, the text underlined, the first line
+  of the message after the end of the line, and a count of errors and warnings
+  in the status line. `]d` and `[d` go to the next and previous one, round the
+  ends of the buffer, and say the whole first line of it. They stay on their
+  text while you type: an edit above moves them with it, until the server says
+  something newer.
+- **`gd` across files.** Asked of the server first, which knows types and the
+  whole project; `^o` comes back as usual. If the server has no answer - still
+  indexing, or a name it cannot resolve - the tree-sitter lookup below has a
+  go instead, so `gd` never does less than it did without one.
+- **What it is doing.** A server that is indexing says so in the status line,
+  which is why `gd` is not answering yet. `:lsp` lists the servers running.
+
+How it works: a server is a child process speaking JSON-RPC over its stdin and
+stdout. A thread reads it and hands each message to the run loop on the same
+channel as keys and git signs, and another writes to it, so a server busy
+indexing can never hold up a keystroke. The server gets the whole text of a
+buffer when it changes, once per frame rather than once per key - it can never
+drift out of step that way, which incremental edits would need a lot of care
+to promise. Positions go over in whichever of UTF-8 and UTF-16 the server
+takes, converted at the boundary. Saving tells the server, which is when
+rust-analyzer runs `cargo check`. Quitting stops it.
+
+Not yet: hover, completion from the server, rename, code actions, formatting,
+references. Each of these is one request and an answer to draw, on top of
+what is here.
+
 ## Go to definition
 
 `gd` on a name goes to where it is defined, and `^o` comes back. Three tiers,
@@ -1283,9 +1337,8 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- `gd` across files, which means indexing the project: walk, parse, run the
-  tags query per file, cache it. That is where this turns into a language
-  server, and vim's `gd` does not do it either.
+- More from the language server: hover on `K`, its completions in the popup,
+  rename, references in a picker.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

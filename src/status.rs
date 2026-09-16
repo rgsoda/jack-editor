@@ -1,5 +1,6 @@
 use crate::editor::{Editor, Mode};
 use crate::keys::Keys;
+use crate::lsp::Severity;
 use crate::screen::Style;
 use crate::stream::Sign;
 use crate::syntax::language_for_path;
@@ -42,6 +43,11 @@ pub struct Glyphs {
     pub deleted: &'static str,
     /// Shown where tabs scrolled off the left of the line.
     pub truncated: &'static str,
+    /// Counts of errors and warnings in the status line.
+    pub error: &'static str,
+    pub warning: &'static str,
+    /// Marks a diagnostic in the gutter and in front of its message.
+    pub diagnostic: &'static str,
 }
 
 /// The dog: side-on while it runs, sitting when it stops. Material Design
@@ -66,6 +72,9 @@ pub const NERD: Glyphs = Glyphs {
     modified_sign: "\u{f459}",
     deleted: "\u{f458}",
     truncated: "\u{e0b3}",
+    error: "\u{f057} ",
+    warning: "\u{f071} ",
+    diagnostic: "\u{25cf}",
 };
 
 pub const PLAIN: Glyphs = Glyphs {
@@ -81,6 +90,9 @@ pub const PLAIN: Glyphs = Glyphs {
     modified_sign: "~",
     deleted: "-",
     truncated: "<",
+    error: "E",
+    warning: "W",
+    diagnostic: "!",
 };
 
 pub fn glyphs(editor: &Editor) -> &'static Glyphs {
@@ -198,11 +210,28 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
         }
     }
 
+    // What the language server found, counted the same way.
+    let errors = view.diagnostics.iter().filter(|d| d.severity == Severity::Error).count();
+    let warnings = view.diagnostics.iter().filter(|d| d.severity == Severity::Warning).count();
+    for (count, glyph, key) in [
+        (errors, glyphs.error, "diagnostic.error"),
+        (warnings, glyphs.warning, "diagnostic.warning"),
+    ] {
+        if count > 0 {
+            let style = Style { bg: bar.bg, ..editor.theme.style(key) };
+            left.push(Segment { text: format!("{glyph}{count}"), style });
+        }
+    }
+
     let info = editor.theme.style("ui.statusline.info");
     let mut right = Vec::new();
     let pending = keys.pending_text();
     if !pending.is_empty() {
         right.push(Segment { text: pending, style: Style { bold: true, ..info } });
+    }
+    // A server still indexing says so, which is why `gd` is not answering.
+    if let Some(busy) = editor.lsp_busy() {
+        right.push(Segment { text: busy, style: info });
     }
     if let Some(language) = language {
         right.push(Segment { text: language.to_string(), style: info });
@@ -279,6 +308,7 @@ mod tests {
             PLAIN.section_right, PLAIN.section_left, PLAIN.thin_right, PLAIN.thin_left,
             PLAIN.modified, PLAIN.position, PLAIN.scratch,
             PLAIN.added, PLAIN.modified_sign, PLAIN.deleted,
+            PLAIN.error, PLAIN.warning, PLAIN.diagnostic,
         ];
         for text in plain {
             assert!(text.is_ascii(), "{text:?} is not ascii");

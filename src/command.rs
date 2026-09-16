@@ -35,6 +35,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "vsplit", argument: Argument::Path },
     Command { name: "close", argument: Argument::None },
     Command { name: "only", argument: Argument::None },
+    Command { name: "lsp", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
     Command { name: "config", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
@@ -128,6 +129,11 @@ pub static SETTINGS: &[Setting] = &[
         name: "emacs",
         kind: Kind::Flag(false),
         about: "Emacs chords in insert mode: ^a ^e ^k ^y and the rest. They                 win over the insert-mode keys they share.",
+    },
+    Setting {
+        name: "lsp",
+        kind: Kind::Flag(true),
+        about: "Start a language server for files that have one installed: diagnostics, and gd across files.",
     },
     Setting {
         name: "semicolon",

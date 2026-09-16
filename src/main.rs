@@ -7,6 +7,7 @@ mod editor;
 mod history;
 mod jump;
 mod keys;
+mod lsp;
 mod object;
 mod picker;
 mod register;
@@ -172,6 +173,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         editor.scroll_to_cursor();
         // Cheap when nothing has changed: it compares a revision first.
         editor.refresh_signs();
+        // Cheap too: an edit count per buffer.
+        editor.lsp_sync();
 
         ui::draw(editor, &keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
@@ -251,6 +254,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
                 editor.job_failed(token, error);
             } else if let Message::Signs { token, signs } = message {
                 editor.set_signs(token, signs);
+            } else if let Message::Lsp { server, message } = message {
+                editor.lsp_message(server, message);
             }
             // Resize needs nothing: the next frame re-reads the terminal size.
 

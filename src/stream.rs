@@ -28,6 +28,8 @@ pub enum Message {
         items: Vec<String>,
         done: bool,
     },
+    /// A message from language server `server`, or `None` when it has gone.
+    Lsp { server: usize, message: Option<serde_json::Value> },
 }
 
 /// What happened to one line since the last commit.

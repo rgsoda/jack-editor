@@ -33,7 +33,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "n N", what: "repeat the search, reverse it", mode: "normal" },
     Binding { keys: "*", what: "search for the word under the cursor", mode: "normal" },
     Binding { keys: "%", what: "jump to the matching bracket", mode: "normal" },
-    Binding { keys: "gd gD", what: "go to the definition: in scope, in the file", mode: "normal" },
+    Binding { keys: "gd gD", what: "go to the definition: the language server's, or in scope; in the file", mode: "normal" },
+    Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
@@ -129,6 +130,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
     Binding { keys: ":sp [path] :vs [path]", what: "split: below, beside - this file or another", mode: "command" },
     Binding { keys: ":close :only", what: "close this window, every other window", mode: "command" },
+    Binding { keys: ":lsp", what: "which language servers are running", mode: "command" },
+    Binding { keys: ":set lsp", what: "nolsp: start language servers for files that have one", mode: "command" },
     Binding { keys: ":q (windows)", what: "with more than one window, closes this one", mode: "command" },
     Binding { keys: ":s/old/new/", what: "substitute on this line (g: every match)", mode: "command" },
     Binding { keys: ":%s/old/new/g", what: "the whole file ({n},{m}s and '<,'> too)", mode: "command" },
@@ -191,6 +194,8 @@ enum Pending {
     Leader,
     /// `^w`, waiting for what to do with the windows.
     Window,
+    /// `]` or `[`, waiting for what to go to the next or previous of.
+    Bracket { forward: bool },
     /// The `"` prefix, waiting for the register name.
     Register,
     /// `f`, `F`, `t` or `T`, waiting for the character to look for.
@@ -440,6 +445,8 @@ impl Keys {
             Some(Pending::Reveal) => "z",
             Some(Pending::Leader) => "<space>",
             Some(Pending::Window) => "^w",
+            Some(Pending::Bracket { forward: true }) => "]",
+            Some(Pending::Bracket { forward: false }) => "[",
             Some(Pending::Register) => "\"",
             // Both are handled above, and neither is worth a panic in the
             // middle of a redraw if a later one ever isn't.
@@ -533,6 +540,12 @@ impl Keys {
                         None => editor.previous_view(),
                     },
                     _ => {}
+                }
+                self.finish();
+            }
+            Some(Pending::Bracket { forward }) => {
+                if key.code == KeyCode::Char('d') {
+                    editor.goto_diagnostic(forward);
                 }
                 self.finish();
             }
@@ -933,6 +946,8 @@ impl Keys {
             KeyCode::Char('=') => self.pending = Some(Pending::Reindent),
             KeyCode::Char('g') => self.pending = Some(Pending::Go { operator: None }),
             KeyCode::Char(' ') => self.pending = Some(Pending::Leader),
+            KeyCode::Char(']') => self.pending = Some(Pending::Bracket { forward: true }),
+            KeyCode::Char('[') => self.pending = Some(Pending::Bracket { forward: false }),
             _ if find_for(key.code, ctrl).is_some() => {
                 let (till, backward) = find_for(key.code, ctrl).expect("checked above");
                 self.pending = Some(Pending::Find { operator: None, till, backward });
@@ -1082,6 +1097,7 @@ impl Keys {
                 | Pending::Register
                 | Pending::Leader
                 | Pending::Window
+                | Pending::Bracket { .. }
                 | Pending::Find { .. }
                 | Pending::Object { .. } => {}
             }

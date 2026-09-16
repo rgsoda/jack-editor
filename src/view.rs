@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::buffer::Document;
 use crate::comment::{self, Marker, Toggled};
 use crate::history::{Change, History, Transaction};
+use crate::lsp::Severity;
 use crate::search::Search;
 use crate::stream::Sign;
 use crate::syntax::{Highlights, Syntax, language_for_path};
@@ -157,6 +158,35 @@ pub struct View {
     /// The log position of `log[0]`, so marks survive the log being cleared.
     log_base: usize,
     watched: bool,
+    /// What the language server last said is wrong, in char offsets, sorted.
+    /// Carried through edits like any other position, so a squiggle stays on
+    /// its word while you type above it and the server has not yet answered.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Every edit ever applied, counted: how the server's copy is known to be
+    /// behind. The history's depth cannot say, since undo takes it back down.
+    edits: u64,
+    pub lsp: Lsp,
+}
+
+/// Whether a buffer is known to a language server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lsp {
+    /// Not looked into yet.
+    #[default]
+    Untried,
+    /// No server for it: no file, no language, none installed, or turned off.
+    Without,
+    /// Open in server `server`, which has seen `version` of it, made when the
+    /// buffer's edit count was `synced`.
+    Open { server: usize, version: i32, synced: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    pub start: usize,
+    pub end: usize,
+    pub severity: Severity,
+    pub message: String,
 }
 
 impl View {
@@ -165,6 +195,9 @@ impl View {
             log: Vec::new(),
             log_base: 0,
             watched: false,
+            diagnostics: Vec::new(),
+            edits: 0,
+            lsp: Lsp::Untried,
             doc,
             sel: Selection::point(0),
             goal_col: None,
@@ -1042,17 +1075,35 @@ impl View {
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.edit(&edits, &self.doc.text);
         }
-        if self.watched {
-            // In the coordinates of the text as each change found it, which is
-            // how a position is walked through them one at a time.
-            let mut shift: isize = 0;
-            for change in &tx.changes {
-                let pos = (change.pos as isize + shift) as usize;
-                let (removed, inserted) = (change.removed.chars().count(), change.inserted.chars().count());
-                self.log.push((pos, removed, inserted));
-                shift += inserted as isize - removed as isize;
-            }
+        self.edits += 1;
+        if !self.watched && self.diagnostics.is_empty() {
+            return;
         }
+        // In the coordinates of the text as each change found it, which is how
+        // a position is walked through them one at a time.
+        let mut shift: isize = 0;
+        for change in &tx.changes {
+            let pos = (change.pos as isize + shift) as usize;
+            let (removed, inserted) = (change.removed.chars().count(), change.inserted.chars().count());
+            if self.watched {
+                self.log.push((pos, removed, inserted));
+            }
+            for diagnostic in &mut self.diagnostics {
+                diagnostic.start = carry_one(diagnostic.start, pos, removed, inserted);
+                diagnostic.end = carry_one(diagnostic.end, pos, removed, inserted);
+            }
+            shift += inserted as isize - removed as isize;
+        }
+    }
+
+    /// How many edits the text has had, for knowing a server is behind.
+    pub fn edits(&self) -> u64 {
+        self.edits
+    }
+
+    /// The text changed without an edit - a reload from disk.
+    pub fn touch(&mut self) {
+        self.edits += 1;
     }
 
     /// Whether another window is showing this buffer. Turning it off lets the
@@ -1077,11 +1128,7 @@ impl View {
         let mut pos = pos;
         if mark >= self.log_base {
             for &(at, removed, inserted) in &self.log[(mark - self.log_base).min(self.log.len())..] {
-                if pos >= at + removed {
-                    pos = pos + inserted - removed;
-                } else if pos > at {
-                    pos = at;
-                }
+                pos = carry_one(pos, at, removed, inserted);
             }
         }
         pos.min(self.doc.len_chars())
@@ -1181,6 +1228,18 @@ pub fn char_width(ch: char, at: usize) -> usize {
 }
 
 /// Screen column of char offset `char_col` within `line`.
+/// A position through one change at `at`: after it, moved by what the change
+/// added or took away; inside what was removed, to where the removal was.
+fn carry_one(pos: usize, at: usize, removed: usize, inserted: usize) -> usize {
+    if pos >= at + removed {
+        pos + inserted - removed
+    } else if pos > at {
+        at
+    } else {
+        pos
+    }
+}
+
 pub fn display_col(line: &str, char_col: usize) -> usize {
     let mut w = 0;
     for ch in line.chars().take(char_col) {

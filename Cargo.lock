@@ -295,6 +295,7 @@ dependencies = [
  "regex",
  "ropey",
  "serde",
+ "serde_json",
  "similar",
  "streaming-iterator",
  "toml",

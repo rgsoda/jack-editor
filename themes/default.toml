@@ -59,3 +59,13 @@
 "ui.gutter.added" = { fg = "#50fa7b" }
 "ui.gutter.modified" = { fg = "#ffb86c" }
 "ui.gutter.deleted" = { fg = "#ff5555" }
+
+# What a language server says: the mark in the gutter, the message at the end
+# of the line and the count in the status line take these colours; the text a
+# diagnostic covers is underlined, and `diagnostic.underline.error` and the
+# rest can colour that too.
+"diagnostic.error" = { fg = "#ff5555" }
+"diagnostic.warning" = { fg = "#ffb86c" }
+"diagnostic.info" = { fg = "#8be9fd" }
+"diagnostic.hint" = { fg = "#6272a4" }
+"diagnostic.underline" = { underline = true }
