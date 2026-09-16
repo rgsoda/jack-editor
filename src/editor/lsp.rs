@@ -7,7 +7,10 @@ use std::path::Path;
 use super::{Editor, Mode};
 use crate::complete::{self, Completion};
 use crate::info::{self, Info};
-use crate::lsp::{self, Client, Encoding, Event, Location, RawDiagnostic, Request, Signature, State, Suggestion};
+use crate::lsp::{
+    self, Client, Encoding, Event, Location, RawDiagnostic, Request, Signature, State, Suggestion,
+    TextEdit,
+};
 use crate::syntax::language_for_path;
 use crate::view::{Diagnostic, Lsp, Selection};
 
@@ -151,6 +154,7 @@ impl Editor {
             Event::Completion { request, items } => self.completion_answer(request, items),
             Event::Hover { request, markup } => self.hover_answer(request, markup),
             Event::Signature { request, help } => self.signature_answer(request, help),
+            Event::Format { request, edits } => self.format_answer(request, edits, encoding),
         }
     }
 
@@ -395,6 +399,109 @@ impl Editor {
     /// cursor is: same buffer, same spot, nothing typed since.
     fn still_asking(&self, view: usize, head: usize, edits: u64) -> bool {
         self.current == view && self.view().sel.head == head && self.view().edits() == edits
+    }
+
+    /// `:fmt`: hand the buffer to whatever the server formats with - rustfmt,
+    /// gofmt, black. `lines` is the range a `:'<,'>fmt` named, in which case it
+    /// is the selection that goes rather than the file.
+    ///
+    /// `false` when there is nothing to ask, or nothing that can answer: the
+    /// caller says so, since this was asked for out loud.
+    pub(super) fn lsp_format(&mut self, lines: Option<(usize, usize)>) -> bool {
+        let Some((server, mut params, _, edits)) = self.at_cursor() else {
+            return false;
+        };
+        // What the buffer indents with, which is what the server formats to.
+        // Its own configuration usually wins - rustfmt has a `rustfmt.toml` -
+        // and these are what it falls back on.
+        let indent = self.indent();
+        params["options"] = json!({
+            "tabSize": indent.width,
+            "insertSpaces": !indent.tabs,
+            "trimTrailingWhitespace": true,
+            "insertFinalNewline": true,
+        });
+        // A position means nothing to a whole-file format; a range is the
+        // lines, whole, because formatting half a line is not a thing to ask.
+        params.as_object_mut().expect("an object").remove("position");
+
+        let (method, capability) = match lines {
+            None => ("textDocument/formatting", "documentFormattingProvider"),
+            Some((first, last)) => {
+                let doc = &self.views[self.current].doc;
+                let start = doc.line_to_char(first);
+                // To the start of the line after, so the last line goes over
+                // whole - or to the end of the file, when there is no line
+                // after it because the file does not end in a newline.
+                let end = match last + 1 < doc.len_lines() {
+                    true => doc.line_to_char(last + 1),
+                    false => doc.text.len_chars(),
+                };
+                let encoding = self.servers[server].encoding;
+                let (from, to) = (
+                    lsp::to_position(&doc.text, start, encoding),
+                    lsp::to_position(&doc.text, end, encoding),
+                );
+                params["range"] = json!({
+                    "start": { "line": from.0, "character": from.1 },
+                    "end": { "line": to.0, "character": to.1 },
+                });
+                ("textDocument/rangeFormatting", "documentRangeFormattingProvider")
+            }
+        };
+        let request = Request::Format { view: self.current, edits };
+        self.servers[server].request(method, capability, params, request)
+    }
+
+    /// The formatting the server asks for, applied as one undo step.
+    ///
+    /// Back to front: every edit's position is in the text as the server saw
+    /// it, so applying the last one first means the ones still to come are
+    /// still where they said they were. The cursor is put back on the line and
+    /// column it was on, which after a reformat is the nearest thing to where
+    /// you were.
+    fn format_answer(&mut self, request: Request, edits: Vec<TextEdit>, encoding: Encoding) {
+        let Request::Format { view, edits: asked } = request else {
+            return;
+        };
+        if self.current != view {
+            return;
+        }
+        // Typed since asking: the positions are about text that no longer
+        // exists, and applying them would scramble the file.
+        if self.view().edits() != asked {
+            self.message = "the buffer changed while it was being formatted".into();
+            return;
+        }
+        if edits.is_empty() {
+            self.message = "already formatted".into();
+            return;
+        }
+
+        let mut edits = edits;
+        edits.sort_by_key(|edit| edit.start);
+        let (line, column) = self.view().cursor_coords();
+
+        self.begin_undo_group();
+        for edit in edits.iter().rev() {
+            let doc = &self.view().doc;
+            let start = lsp::from_position(&doc.text, edit.start.0, edit.start.1, encoding);
+            let end = lsp::from_position(&doc.text, edit.end.0, edit.end.1, encoding);
+            self.view_mut().edit_at(start, end.saturating_sub(start), &edit.text, None);
+        }
+        self.end_undo_group();
+
+        // The line and column it was on: after a reformat that is the nearest
+        // thing there is to where you were.
+        let doc = &self.views[self.current].doc;
+        let line = line.min(doc.len_lines().saturating_sub(1));
+        let at = doc.line_to_char(line) + column.min(doc.line_len_chars(line).saturating_sub(1));
+        self.view_mut().sel = Selection::point(at);
+        self.clamp_cursor();
+        self.message = match edits.len() {
+            1 => "formatted".into(),
+            many => format!("formatted: {many} changes"),
+        };
     }
 
     fn definition_answer(&mut self, request: Request, locations: Vec<Location>, encoding: Encoding) {
@@ -889,6 +996,113 @@ va");
         editor.view_mut().sel = Selection::point(1);
         editor.update_info();
         assert_eq!(editor.info, None, "back out of the call, and it is about nothing");
+    }
+
+    /// A scratch editor whose server formats.
+    fn editor_formatting(text: &str) -> (Editor, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let mut editor = Editor::scratch();
+        let view = editor.view_mut();
+        view.doc.text = ropey::Rope::from_str(text);
+        view.doc.path = Some("/nowhere/a.rs".into());
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+        }));
+        editor.servers.push(client);
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 0, synced: 0 };
+        (editor, written)
+    }
+
+    /// A replacement of lines `first..last` with `text`, as a server sends it.
+    fn text_edit(first: u32, last: u32, text: &str) -> Value {
+        json!({
+            "range": { "start": { "line": first, "character": 0 }, "end": { "line": last, "character": 0 } },
+            "newText": text,
+        })
+    }
+
+    #[test]
+    fn formatting_is_applied_back_to_front_as_one_undo_step() {
+        let (mut editor, written) = editor_formatting("fn a(){}\nfn b(){}\nfn c(){}\n");
+        editor.goto_line(2);
+        editor.run_command("fmt");
+        assert_eq!(editor.message, "formatting...");
+
+        let id = asked_for(&written, "textDocument/formatting");
+        // Two edits, sent in the order the file reads. Applying the first one
+        // first would move the second one out from under itself.
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            text_edit(0, 1, "fn a() {}\n"),
+            text_edit(2, 3, "fn c() {}\n"),
+        ]})));
+
+        assert_eq!(editor.view().doc.text.to_string(), "fn a() {}\nfn b(){}\nfn c() {}\n");
+        assert_eq!(editor.message, "formatted: 2 changes");
+        assert_eq!(editor.cursor_coords().0, 2, "still on the line it was on");
+
+        // One undo takes the whole reformat back.
+        editor.undo();
+        assert_eq!(editor.view().doc.text.to_string(), "fn a(){}\nfn b(){}\nfn c(){}\n");
+    }
+
+    #[test]
+    fn what_the_server_is_told_is_what_the_buffer_indents_with() {
+        let (mut editor, written) = editor_formatting("fn a(){}\n");
+        editor.run_command("set shiftwidth=2");
+        editor.run_command("set expandtab");
+        editor.run_command("fmt");
+        let sent = sent(&written);
+        let request = sent.iter().find(|m| m["method"] == "textDocument/formatting").expect("asked");
+        assert_eq!(request["params"]["options"]["tabSize"], 2);
+        assert_eq!(request["params"]["options"]["insertSpaces"], true);
+        // A whole-file format is not about a position, and does not send one.
+        assert!(request["params"].get("position").is_none());
+    }
+
+    #[test]
+    fn a_range_formats_the_lines_it_names() {
+        let (mut editor, written) = editor_formatting("fn a(){}\nfn b(){}\nfn c(){}\n");
+        editor.run_command("2,3fmt");
+        let sent = sent(&written);
+        let request = sent
+            .iter()
+            .find(|m| m["method"] == "textDocument/rangeFormatting")
+            .expect("the ranged request");
+        assert_eq!(request["params"]["range"]["start"]["line"], 1);
+        // To the start of the line after the last one named, so line 3 goes
+        // over whole rather than up to its first character.
+        assert_eq!(request["params"]["range"]["end"], json!({ "line": 3, "character": 0 }));
+    }
+
+    #[test]
+    fn an_answer_about_text_that_has_since_been_typed_into_is_refused() {
+        let (mut editor, written) = editor_formatting("fn a(){}\n");
+        editor.run_command("fmt");
+        let id = asked_for(&written, "textDocument/formatting");
+        editor.set_mode(Mode::Insert);
+        editor.insert("x");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            text_edit(0, 1, "fn a() {}\n"),
+        ]})));
+        assert!(editor.view().doc.text.to_string().starts_with('x'), "untouched");
+        assert_eq!(editor.message, "the buffer changed while it was being formatted");
+    }
+
+    #[test]
+    fn a_server_with_nothing_to_change_says_so() {
+        let (mut editor, written) = editor_formatting("fn a() {}\n");
+        editor.run_command("fmt");
+        let id = asked_for(&written, "textDocument/formatting");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [] })));
+        assert_eq!(editor.message, "already formatted");
+    }
+
+    #[test]
+    fn fmt_without_a_server_says_so() {
+        let mut editor = Editor::scratch();
+        editor.run_command("fmt");
+        assert_eq!(editor.message, "no language server that formats this");
     }
 
     #[test]

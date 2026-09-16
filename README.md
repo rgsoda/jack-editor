@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 42: hover and signatures from a language server, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 43: formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -135,6 +135,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:close` `:only` | close this window / every other one |
 | `:bd` `:bd!` | close this buffer; `!` throws away unsaved changes. Its windows move to the buffer before it, and closing the last leaves an empty one |
 | `:lsp` | which language servers are running, and this buffer's |
+| `:fmt` `:'<,'>fmt` | format the buffer with what the server formats with — rustfmt, gofmt — or just the lines a range names |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
@@ -1006,6 +1007,8 @@ What it gives you, so far:
   in a box beside it. See below.
 - **Signatures.** Typing a `(` shows what the call takes, with the argument you
   are on marked. See below.
+- **Formatting.** `:fmt` hands the buffer to whatever the server formats with.
+  See below.
 - **What it is doing.** A server that is indexing says so in the status line,
   which is why `gd` is not answering yet. `:lsp` lists the servers running.
 
@@ -1047,8 +1050,36 @@ to promise. Positions go over in whichever of UTF-8 and UTF-16 the server
 takes, converted at the boundary. Saving tells the server, which is when
 rust-analyzer runs `cargo check`. Quitting stops it.
 
-Not yet: rename, code actions, formatting, references. Each of these is one
-request and an answer to draw, on top of what is here.
+Not yet: rename, code actions, references. Each of these is one request and an
+answer to draw, on top of what is here.
+
+## Formatting
+
+`:fmt` hands the buffer to whatever the server formats with - rustfmt through
+rust-analyzer, gofmt through gopls - and applies what comes back. `:'<,'>fmt`
+formats the selection instead, and `:3,7fmt` those lines; a server that only
+formats whole files says so rather than pretending.
+
+This is a different thing from `=`, which is still there and still the
+grammar's. `=` indents: it decides what column a line starts at and touches
+nothing else, it works with no server at all, and it is a motion you can put an
+operator in front of. `:fmt` is the project's own formatter having its way with
+the whole file - line breaks, spacing inside expressions, argument lists split
+or joined - and it needs a server that offers it.
+
+The edits come back as a list of replacements, and they are applied from the
+last to the first. Every position in them is in the text as the server saw it,
+so doing the earliest one first would move all the others out from under
+themselves. The whole reformat is one undo step: `:fmt` then `u` puts the file
+back exactly as it was. The cursor goes back to the line and column it was on,
+which after a reformat is the nearest thing there is to where you were.
+
+An answer to a buffer that has been typed into since is refused rather than
+applied - the positions in it are about text that no longer exists, and half a
+second of latency is enough to get a keystroke in. It says so, so you know to
+ask again. What the buffer indents with goes over with the request as
+`tabSize` and `insertSpaces`, which a project's own `rustfmt.toml` then
+overrules, as it should.
 
 ## What that is, and what it takes
 

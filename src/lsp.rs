@@ -263,6 +263,15 @@ pub struct Signature {
     pub count: usize,
 }
 
+/// A piece of a buffer a server wants replaced: positions still in its terms,
+/// since only the buffer they are for can turn them into offsets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
+    pub text: String,
+}
+
 /// What a request was for, so the answer can be taken to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -279,6 +288,11 @@ pub enum Request {
     /// answer stale: typing arguments is exactly what happens while it is in
     /// flight, and the signature is for the call, not for a character in it.
     Signature { view: usize, head: usize },
+    /// `:fmt`: the whole buffer, or the lines a range named. `edits` is what
+    /// the buffer had had when it was asked, because a formatting answer is a
+    /// list of positions and applying it to text that has moved on would
+    /// scramble the file rather than tidy it.
+    Format { view: usize, edits: u64 },
     /// The popup asked what the server would offer. `start` is where the word
     /// being completed begins, which is what says whether the answer is still
     /// about the same word - typing more of it since is fine and expected,
@@ -298,6 +312,7 @@ pub enum Event {
     /// markdown. `None` when it had nothing to say about it.
     Hover { request: Request, markup: Option<String> },
     Signature { request: Request, help: Option<Signature> },
+    Format { request: Request, edits: Vec<TextEdit> },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -425,6 +440,8 @@ impl Client {
                     "publishDiagnostics": { "versionSupport": false },
                     "definition": { "linkSupport": true },
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    "formatting": { "dynamicRegistration": false },
+                    "rangeFormatting": { "dynamicRegistration": false },
                     "signatureHelp": {
                         "contextSupport": true,
                         "signatureInformation": {
@@ -597,6 +614,7 @@ impl Client {
             Request::Definition { .. } => Event::Definition { request, locations: locations(&result) },
             Request::Completion { .. } => Event::Completion { request, items: suggestions(&result) },
             Request::Hover { .. } => Event::Hover { request, markup: hover_markup(&result) },
+            Request::Format { .. } => Event::Format { request, edits: text_edits(&result) },
             Request::Signature { .. } => Event::Signature { request, help: signature(&result) },
         }
     }
@@ -763,6 +781,23 @@ fn suggestions(result: &Value) -> Vec<Suggestion> {
         .collect();
     items.sort_by(|a, b| a.0.cmp(&b.0));
     items.into_iter().map(|(_, item)| item).collect()
+}
+
+/// What a formatting answer asks for: a list of replacements, or nothing when
+/// the server has left the file as it is.
+fn text_edits(result: &Value) -> Vec<TextEdit> {
+    let Some(list) = result.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|edit| {
+            Some(TextEdit {
+                start: position(&edit["range"]["start"])?,
+                end: position(&edit["range"]["end"])?,
+                text: edit["newText"].as_str()?.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// A hover answer's text, in any of the shapes the protocol has collected over

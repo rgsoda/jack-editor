@@ -135,8 +135,9 @@ fn split(text: &str, delimiter: char) -> Vec<String> {
     parts
 }
 
-/// The range in front of the command, and what is left after it.
-fn range(line: &str) -> (Lines, &str) {
+/// The range in front of the command, and what is left after it. Public
+/// because `:s` is no longer the only command that works over lines.
+pub fn range(line: &str) -> (Lines, &str) {
     if let Some(rest) = line.strip_prefix('%') {
         return (Lines::Whole, rest);
     }

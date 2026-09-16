@@ -909,6 +909,21 @@ impl Editor {
             return;
         }
 
+        // A range in front of a command that takes one. Only `:fmt` does, so
+        // far, and a bare `:fmt` is the whole buffer rather than the line the
+        // cursor is on - `range` cannot tell "no range" from "this line", so
+        // whether it consumed anything is what says which.
+        let (lines, rest) = substitute::range(line);
+        let ranged = rest.len() != line.len();
+        if matches!(rest.trim(), "fmt" | "format") {
+            let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
+            if ranged && lines.is_none() {
+                return;
+            }
+            self.format(lines);
+            return;
+        }
+
         let (name, argument) = match line.split_once(char::is_whitespace) {
             Some((name, rest)) => (name, rest.trim()),
             None => (line, ""),
@@ -958,6 +973,15 @@ impl Editor {
             ("config", _) => self.open_config(),
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
+        }
+    }
+
+    /// `:fmt` - hand the buffer to whatever the language server formats with.
+    /// The answer comes back later and is applied then, as one undo step.
+    pub fn format(&mut self, lines: Option<(usize, usize)>) {
+        match self.lsp_format(lines) {
+            true => self.message = "formatting...".into(),
+            false => self.message = "no language server that formats this".into(),
         }
     }
 
