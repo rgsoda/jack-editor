@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 43: formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 44: running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -136,6 +136,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:bd` `:bd!` | close this buffer; `!` throws away unsaved changes. Its windows move to the buffer before it, and closing the last leaves an empty one |
 | `:lsp` | which language servers are running, and this buffer's |
 | `:fmt` `:'<,'>fmt` | format the buffer with what the server formats with — rustfmt, gofmt — or just the lines a range names |
+| `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
+| `:sh` | a shell; `exit` comes back |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
@@ -1053,6 +1055,38 @@ rust-analyzer runs `cargo check`. Quitting stops it.
 Not yet: rename, code actions, references. Each of these is one request and an
 answer to draw, on top of what is here.
 
+## Handing the terminal over
+
+`:!cmd` runs a command with the whole terminal given to it, and `:sh` gives it
+a shell. The whole terminal means the whole terminal: raw mode off, off the
+alternate screen, and the key reader told to stop reading. `:!lazygit` is the
+reason this exists, and anything less than all three leaves a full-screen
+program with half a keyboard and a screen jack is still drawing on.
+
+That last part is the only interesting bit. Keys are read on a thread of their
+own so the run loop can wait on background work at the same time, and a thread
+asleep inside `event::read` cannot be told anything - it wakes when a key
+arrives, and that key is gone. Two processes reading one terminal share the
+keystrokes out between them, which to the other program looks like a keyboard
+that drops every other key. So the reader polls, on a wait long enough that an
+idle editor is still an idle process, and stopping it is something the run loop
+can wait on rather than hope about: the reader says when it has actually
+stopped, and the program starts after that.
+
+Coming back: any key, not `enter`. Whether `enter` even arrives as a newline
+depends on how the terminal was set up before jack started, and reading a line
+needs the terminal's own line editing, which is the thing raw mode is not.
+
+Then whatever it did to the files that are open here. A buffer with nothing to
+lose is reloaded - that is what makes `:!git checkout` or a rebase in lazygit
+show up without a thought - and a buffer with unsaved changes is named rather
+than overwritten, leaving `:e!` to you. The screen's record of what is on the
+terminal is thrown away too, because the other program drew all over it.
+
+A config file does not get to do this. It is for settings, a line in one that
+runs a program at startup is a surprise nobody wants, and there is no terminal
+to hand over at that point anyway.
+
 ## Formatting
 
 `:fmt` hands the buffer to whatever the server formats with - rustfmt through
@@ -1470,6 +1504,8 @@ was at first:
   cursor, not move it.
 - Bracketed paste, so a multi-line paste is one transaction and does not
   auto-indent itself into a staircase.
+- `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
+  kind. `:sh` is the same thing from the other end and needs nothing.
 - More languages. Cross-language injection (JS in HTML, SQL in strings) is the
   same code path; it needs grammars registered in `LANGUAGES`.
 - Caching injected parses so scrolling a macro-heavy file does not reparse.

@@ -307,6 +307,10 @@ pub struct Editor {
     pub dog: Dog,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
+    /// A command line the run loop should hand the terminal to. The editor
+    /// does not own the terminal - the renderer does - so `:!` leaves the
+    /// command here rather than running it.
+    pub shell: Option<String>,
     /// An escape sequence the run loop should write out with the next frame.
     /// A copy with no clipboard helper to run leaves an OSC 52 here, because
     /// the editor does not own stdout and the renderer does.
@@ -417,6 +421,7 @@ impl Editor {
             jumps: Jumps::default(),
             completion: None,
             info: None,
+            shell: None,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -909,6 +914,14 @@ impl Editor {
             return;
         }
 
+        // `:!cmd` - a shell command, with the terminal handed over to it. The
+        // whole rest of the line, quotes, pipes and all: it goes to a shell,
+        // which is better at reading it than anything here would be.
+        if let Some(command) = line.strip_prefix('!') {
+            self.run_shell(command.trim());
+            return;
+        }
+
         // A range in front of a command that takes one. Only `:fmt` does, so
         // far, and a bare `:fmt` is the whole buffer rather than the line the
         // cursor is on - `range` cannot tell "no range" from "this line", so
@@ -963,6 +976,7 @@ impl Editor {
             ("on" | "only", _) => self.only_window(),
             ("bd" | "bdelete", _) => self.close_buffer(force),
             ("lsp", _) => self.lsp_report(),
+            ("sh" | "shell", _) => self.run_shell(""),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
                 if let Err(err) = self.open_file(path) {
@@ -974,6 +988,61 @@ impl Editor {
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
         }
+    }
+
+    /// `:!cmd`, and `:sh` for a shell of your own. The terminal goes to it
+    /// whole - full-screen programs work, which is the point: `:!lazygit` is
+    /// the reason this exists.
+    ///
+    /// An empty command means the shell itself, and `exit` comes back here.
+    fn run_shell(&mut self, command: &str) {
+        // A config file is for settings. A line in one that runs a program at
+        // startup is a surprise nobody wants, and there is no terminal to hand
+        // over at that point anyway.
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        self.shell = Some(command.to_string());
+    }
+
+    /// After another program has had the terminal: whatever it did to the
+    /// files that are open here. The buffers with nothing to lose are reloaded
+    /// (that is what makes `:!git checkout`, or a rebase in lazygit, show up)
+    /// and the ones with unsaved changes are named rather than overwritten.
+    pub fn reload_changed_files(&mut self) {
+        let (mut reloaded, mut conflicts) = (Vec::new(), Vec::new());
+        for index in 0..self.views.len() {
+            if !self.views[index].doc.changed_on_disk() {
+                continue;
+            }
+            let name = self.views[index].doc.display_name().to_string();
+            if self.views[index].is_modified() {
+                conflicts.push(name);
+                continue;
+            }
+            let view = &mut self.views[index];
+            if view.doc.reload().is_ok() {
+                view.touch();
+                view.indent = crate::indent::detect(&view.doc);
+                reloaded.push(name);
+            }
+        }
+        self.clamp_cursor();
+
+        let say = |what: &str, names: Vec<String>| match names.len() {
+            0 => String::new(),
+            1 => format!("{} {what}", names[0]),
+            _ => format!("{} files {what}", names.len()),
+        };
+        let parts: Vec<String> = [
+            say("reloaded", reloaded),
+            say("changed on disk - :e! to reload", conflicts),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+        self.message = parts.join("; ");
     }
 
     /// `:fmt` - hand the buffer to whatever the language server formats with.
@@ -4163,6 +4232,61 @@ mod tests {
         e.write(None, true);
         assert!(e.message.starts_with("wrote"), "{}", e.message);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine original\n");
+    }
+
+    #[test]
+    fn a_bang_leaves_the_command_for_the_run_loop() {
+        let mut e = Editor::scratch();
+        e.run_command("!git status --short");
+        assert_eq!(e.shell.as_deref(), Some("git status --short"));
+
+        // `:sh` is the same thing with nothing to run: the shell itself.
+        e.shell = None;
+        e.run_command("sh");
+        assert_eq!(e.shell.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_config_file_does_not_get_to_run_programs() {
+        let mut e = Editor::scratch();
+        e.from_config = true;
+        e.run_command("!rm -rf /");
+        assert_eq!(e.shell, None);
+        assert_eq!(e.message, "not from a config file");
+    }
+
+    #[test]
+    fn what_another_program_changed_is_read_back_in() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "before\n");
+        let two = write_file(&dir, "two.txt", "mine\n");
+        let mut e = Editor::open(&[one.clone(), two.clone()]).unwrap();
+
+        // The second buffer has unsaved changes; the first has none.
+        e.switch_to(1);
+        e.set_mode(Mode::Insert);
+        e.insert("typed ");
+        e.set_mode(Mode::Normal);
+
+        // Something else - a checkout, a formatter - rewrites both files.
+        std::fs::write(&one, "after\n").unwrap();
+        std::fs::write(&two, "theirs\n").unwrap();
+        e.reload_changed_files();
+
+        assert_eq!(e.views()[0].doc.text.to_string(), "after\n", "nothing to lose");
+        assert_eq!(e.views()[1].doc.text.to_string(), "typed mine\n", "not overwritten");
+        assert!(e.message.contains("one.txt reloaded"), "{}", e.message);
+        assert!(e.message.contains("two.txt changed on disk"), "{}", e.message);
+    }
+
+    #[test]
+    fn nothing_changed_underneath_is_nothing_to_say() {
+        let dir = tempdir();
+        let path = write_file(&dir, "quiet.txt", "as it was\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.reload_changed_files();
+        assert_eq!(e.message, "");
+        assert_eq!(e.view().doc.text.to_string(), "as it was\n");
     }
 
     #[test]

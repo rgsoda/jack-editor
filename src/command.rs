@@ -38,6 +38,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "bdelete", argument: Argument::None },
     Command { name: "lsp", argument: Argument::None },
     Command { name: "format", argument: Argument::None },
+    Command { name: "shell", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
     Command { name: "config", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
@@ -288,6 +289,7 @@ fn argument_for(name: &str) -> Argument {
         "vs" => "vsplit",
         "noh" => "nohlsearch",
         "fmt" => "format",
+        "sh" => "shell",
         other => other,
     };
     COMMANDS

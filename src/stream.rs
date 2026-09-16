@@ -58,11 +58,70 @@ pub fn channels() -> (Sender<Message>, Receiver<Message>) {
     channel()
 }
 
+/// How long the reader waits for a key before looking up to see whether it is
+/// still the one reading the terminal, and how long it sleeps between looks
+/// once it is not.
+const WAITING: std::time::Duration = std::time::Duration::from_millis(200);
+const RESTING: std::time::Duration = std::time::Duration::from_millis(10);
+/// How long the run loop will wait for the reader to let go of the keyboard.
+/// Past this something is wrong, and running the program with jack still
+/// reading is better than not running it at all.
+const HANDOVER: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether the editor is the one reading the keyboard. It is not, while
+/// another program has the terminal: `:!lazygit` and the like.
+#[derive(Default)]
+pub struct Input {
+    paused: std::sync::atomic::AtomicBool,
+    /// Set by the reader once it has actually stopped, which is what makes
+    /// `pause` something you can wait on rather than something you hope about.
+    resting: std::sync::atomic::AtomicBool,
+}
+
+impl Input {
+    pub fn new() -> Arc<Input> {
+        Arc::new(Input::default())
+    }
+
+    /// Stop reading the keyboard, and wait until that has taken effect.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        let until = std::time::Instant::now() + HANDOVER;
+        while !self.resting.load(Ordering::Relaxed) && std::time::Instant::now() < until {
+            thread::sleep(RESTING);
+        }
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+    }
+}
+
 /// Read the terminal forever on its own thread. Blocking here rather than in
 /// the run loop is what lets the loop wait on background work too.
-pub fn spawn_input(tx: Sender<Message>) {
+pub fn spawn_input(tx: Sender<Message>, input: Arc<Input>) {
     thread::spawn(move || {
         loop {
+            // Handing the terminal to another program means jack has to stop
+            // reading it: two processes reading one tty share the keystrokes
+            // out between them, which for the other program looks like a
+            // keyboard that drops every other key.
+            if input.paused.load(Ordering::Relaxed) {
+                input.resting.store(true, Ordering::Relaxed);
+                thread::sleep(RESTING);
+                continue;
+            }
+            input.resting.store(false, Ordering::Relaxed);
+            // And that is why this polls rather than blocking in `read`: a
+            // thread asleep inside `event::read` cannot be told anything. The
+            // wait is long enough that an idle editor is still an idle
+            // process, and the cost of it is only ever paid once, when the
+            // terminal is being handed over.
+            match event::poll(WAITING) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => return,
+            }
             let message = match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Message::Key(key),
                 Ok(Event::Resize(..)) => Message::Resize,

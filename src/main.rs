@@ -26,6 +26,7 @@ mod window;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::{execute, queue};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use std::io::{self, Write};
@@ -147,8 +148,9 @@ fn main() -> Result<()> {
     }
 
     let _guard = TerminalGuard::enter()?;
-    stream::spawn_input(tx);
-    run(&mut editor, rx)
+    let input = stream::Input::new();
+    stream::spawn_input(tx, input.clone());
+    run(&mut editor, rx, &input)
 }
 
 /// How long a pause in typing means the dog has stopped running. Long enough
@@ -156,7 +158,7 @@ fn main() -> Result<()> {
 /// are thinking.
 const DOG_REST: Duration = Duration::from_millis(700);
 
-fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
+fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
     let mut keys = Keys::default();
@@ -165,6 +167,17 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
     let mut shown_mode = None;
 
     loop {
+        // `:!cmd` - the terminal goes to another program, and comes back when
+        // it is done. Before the frame, because there is no sense drawing one
+        // onto a screen that is about to be handed away.
+        if let Some(command) = editor.shell.take() {
+            hand_over(editor, &command, input)?;
+            // The other program drew all over the terminal, and the screen's
+            // record of what is on it is now fiction.
+            screen = screen::Screen::new();
+            shown_mode = None;
+        }
+
         let (cols, rows) = terminal::size()?;
         let (cols, rows) = (cols.max(1) as usize, rows.max(2) as usize);
         // One row goes to the status line, and one to the buffer list when it
@@ -272,6 +285,60 @@ fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
             editor.stream_items(streamed_token, streamed, streamed_done);
         }
     }
+}
+
+/// Give the terminal to another program, wait for it, and take it back.
+///
+/// The whole terminal: raw mode off, off the alternate screen, and the reader
+/// thread told to stop reading so the program gets every key it is sent.
+/// Anything less and a full-screen program - which is what this is for - gets
+/// half a keyboard and a screen jack is still drawing on.
+fn hand_over(editor: &mut Editor, command: &str, input: &stream::Input) -> Result<()> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    input.pause();
+    restore();
+
+    let mut out = io::stdout();
+    let status = match command.is_empty() {
+        // `:sh`: a shell of your own, and `exit` comes back here.
+        true => {
+            let _ = writeln!(out, "{shell}  (exit to come back)\r");
+            std::process::Command::new(&shell).status()
+        }
+        false => {
+            let _ = writeln!(out, ":!{command}\r");
+            std::process::Command::new(&shell).arg("-c").arg(command).status()
+        }
+    };
+    let said = match status {
+        Ok(status) if status.success() => String::new(),
+        Ok(status) => match status.code() {
+            Some(code) => format!("[exit {code}] "),
+            None => "[killed] ".to_string(),
+        },
+        Err(err) => format!("[{err}] "),
+    };
+
+    // The pause before coming back, so whatever the program printed can be
+    // read. A full-screen program leaves nothing to read, but it is not worth
+    // guessing which sort this was.
+    let _ = write!(out, "\n{said}[any key to return to jack] ");
+    let _ = out.flush();
+    // In raw mode, and a key rather than a line: a line would need the
+    // terminal's own line editing, which is exactly what raw mode is not, and
+    // whether `enter` even arrives as a newline depends on how the terminal
+    // was set up before jack started.
+    terminal::enable_raw_mode()?;
+    while let Ok(event) = event::read() {
+        if matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press) {
+            break;
+        }
+    }
+    execute!(out, EnterAlternateScreen)?;
+    input.resume();
+    // What it did to the files that are open here.
+    editor.reload_changed_files();
+    Ok(())
 }
 
 fn cursor_style(mode: Mode) -> SetCursorStyle {
