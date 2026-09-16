@@ -291,6 +291,9 @@ pub struct Editor {
     pub autocomplete: usize,
     /// One step of indentation: how wide, and tabs or spaces.
     pub indent: Indent,
+    /// True while a config file is being read, so its `set` lines count as
+    /// defaults rather than as overriding what each file said about itself.
+    from_config: bool,
     /// Draw the status line with Nerd Font glyphs. Off is plain ASCII, for a
     /// terminal whose font has not been patched.
     pub glyphs: bool,
@@ -398,6 +401,7 @@ impl Editor {
             autocomplete: DEFAULT_AUTOCOMPLETE,
             dismissed: None,
             indent: Indent { width: TAB_WIDTH, tabs: true },
+            from_config: false,
             quit: None,
             signs_enabled: true,
             signs_token: 0,
@@ -865,6 +869,11 @@ impl Editor {
     /// had anything to say, because the line after it would overwrite the
     /// complaint in the status line before anyone saw it.
     pub fn apply_config(&mut self, text: &str) {
+        // A config file says what to do when the file has nothing to say, so
+        // its `set expandtab` is a default rather than an instruction to
+        // ignore what was read out of the files already open. A `:set` typed
+        // by hand is the opposite, and still wins.
+        self.from_config = true;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim().trim_start_matches(':');
             if line.is_empty() || line.starts_with('#') {
@@ -873,9 +882,10 @@ impl Editor {
             self.run_command(line);
             if !self.message.is_empty() {
                 self.message = format!("init line {}: {}", number + 1, self.message);
-                return;
+                break;
             }
         }
+        self.from_config = false;
     }
 
     pub fn run_command(&mut self, line: &str) {
@@ -1088,12 +1098,32 @@ impl Editor {
         }
     }
 
+    /// What to indent this buffer with: what the file itself uses, and the
+    /// configured default when it uses nothing - or when a `:set` has since
+    /// overruled it, which is what typing one is for.
+    pub fn indent(&self) -> Indent {
+        self.view().indent.unwrap_or(self.indent)
+    }
+
+    /// A `:set` that names an indent option means it for every buffer, so what
+    /// was read out of the files stops counting. Reopening a file reads it
+    /// again, which is the way back.
+    fn override_detected_indent(&mut self) {
+        if self.from_config {
+            return;
+        }
+        for view in self.views.iter_mut() {
+            view.indent = None;
+        }
+    }
+
     fn set_option(&mut self, option: &str) {
         // Options that take a value: `:set shiftwidth=2`.
         if let Some((name, value)) = option.split_once('=') {
             match (name, value.parse::<usize>()) {
                 ("shiftwidth" | "sw", Ok(width)) if width > 0 && width <= 16 => {
                     self.indent.width = width;
+                    self.override_detected_indent();
                 }
                 ("autocomplete" | "ac", Ok(chars)) if chars <= 16 => {
                     self.autocomplete = chars;
@@ -1132,8 +1162,14 @@ impl Editor {
             "nolsp" => self.lsp_enabled = false,
             "autocomplete" | "ac" => self.autocomplete = DEFAULT_AUTOCOMPLETE,
             "noautocomplete" | "noac" => self.autocomplete = 0,
-            "expandtab" | "et" => self.indent.tabs = false,
-            "noexpandtab" | "noet" => self.indent.tabs = true,
+            "expandtab" | "et" => {
+                self.indent.tabs = false;
+                self.override_detected_indent();
+            }
+            "noexpandtab" | "noet" => {
+                self.indent.tabs = true;
+                self.override_detected_indent();
+            }
             "number" | "nu" => self.numbers = Numbers::Absolute,
             "nonumber" | "nonu" => self.numbers = Numbers::Off,
             "relativenumber" | "rnu" => self.numbers = Numbers::Relative,
@@ -1152,16 +1188,23 @@ impl Editor {
                 self.view_mut().signs.clear();
             }
             "" => {
+                // The indent reported is the one this buffer is being edited
+                // with, which is the file's own where it had one to give.
+                let indent = self.indent();
+                let read = match self.view().indent.is_some() {
+                    true => " (read from the file)",
+                    false => "",
+                };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={} autoindent={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
-                    self.indent.width,
-                    !self.indent.tabs,
+                    indent.width,
+                    !indent.tabs,
                     self.autoindent,
                     self.emacs,
                     self.lsp_enabled,
@@ -2062,7 +2105,7 @@ impl Editor {
     /// `>>` and `<<`, `>` over a motion, `>` in visual mode: move lines
     /// sideways by whole steps of indentation.
     pub fn shift_lines(&mut self, out: bool, first: usize, last: usize, levels: usize) {
-        let indent = self.indent;
+        let indent = self.indent();
         self.view_mut().shift_lines(first, last, out, levels, indent);
     }
 
@@ -2096,7 +2139,7 @@ impl Editor {
 
     /// `=`: put lines where the grammar says they belong.
     pub fn reindent_lines(&mut self, first: usize, last: usize) {
-        let indent = self.indent;
+        let indent = self.indent();
         let last = last.min(self.view().last_line());
         let mut targets = Vec::new();
         for line in first..=last {
@@ -2159,7 +2202,7 @@ impl Editor {
         if !self.autoindent || !self.view().has_indent_rules() {
             return;
         }
-        let indent = self.indent;
+        let indent = self.indent();
         let (line, _) = self.view().cursor_coords();
         let column = match self.view().indent_level(line) {
             Some(level) => level * indent.width,
@@ -2185,10 +2228,10 @@ impl Editor {
         let leading = previous.chars().take_while(|c| *c == ' ' || *c == '\t').count();
         let mut column = view::display_col(&previous, leading);
         if previous.trim_end().ends_with(['{', '[', '(']) {
-            column += self.indent.width;
+            column += self.indent().width;
         }
         if view.doc.line_str(line).trim_start().starts_with(['}', ']', ')']) {
-            column = column.saturating_sub(self.indent.width);
+            column = column.saturating_sub(self.indent().width);
         }
         Some(column)
     }
@@ -2266,7 +2309,7 @@ impl Editor {
     /// `tab` in insert mode: a literal tab, or spaces to the next stop.
     pub fn insert_tab(&mut self) {
         let at = self.view().cursor_display_col();
-        let text = self.indent.tab(at);
+        let text = self.indent().tab(at);
         self.insert(&text);
     }
 
@@ -2275,7 +2318,7 @@ impl Editor {
     pub fn shift_current_line(&mut self, out: bool) {
         let (line, column) = self.view().cursor_coords();
         let before = self.view().doc.line_len_chars(line);
-        let indent = self.indent;
+        let indent = self.indent();
         self.view_mut().shift_lines(line, line, out, 1, indent);
         // The cursor keeps its place in the text rather than its column.
         let after = self.view().doc.line_len_chars(line);
@@ -2491,7 +2534,11 @@ impl Editor {
         let name = self.view().doc.display_name().to_string();
         match self.view_mut().doc.reload() {
             Ok(()) => {
-                self.view_mut().touch();
+                let view = self.view_mut();
+                view.touch();
+                // The file on disk is a different file as far as its
+                // indentation is concerned.
+                view.indent = crate::indent::detect(&view.doc);
                 self.message = format!("reloaded {name}");
             }
             Err(err) => self.message = format!("{err:#}"),
@@ -3009,6 +3056,75 @@ mod tests {
         let mut e = Editor::scratch();
         e.view_mut().doc.text = Rope::from_str(text);
         e
+    }
+
+    /// A view built the way opening a file builds one, so the indentation is
+    /// read from the text rather than left at the default.
+    fn opened(text: &str) -> Editor {
+        let mut doc = Document::scratch();
+        doc.text = Rope::from_str(text);
+        Editor::with_views(vec![View::new(doc)])
+    }
+
+    #[test]
+    fn a_file_indented_with_spaces_is_edited_with_spaces() {
+        // The default is tabs, and this file says otherwise: four spaces.
+        let mut e = opened("def f():\n    a = 1\n    b = 2\n");
+        assert_eq!(e.indent.tabs, true, "the default has not moved");
+        assert_eq!(e.indent().tabs, false, "the file won");
+        assert_eq!(e.indent().width, 4);
+
+        // Which is what an indent actually puts there - the bug that started
+        // this: a tab in a file of spaces is an error in Python, not a style.
+        e.goto_line(2);
+        e.shift_count(true, 1);
+        assert_eq!(e.view().doc.line_str(2).to_string(), "        b = 2");
+        assert!(!e.view().doc.line_str(2).contains('\t'));
+    }
+
+    #[test]
+    fn a_file_of_tabs_keeps_its_tabs_whatever_the_config_says() {
+        let mut e = opened("fn a() {\n\tlet x = 1;\n\tlet y = 2;\n}\n");
+        e.run_command("set expandtab");
+        // A `:set` typed is meant, and takes this buffer with it.
+        assert_eq!(e.indent().tabs, false);
+
+        let mut e = opened("fn a() {\n\tlet x = 1;\n\tlet y = 2;\n}\n");
+        assert_eq!(e.indent().tabs, true);
+        e.goto_line(2);
+        e.shift_count(true, 1);
+        assert_eq!(e.view().doc.line_str(2).to_string(), "\t\tlet y = 2;");
+    }
+
+    #[test]
+    fn a_file_with_no_indentation_leaves_the_default_alone() {
+        let mut e = opened("one\ntwo\n");
+        assert_eq!(e.view().indent.is_none(), true);
+        assert_eq!(e.indent().tabs, e.indent.tabs);
+
+        // And the report says where the numbers came from.
+        e.run_command("set");
+        assert!(!e.message.contains("read from the file"), "{}", e.message);
+        let mut e = opened("def f():\n    a = 1\n");
+        e.run_command("set");
+        assert!(e.message.contains("read from the file"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_config_file_sets_the_default_but_does_not_overrule_the_file() {
+        // The generated config spells out every setting, `set noexpandtab`
+        // among them. Reading it must not throw away what the open files said
+        // about themselves, or detection would never survive startup.
+        let mut e = opened("def f():\n    a = 1\n");
+        e.apply_config("set noexpandtab\nset shiftwidth=8\n");
+        assert_eq!(e.indent.tabs, true, "the default moved");
+        assert_eq!(e.indent().tabs, false, "the file still wins");
+        assert_eq!(e.indent().width, 4);
+
+        // The same words typed are meant, and take the buffer with them.
+        e.run_command("set noexpandtab");
+        assert_eq!(e.indent().tabs, true);
+        assert_eq!(e.indent().width, 8, "and the config's width now applies");
     }
 
     #[test]

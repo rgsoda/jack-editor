@@ -150,6 +150,10 @@ pub struct View {
     /// Per-line git signs, and the revision they were computed for.
     pub signs: HashMap<usize, Sign>,
     pub signs_revision: Option<(usize, usize)>,
+    /// What this file indents with, read from the file itself when it was
+    /// opened. `None` when it had nothing to say, and the configured default
+    /// is what to use.
+    pub indent: Option<Indent>,
     /// Every change made since another window started showing this buffer,
     /// as (position, chars removed, chars inserted), for carrying that
     /// window's cursor through edits made here. Kept only while `watched`:
@@ -192,6 +196,7 @@ pub struct Diagnostic {
 impl View {
     pub fn new(doc: Document) -> Self {
         View {
+            indent: crate::indent::detect(&doc),
             log: Vec::new(),
             log_base: 0,
             watched: false,

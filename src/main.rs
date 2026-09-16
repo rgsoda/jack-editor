@@ -8,6 +8,7 @@ mod history;
 mod jump;
 mod keys;
 mod lsp;
+mod indent;
 mod object;
 mod picker;
 mod register;

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 39: closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 40: indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -145,7 +145,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set lsp` | `nolsp`: start language servers for files that have one |
-| `:set shiftwidth=4` | `sw`: how wide one indent step is |
+| `:set shiftwidth=4` | `sw`: how wide one indent step is (a file that is already indented wins) |
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
@@ -877,6 +877,20 @@ because that is what `tab` already inserted. With `expandtab` both the indent
 commands and `tab` itself switch to spaces. Where a tab cannot express the
 width (spaces set to 2 with tabs on, say) the remainder is spaces, which is the
 same mixture vim ends up with.
+
+But the setting is only the fallback, because **a file that is already indented
+says what it wants and is followed**. Opening one reads it — tabs against
+spaces, and for spaces the commonest step from one line to the next indented
+one — and every indent in that buffer is made of what it found. A tab put into
+a file of spaces is not a matter of style in Python: it is a syntax error, and
+no configuration can be right for both that file and the one in the next
+window.
+
+What was read wins over the config file, because a config file is an answer for
+files that have nothing to say. Typing `:set expandtab` or `:set shiftwidth=2`
+while editing wins over both — that is what typing one is for — and reopening
+the file reads it again. `:set` with no argument says which you are getting,
+and marks it `(read from the file)` when the file is what decided.
 
 Two details worth stating because they are easy to get wrong and the tests pin
 them down. Blank lines are left alone — indenting a paragraph should not leave

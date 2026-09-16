@@ -104,12 +104,17 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "shiftwidth",
         kind: Kind::Value(&["2", "4", "8"], "4"),
-        about: "How wide one step of indentation is, 1 to 16.",
+        about: "How wide one step of indentation is, 1 to 16. A file that is \
+                already indented is followed instead; this is what to do with \
+                one that is not.",
     },
     Setting {
         name: "expandtab",
         kind: Kind::Flag(false),
-        about: "Indent with spaces rather than tabs.",
+        about: "Indent with spaces rather than tabs. A file that already \
+                indents one way or the other is followed instead, so this is \
+                the answer for a new file. Typing `:set expandtab` while \
+                editing overrules what was read.",
     },
     Setting {
         name: "autoindent",
