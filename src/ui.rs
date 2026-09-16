@@ -431,11 +431,23 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
             break;
         }
         let index = picker.scroll() + row;
-        let is_cursor = index == picker.cursor();
+        // A row with nothing on it is not the selected row, whatever the
+        // cursor says: an empty list still has a cursor at 0, and highlighting
+        // that row paints a lit-up bar with a lone `>` on it - which is what a
+        // picker looks like for the moment between opening and the walk
+        // arriving, and for as long as a query matches nothing.
+        let found = picker.matches().get(index);
+        let is_cursor = found.is_some() && index == picker.cursor();
         let row_style = if is_cursor { selected } else { base };
 
         let mut x = put_str(surface, 0, y, if is_cursor { " > " } else { "   " }, row_style, width);
-        if let Some(m) = picker.matches().get(index) {
+        // Nothing matched, and nothing else is coming: say so, rather than
+        // leaving an empty box to be read as a broken one.
+        if row == 0 && picker.matches().is_empty() && !picker.query.is_empty() && picker.is_complete()
+        {
+            x = put_str(surface, x, y, "no matches", base.patch(detail), width);
+        }
+        if let Some(m) = found {
             let item = picker.item(m);
             // The detail is right-aligned and the text truncated to fit before
             // it, so a long grep hit cannot push the file name it came from
@@ -982,6 +994,47 @@ mod tests {
         let moved: Vec<char> = status_row(&editor, &keys).chars().collect();
         let now = moved.iter().position(|c| *c == status::DOG_RUNNING).unwrap();
         assert_eq!(now, stopped + 1);
+    }
+
+    #[test]
+    fn an_empty_picker_has_no_selected_row_to_light_up() {
+        let mut editor = editor_with_lines(20);
+        // What `<space>f` looks like for the moment before the walk arrives:
+        // open, and with nothing in it yet.
+        editor.picker = Some(crate::picker::Picker::streaming(crate::picker::Source::Files));
+        let keys = Keys::default();
+        let rows = editor.area_rows();
+        let panel = crate::picker::Picker::panel_height(rows);
+        let first = editor.top() + rows - panel + 1;
+
+        let row = row_text(&editor, &keys, first);
+        assert!(row.trim().is_empty(), "no lone marker on an empty list: {row:?}");
+        let styles = row_backgrounds(&editor, &keys, first);
+        let selected = editor.theme.style("ui.picker.selected").bg;
+        assert!(styles.iter().all(|bg| *bg != selected), "and nothing lit up either");
+    }
+
+    #[test]
+    fn a_query_that_matches_nothing_says_so() {
+        let mut editor = editor_with_lines(20);
+        let items = vec![crate::picker::Item {
+            text: "src/main.rs".into(),
+            detail: String::new(),
+            target: String::new(),
+            id: 0,
+        }];
+        editor.picker = Some(crate::picker::Picker::new(crate::picker::Source::Files, items));
+        for c in "zzz".chars() {
+            editor.picker_input(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+
+        let keys = Keys::default();
+        let rows = editor.area_rows();
+        let first = editor.top() + rows - crate::picker::Picker::panel_height(rows) + 1;
+        assert!(row_text(&editor, &keys, first).contains("no matches"));
     }
 
     #[test]
