@@ -1005,7 +1005,7 @@ pub(crate) mod tests {
     fn a_definition_answer_is_read_in_every_shape() {
         let location = json!({ "uri": "file:///a.rs", "range": { "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 9 } } });
         let expected = Location { path: "/a.rs".into(), position: (3, 4) };
-        assert_eq!(locations(&location), [expected.clone()]);
+        assert_eq!(locations(&location), std::slice::from_ref(&expected));
         assert_eq!(locations(&json!([location])), [expected]);
 
         let link = json!([{

@@ -1,0 +1,50 @@
+# The tests, on every push. They run in a second and a half on a laptop and
+# there are five hundred of them, so there is no reason for the only machine
+# that ever runs them to be the one they were written on.
+#
+# No third-party actions and no toolchain to install: the runner ships a Rust
+# stable that is new enough, and `checkout` is the only thing needed to get at
+# the source.
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The grammars are C, compiled by build scripts, and there are ten of
+      # them: a cold build is minutes and a warm one is seconds. Keyed on the
+      # lockfile, so it is thrown away exactly when a dependency changes.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - run: cargo test --locked
+
+      # Some tests ask how long something took - ranking a repository, finding
+      # a definition in a large file - and their bounds are written for a debug
+      # build on a slow machine. A release run is the one that says whether the
+      # editor is actually quick, and it costs a minute.
+      - run: cargo test --locked --release
+
+      # Warnings fail it. A lint that is allowed to accumulate is a lint
+      # nobody reads, and the count was zero when this was written.
+      - run: cargo clippy --locked --all-targets -- -D warnings

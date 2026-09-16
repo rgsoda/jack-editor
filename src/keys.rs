@@ -757,7 +757,6 @@ impl Keys {
             KeyCode::Char('J') => editor.join_visual(),
             KeyCode::Char('z') => {
                 self.pending = Some(Pending::Reveal);
-                return;
             }
             KeyCode::Char('H') => editor.goto_screen_line(Screen::Top, repeat, true),
             KeyCode::Char('M') => editor.goto_screen_line(Screen::Middle, repeat, true),
@@ -900,7 +899,6 @@ impl Keys {
             // `H M L` jump to what is already showing.
             KeyCode::Char('z') if !ctrl => {
                 self.pending = Some(Pending::Reveal);
-                return;
             }
             KeyCode::Char('e') if ctrl => editor.scroll_lines(true, repeat),
             KeyCode::Char('y') if ctrl => editor.scroll_lines(false, repeat),
@@ -919,7 +917,6 @@ impl Keys {
             // character `r` is waiting for.
             KeyCode::Char('r') if !ctrl => {
                 self.pending = Some(Pending::Replace);
-                return;
             }
 
             KeyCode::Char(':') => editor.open_command(),

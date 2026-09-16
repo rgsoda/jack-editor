@@ -206,12 +206,14 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
 
         draw_line(
             surface,
-            row,
-            &text,
-            view.doc.line_to_byte(line),
-            line_start,
-            sel,
-            here,
+            Row {
+                y: row,
+                text: &text,
+                byte: view.doc.line_to_byte(line),
+                start: line_start,
+                selection: sel,
+                cursorline: here,
+            },
             &styling,
         );
 
@@ -515,16 +517,22 @@ fn under(tint: Option<Style>, style: Style) -> Style {
     }
 }
 
-fn draw_line(
-    surface: &mut Surface,
-    row: usize,
-    text: &str,
-    line_byte: usize,
-    line_start: usize,
-    sel: Option<(usize, usize)>,
+/// The one line being drawn: which row of the screen it is on, its text, and
+/// where that text sits in the buffer - in bytes for the highlighter, in chars
+/// for everything else.
+struct Row<'a> {
+    y: usize,
+    text: &'a str,
+    byte: usize,
+    start: usize,
+    /// The selection clipped to this line, as char offsets within it.
+    selection: Option<(usize, usize)>,
+    /// The cursor line's tint, when this is the cursor's line.
     cursorline: Option<Style>,
-    styling: &LineStyling,
-) {
+}
+
+fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
+    let Row { y: row, text, byte: line_byte, start: line_start, selection: sel, cursorline } = line;
     let scroll_left = styling.scroll_left;
     // Columns here are the text's own, with the gutter added only when a cell
     // is actually written.

@@ -3325,8 +3325,8 @@ mod tests {
     fn a_file_indented_with_spaces_is_edited_with_spaces() {
         // The default is tabs, and this file says otherwise: four spaces.
         let mut e = opened("def f():\n    a = 1\n    b = 2\n");
-        assert_eq!(e.indent.tabs, true, "the default has not moved");
-        assert_eq!(e.indent().tabs, false, "the file won");
+        assert!(e.indent.tabs, "the default has not moved");
+        assert!(!e.indent().tabs, "the file won");
         assert_eq!(e.indent().width, 4);
 
         // Which is what an indent actually puts there - the bug that started
@@ -3342,10 +3342,10 @@ mod tests {
         let mut e = opened("fn a() {\n\tlet x = 1;\n\tlet y = 2;\n}\n");
         e.run_command("set expandtab");
         // A `:set` typed is meant, and takes this buffer with it.
-        assert_eq!(e.indent().tabs, false);
+        assert!(!e.indent().tabs);
 
         let mut e = opened("fn a() {\n\tlet x = 1;\n\tlet y = 2;\n}\n");
-        assert_eq!(e.indent().tabs, true);
+        assert!(e.indent().tabs);
         e.goto_line(2);
         e.shift_count(true, 1);
         assert_eq!(e.view().doc.line_str(2).to_string(), "\t\tlet y = 2;");
@@ -3354,7 +3354,7 @@ mod tests {
     #[test]
     fn a_file_with_no_indentation_leaves_the_default_alone() {
         let mut e = opened("one\ntwo\n");
-        assert_eq!(e.view().indent.is_none(), true);
+        assert!(e.view().indent.is_none());
         assert_eq!(e.indent().tabs, e.indent.tabs);
 
         // And the report says where the numbers came from.
@@ -3372,13 +3372,13 @@ mod tests {
         // about themselves, or detection would never survive startup.
         let mut e = opened("def f():\n    a = 1\n");
         e.apply_config("set noexpandtab\nset shiftwidth=8\n");
-        assert_eq!(e.indent.tabs, true, "the default moved");
-        assert_eq!(e.indent().tabs, false, "the file still wins");
+        assert!(e.indent.tabs, "the default moved");
+        assert!(!e.indent().tabs, "the file still wins");
         assert_eq!(e.indent().width, 4);
 
         // The same words typed are meant, and take the buffer with them.
         e.run_command("set noexpandtab");
-        assert_eq!(e.indent().tabs, true);
+        assert!(e.indent().tabs);
         assert_eq!(e.indent().width, 8, "and the config's width now applies");
     }
 
