@@ -30,6 +30,9 @@
 "ui.statusline.file" = { fg = "#f8f8f2", bg = "#6272a4" }
 "ui.statusline.info" = { fg = "#f8f8f2", bg = "#44475a" }
 "ui.statusline.position" = { fg = "#282a36", bg = "#bd93f9", bold = true }
+# The windows you are not typing in, and the line between side-by-side ones.
+"ui.statusline.inactive" = { fg = "#6272a4", bg = "#282a36" }
+"ui.window.separator" = { fg = "#6272a4" }
 "ui.selection"     = { reverse = true }
 "ui.eof"           = "dark_grey"
 "ui.mode.normal"   = { fg = "black", bg = "blue", bold = true }

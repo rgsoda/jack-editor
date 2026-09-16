@@ -19,6 +19,7 @@ mod syntax;
 mod theme;
 mod ui;
 mod view;
+mod window;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};

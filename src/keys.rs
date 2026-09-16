@@ -4,6 +4,7 @@ use crate::editor::{Editor, Mode};
 use crate::object;
 use crate::register::SYSTEM;
 use crate::view::{Find, Move, Reveal, Screen, Selection};
+use crate::window::Direction;
 
 /// One line of the help. These are written down rather than derived from the
 /// match arms below, so this is a promise the tests have to keep: every key
@@ -73,6 +74,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "gv", what: "select what was selected last", mode: "normal" },
     Binding { keys: "shift+arrows", what: "select, entering visual mode", mode: "normal" },
     Binding { keys: "gn gp", what: "next, previous buffer", mode: "normal" },
+    Binding { keys: "^w s ^w v", what: "split the window: below, beside", mode: "normal" },
+    Binding { keys: "^w h j k l", what: "go to the window left, below, above, right", mode: "normal" },
+    Binding { keys: "^w w ^w W", what: "next, previous window", mode: "normal" },
+    Binding { keys: "^w c ^w q", what: "close the window (q quits the last)", mode: "normal" },
+    Binding { keys: "^w o", what: "close every other window", mode: "normal" },
     Binding { keys: "{n}gn", what: "go to buffer n", mode: "normal" },
 
     Binding { keys: "<space>b", what: "pick a buffer", mode: "normal" },
@@ -121,6 +127,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":w [path] :w!", what: "write, or write over a changed file", mode: "command" },
     Binding { keys: ":q :q! :wq :x", what: "quit, discard changes, write and quit", mode: "command" },
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
+    Binding { keys: ":sp [path] :vs [path]", what: "split: below, beside - this file or another", mode: "command" },
+    Binding { keys: ":close :only", what: "close this window, every other window", mode: "command" },
+    Binding { keys: ":q (windows)", what: "with more than one window, closes this one", mode: "command" },
     Binding { keys: ":s/old/new/", what: "substitute on this line (g: every match)", mode: "command" },
     Binding { keys: ":%s/old/new/g", what: "the whole file ({n},{m}s and '<,'> too)", mode: "command" },
     Binding { keys: ":s//new/", what: "an empty pattern is the last search", mode: "command" },
@@ -148,6 +157,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "esc ^c", what: "close", mode: "picker" },
 ];
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Continue,
     /// `force` is `:q!`: leave even with unsaved changes.
@@ -178,6 +188,8 @@ enum Pending {
     Reveal,
     /// The space leader, waiting for which picker to open.
     Leader,
+    /// `^w`, waiting for what to do with the windows.
+    Window,
     /// The `"` prefix, waiting for the register name.
     Register,
     /// `f`, `F`, `t` or `T`, waiting for the character to look for.
@@ -293,7 +305,11 @@ impl Keys {
         {
             editor.push_clipboard();
         }
-        Action::Continue
+        // `^w q` on the last window is a quit, like `:q`.
+        match editor.quit.take() {
+            Some(force) => Action::Quit { force },
+            None => Action::Continue,
+        }
     }
 
     /// Throw away the half-recorded command: it was not a change, or it was
@@ -422,6 +438,7 @@ impl Keys {
             Some(Pending::Replace) => "r",
             Some(Pending::Reveal) => "z",
             Some(Pending::Leader) => "<space>",
+            Some(Pending::Window) => "^w",
             Some(Pending::Register) => "\"",
             // Both are handled above, and neither is worth a panic in the
             // middle of a redraw if a later one ever isn't.
@@ -516,6 +533,13 @@ impl Keys {
                     },
                     _ => {}
                 }
+                self.finish();
+            }
+            Some(Pending::Window) => {
+                window_command(editor, key);
+                // Moving between windows changes nothing, and `.` must not
+                // take it for a change because the buffer it is in did.
+                self.not_a_change = true;
                 self.finish();
             }
             Some(Pending::Leader) => {
@@ -777,6 +801,11 @@ impl Keys {
 
     fn command(&mut self, editor: &mut Editor, key: KeyEvent, ctrl: bool, count: Option<usize>) {
         let repeat = count.unwrap_or(1);
+        // Before the motions, where `^w` would be read as `w`.
+        if ctrl && key.code == KeyCode::Char('w') {
+            self.pending = Some(Pending::Window);
+            return;
+        }
         if let Some((motion, _)) = motion_for(key.code, ctrl) {
             // Shift with an arrow starts a selection, the way it does in every
             // editor that is not vim. `H` and `L` cannot do this: shift with a
@@ -1051,6 +1080,7 @@ impl Keys {
                 | Pending::Reveal
                 | Pending::Register
                 | Pending::Leader
+                | Pending::Window
                 | Pending::Find { .. }
                 | Pending::Object { .. } => {}
             }
@@ -1128,6 +1158,31 @@ fn operator_text(operator: char) -> String {
     match operator {
         COMMENT => "gc".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// The second key of a `^w`, with or without control still held: vim takes
+/// `^w ^v` for `^w v`, and so does every hand that has not let go yet.
+fn window_command(editor: &mut Editor, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('s') | KeyCode::Char('S') => editor.split_window(false, None),
+        KeyCode::Char('v') => editor.split_window(true, None),
+        KeyCode::Char('h') | KeyCode::Left => editor.focus_direction(Direction::Left),
+        KeyCode::Char('j') | KeyCode::Down => editor.focus_direction(Direction::Down),
+        KeyCode::Char('k') | KeyCode::Up => editor.focus_direction(Direction::Up),
+        KeyCode::Char('l') | KeyCode::Right => editor.focus_direction(Direction::Right),
+        KeyCode::Char('w') => editor.focus_next(true),
+        KeyCode::Char('W') => editor.focus_next(false),
+        KeyCode::Char('c') => {
+            editor.close_window();
+        }
+        KeyCode::Char('q') => {
+            if !(editor.windows_open() > 1 && editor.close_window()) {
+                editor.quit = Some(false);
+            }
+        }
+        KeyCode::Char('o') => editor.only_window(),
+        _ => {}
     }
 }
 
@@ -1949,6 +2004,137 @@ mod tests {
         // that runs off the bottom - column one, not the final character.
         vim.press("}}");
         assert_eq!(vim.cursor(), (2, 1));
+    }
+
+    fn lines(count: usize) -> String {
+        (1..=count).map(|n| format!("line {n}\n")).collect()
+    }
+
+    #[test]
+    fn a_split_shows_the_same_buffer_with_a_cursor_of_its_own() {
+        let mut vim = Vim::new(&lines(50));
+        vim.editor.set_viewport(81, 23);
+        vim.press("5G<C-w>s");
+        assert_eq!(vim.editor.windows_open(), 2);
+        assert_eq!(vim.cursor(), (5, 1), "the new window starts where the old one was");
+        // Each half has its own share of the screen: 24 rows, two status lines.
+        assert_eq!(vim.editor.height, 11);
+
+        vim.press("40G<C-w>k");
+        assert_eq!(vim.cursor(), (5, 1), "the top window kept its place");
+        vim.press("<C-w>j");
+        assert_eq!(vim.cursor(), (40, 1));
+        vim.press("<C-w>w");
+        assert_eq!(vim.cursor(), (5, 1), "and w cycles back round");
+    }
+
+    #[test]
+    fn side_by_side_windows_go_left_and_right() {
+        let mut vim = Vim::new(&lines(10));
+        vim.editor.set_viewport(81, 23);
+        vim.press("<C-w>v");
+        assert_eq!(vim.editor.width, 40);
+        assert_eq!(vim.editor.window_rect(vim.editor.focus()).x, 41, "the new one is on the right");
+        vim.press("3G<C-w>h");
+        assert_eq!(vim.editor.focus(), 0);
+        assert_eq!(vim.cursor(), (1, 1));
+        vim.press("<C-w>l");
+        assert_eq!(vim.cursor(), (3, 1));
+    }
+
+    #[test]
+    fn an_edit_in_one_window_carries_the_others_cursor_along() {
+        let mut vim = Vim::new("a\nb\nc\nd\n");
+        vim.press("3G<C-w>s");
+        // Two new lines above, from the other window.
+        vim.press("ggOone<esc>otwo<esc>");
+        vim.press("<C-w>k");
+        assert_eq!(vim.cursor(), (5, 1), "still on c");
+        let (line, _) = vim.editor.cursor_coords();
+        assert_eq!(vim.editor.view().doc.line_str(line), "c");
+
+        // And deleting the line it was on leaves it where the line was.
+        vim.press("<C-w>jGkdd<C-w>k");
+        assert_eq!(vim.text(), "one\ntwo\na\nb\nd\n");
+        assert_eq!(vim.cursor(), (5, 1));
+    }
+
+    #[test]
+    fn undo_in_one_window_is_the_buffers_undo() {
+        let mut vim = Vim::new("text\n");
+        vim.press("<C-w>vx<C-w>hx");
+        assert_eq!(vim.text(), "xt\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "ext\n", "one command, one undo, whichever window");
+        vim.press("u");
+        assert_eq!(vim.text(), "text\n");
+    }
+
+    #[test]
+    fn closing_windows_and_quitting() {
+        let mut vim = Vim::new(&lines(10));
+        vim.editor.set_viewport(81, 23);
+        vim.press("<C-w>s<C-w>v");
+        assert_eq!(vim.editor.windows_open(), 3);
+
+        vim.press(":q<cr>");
+        assert_eq!(vim.editor.windows_open(), 2, ":q closes a window while there are others");
+        vim.press("<C-w>c");
+        assert_eq!(vim.editor.windows_open(), 1);
+        vim.press("<C-w>c");
+        assert_eq!(vim.editor.message, "the last window cannot be closed");
+
+        vim.press("<C-w>s<C-w>s<C-w>o");
+        assert_eq!(vim.editor.windows_open(), 1);
+        assert_eq!(vim.editor.height, 23, "the one left has the screen back");
+
+        // `^w q` on the last window is a quit.
+        vim.press("<C-w>");
+        let action = vim.keys.handle(&mut vim.editor, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(action, Action::Quit { force: false });
+    }
+
+    #[test]
+    fn a_split_needs_room() {
+        let mut vim = Vim::new("text\n");
+        // Three rows of text and a status line: four rows, and 20 columns.
+        vim.editor.set_viewport(20, 3);
+        vim.press("<C-w>v");
+        assert_eq!(vim.editor.windows_open(), 1);
+        assert_eq!(vim.editor.message, "no room to split");
+        vim.press("<C-w>s");
+        assert_eq!(vim.editor.windows_open(), 2, "two windows of a line and a status line each");
+        vim.press("<C-w>s");
+        assert_eq!(vim.editor.windows_open(), 2);
+    }
+
+    #[test]
+    fn a_command_that_changes_buffer_closes_its_undo_group_where_it_opened_it() {
+        let dir = std::env::temp_dir().join(format!("jack_group_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "abc\n").unwrap();
+        std::fs::write(&b, "xyz\n").unwrap();
+
+        let mut vim = Vim { editor: Editor::open(&[&a, &b]).unwrap(), keys: Keys::default() };
+        // `gn` opens its group on a and finishes on b. `:e` comes back
+        // without a command of that kind, so nothing else closes a's.
+        vim.press("gn");
+        vim.press(&format!(":e {}<cr>", a.display()));
+        vim.press("xx");
+        assert_eq!(vim.text(), "c\n");
+        vim.press("u");
+        assert_eq!(vim.text(), "bc\n", "two commands are still two undos");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn moving_between_windows_is_not_a_change_to_repeat() {
+        let mut vim = Vim::new("abcdef\n");
+        vim.press("x<C-w>v<C-w>w.");
+        assert_eq!(vim.text(), "cdef\n");
+        assert_eq!(vim.keys.pending_text(), "");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use regex::RegexBuilder;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,9 +18,9 @@ use crate::search::{self, Search};
 use crate::substitute;
 use crate::stream::{self, Message, Sign};
 use crate::register::{RegisterValue, Registers, SYSTEM};
-use crate::syntax::Highlights;
 use crate::theme::Theme;
 use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH, View};
+use crate::window::{self, Direction, Layout, Rect, Window};
 
 /// How many characters of a word bring the completion popup up on its own.
 /// Two, because one character narrows a buffer to hundreds of words and three
@@ -247,7 +246,19 @@ impl Mode {
 /// here, so registers survive switching files and undo does not.
 pub struct Editor {
     views: Vec<View>,
+    /// The buffer the focused window shows: always `windows[focus].view`.
     current: usize,
+    /// Every window, focused or not. The focused one's cursor and scroll live
+    /// in its `View`; the rest keep theirs here until they are focused.
+    windows: Vec<Window>,
+    layout: Layout,
+    focus: usize,
+    /// The whole screen below the buffer list: every window, and the status
+    /// line each one has. `width` and `height` are the focused window's share.
+    screen: (usize, usize),
+    /// The buffer an undo group was opened on, so it is closed on the same one
+    /// even when the command in between went to another buffer.
+    grouped_view: Option<usize>,
     pub width: usize,
     /// Text rows only; the status line is not part of this.
     pub height: usize,
@@ -348,6 +359,17 @@ impl Editor {
         Editor {
             views,
             current: 0,
+            windows: vec![Window {
+                view: 0,
+                sel: Selection::point(0),
+                top_char: 0,
+                scroll_left: 0,
+                mark: 0,
+            }],
+            layout: Layout::default(),
+            focus: 0,
+            screen: (80, 25),
+            grouped_view: None,
             width: 80,
             height: 24,
             mode: Mode::default(),
@@ -870,13 +892,27 @@ impl Editor {
         match (name.trim_end_matches('!'), argument) {
             ("w" | "write", "") => self.write(None, force),
             ("w" | "write", path) => self.write(Some(path.into()), force),
-            ("q" | "quit", _) => self.quit = Some(force),
-            ("wq" | "x", _) => {
-                self.write(None, force);
-                if self.message.starts_with("wrote") {
+            // With more than one window these close the window, as in vim;
+            // the buffer stays open, so there is nothing to lose by it.
+            ("q" | "quit", _) => {
+                if !(self.windows.len() > 1 && self.close_window()) {
                     self.quit = Some(force);
                 }
             }
+            ("wq" | "x", _) => {
+                self.write(None, force);
+                if self.message.starts_with("wrote")
+                    && !(self.windows.len() > 1 && self.close_window())
+                {
+                    self.quit = Some(force);
+                }
+            }
+            ("sp" | "split", path) => self.split_window(false, Some(path).filter(|p| !p.is_empty())),
+            ("vs" | "vsplit", path) => self.split_window(true, Some(path).filter(|p| !p.is_empty())),
+            ("clo" | "close", _) => {
+                self.close_window();
+            }
+            ("on" | "only", _) => self.only_window(),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
                 if let Err(err) = self.open_file(path) {
@@ -1296,7 +1332,7 @@ impl Editor {
     /// Route a key to the open picker. The caller has already checked that one
     /// is open.
     pub fn picker_input(&mut self, key: crossterm::event::KeyEvent) {
-        let rows = self.height;
+        let rows = self.area_rows();
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -1392,8 +1428,217 @@ impl Editor {
     pub fn switch_to(&mut self, index: usize) {
         if index < self.views.len() {
             self.current = index;
+            self.windows[self.focus].view = index;
+            self.refresh_watched();
             self.clamp_cursor();
         }
+    }
+
+    // --- windows ------------------------------------------------------
+
+    pub fn windows_open(&self) -> usize {
+        self.windows.len()
+    }
+
+    pub fn focus(&self) -> usize {
+        self.focus
+    }
+
+    /// Every window's rectangle, and the lines between side-by-side ones.
+    pub fn window_rects(&self) -> (Vec<(usize, Rect)>, Vec<Rect>) {
+        let (width, height) = self.screen;
+        self.layout.rects(Rect { x: 0, y: self.top(), width, height })
+    }
+
+    pub fn window_rect(&self, id: usize) -> Rect {
+        let (rects, _) = self.window_rects();
+        rects.into_iter().find(|(window, _)| *window == id).map(|(_, rect)| rect).unwrap_or_default()
+    }
+
+    /// Text rows of the whole screen below the buffer list, less the bottom
+    /// status line: what a picker opens over, whatever the windows are.
+    pub fn area_rows(&self) -> usize {
+        self.screen.1.saturating_sub(1).max(1)
+    }
+
+    /// A window's cursor and scroll: from its buffer when it is the focused
+    /// one, otherwise its own copy, carried through whatever was done to the
+    /// buffer in the meantime.
+    pub fn window_state(&self, id: usize) -> (&View, Selection, usize, usize) {
+        let window = &self.windows[id];
+        let view = &self.views[window.view];
+        match id == self.focus {
+            true => (view, view.sel, view.scroll_top, view.scroll_left),
+            false => {
+                let (_, sel, top, left) = self.window_state_unfocused(id);
+                (view, sel, top, left)
+            }
+        }
+    }
+
+    /// The focused window's size is what every scroll and screen motion works
+    /// in, so it follows the layout whenever that changes.
+    fn fit_focus(&mut self) {
+        let rect = self.window_rect(self.focus);
+        self.width = rect.width.max(1);
+        self.height = rect.text_height().max(1);
+    }
+
+    /// Copy the focused window's cursor and scroll out of its buffer.
+    fn store_focus(&mut self) {
+        let view = &self.views[self.current];
+        self.windows[self.focus] = Window {
+            view: self.current,
+            sel: view.sel,
+            top_char: view.doc.line_to_char(view.scroll_top.min(view.last_line())),
+            scroll_left: view.scroll_left,
+            mark: view.log_mark(),
+        };
+    }
+
+    /// And into it, for the window that has just been focused.
+    fn load_focus(&mut self) {
+        let (_, sel, top, left) = self.window_state_unfocused(self.focus);
+        self.current = self.windows[self.focus].view;
+        let view = &mut self.views[self.current];
+        view.sel = sel;
+        view.scroll_top = top;
+        view.scroll_left = left;
+        self.fit_focus();
+        self.clamp_cursor();
+    }
+
+    fn window_state_unfocused(&self, id: usize) -> (usize, Selection, usize, usize) {
+        let window = &self.windows[id];
+        let view = &self.views[window.view];
+        let sel = Selection {
+            anchor: view.carry(window.mark, window.sel.anchor),
+            head: view.carry(window.mark, window.sel.head),
+        };
+        let top = view.doc.char_to_line(view.carry(window.mark, window.top_char));
+        (window.view, sel, top, window.scroll_left)
+    }
+
+    /// A buffer shown in two windows logs its edits, so the one not being
+    /// typed in can follow them; one shown once does not need to. Every other
+    /// window's copy is brought up to date first, since a log that stops is a
+    /// log nobody can catch up from.
+    fn refresh_watched(&mut self) {
+        for id in 0..self.windows.len() {
+            if id == self.focus {
+                continue;
+            }
+            let (_, sel, _, _) = self.window_state_unfocused(id);
+            let window = self.windows[id];
+            let view = &self.views[window.view];
+            let top_char = view.carry(window.mark, window.top_char);
+            self.windows[id] = Window { sel, top_char, mark: view.log_mark(), ..window };
+        }
+        for index in 0..self.views.len() {
+            let showing = self.windows.iter().filter(|window| window.view == index).count();
+            self.views[index].set_watched(showing > 1);
+        }
+    }
+
+    /// The smallest a window is split down to: a status line and a row of text
+    /// either way, and room for a gutter and a word side by side.
+    const MIN_WIDTH: usize = 12;
+    const MIN_HEIGHT: usize = 2;
+
+    /// `:split` and `:vsplit`, `^w s` and `^w v`: the focused window in two,
+    /// the new half below or to the right, showing the same place in the same
+    /// buffer - or `path`, when one is given - and focused.
+    pub fn split_window(&mut self, vertical: bool, path: Option<&str>) {
+        let rect = self.window_rect(self.focus);
+        let room = match vertical {
+            // Two windows and the line between them.
+            true => rect.width > 2 * Self::MIN_WIDTH,
+            false => rect.height >= 2 * Self::MIN_HEIGHT,
+        };
+        if !room {
+            self.message = "no room to split".into();
+            return;
+        }
+        self.store_focus();
+        let new = self.windows.len();
+        self.windows.push(self.windows[self.focus]);
+        self.layout.split(self.focus, new, vertical);
+        self.focus = new;
+        self.load_focus();
+        self.refresh_watched();
+        if let Some(path) = path
+            && let Err(err) = self.open_file(path)
+        {
+            self.message = format!("{err:#}");
+        }
+    }
+
+    /// `:close`, `^w c`: the focused window goes and the one before it takes
+    /// focus. The buffer stays open - closing a window never loses work - and
+    /// the last window cannot be closed this way.
+    pub fn close_window(&mut self) -> bool {
+        if self.windows.len() == 1 {
+            self.message = "the last window cannot be closed".into();
+            return false;
+        }
+        let (rects, _) = self.window_rects();
+        let order: Vec<usize> = rects.iter().map(|(id, _)| *id).collect();
+        let index = order.iter().position(|id| *id == self.focus).unwrap_or(0);
+        let next = match index {
+            0 => order[1],
+            _ => order[index - 1],
+        };
+        let closing = self.focus;
+        self.windows.remove(closing);
+        self.layout.remove(closing);
+        self.focus = match next > closing {
+            true => next - 1,
+            false => next,
+        };
+        self.load_focus();
+        self.refresh_watched();
+        true
+    }
+
+    /// `:only`, `^w o`: every window but this one.
+    pub fn only_window(&mut self) {
+        self.store_focus();
+        self.windows = vec![self.windows[self.focus]];
+        self.layout = Layout::default();
+        self.focus = 0;
+        self.load_focus();
+        self.refresh_watched();
+    }
+
+    pub fn focus_window(&mut self, id: usize) {
+        if id == self.focus || id >= self.windows.len() {
+            return;
+        }
+        self.store_focus();
+        self.focus = id;
+        self.load_focus();
+    }
+
+    /// `^w h j k l`: the window beside this one, level with the cursor.
+    pub fn focus_direction(&mut self, direction: Direction) {
+        let (rects, _) = self.window_rects();
+        let (x, y) = self.cursor_screen();
+        if let Some(id) = window::neighbour(&rects, self.focus, direction, (x as usize, y as usize)) {
+            self.focus_window(id);
+        }
+    }
+
+    /// `^w w` and `^w W`: the next window in screen order, or the previous.
+    pub fn focus_next(&mut self, forward: bool) {
+        let (rects, _) = self.window_rects();
+        let order: Vec<usize> = rects.iter().map(|(id, _)| *id).collect();
+        let index = order.iter().position(|id| *id == self.focus).unwrap_or(0);
+        let count = order.len();
+        let next = match forward {
+            true => order[(index + 1) % count],
+            false => order[(index + count - 1) % count],
+        };
+        self.focus_window(next);
     }
 
     pub fn next_view(&mut self) {
@@ -1460,9 +1705,11 @@ impl Editor {
         }
     }
 
+    /// The screen the windows share: `height` rows of text and a status line
+    /// below them, as a single window has it.
     pub fn set_viewport(&mut self, width: usize, height: usize) {
-        self.width = width.max(1);
-        self.height = height.max(1);
+        self.screen = (width.max(1), height.max(1) + 1);
+        self.fit_focus();
     }
 
     /// Ask git how the current buffer differs from the last commit, but only
@@ -1506,10 +1753,14 @@ impl Editor {
     }
 
     pub fn gutter_width(&self) -> usize {
+        self.gutter_width_for(self.view())
+    }
+
+    pub fn gutter_width_for(&self, view: &View) -> usize {
         let numbers = match self.numbers {
             Numbers::Off => 0,
             // A space either side of the number.
-            _ => (self.view().doc.len_lines()).max(1).to_string().len().max(2) + 2,
+            _ => (view.doc.len_lines()).max(1).to_string().len().max(2) + 2,
         };
         self.sign_width() + numbers
     }
@@ -1517,10 +1768,6 @@ impl Editor {
     /// What is left for text once the gutter has taken its columns.
     pub fn text_width(&self) -> usize {
         self.width.saturating_sub(self.gutter_width()).max(1)
-    }
-
-    pub fn highlights(&self, range: Range<usize>) -> Highlights {
-        self.view().highlights(range, &self.theme)
     }
 
     pub fn cursor_coords(&self) -> (usize, usize) {
@@ -1534,18 +1781,18 @@ impl Editor {
         if let Some(prompt) = self.prompt.as_ref() {
             return (
                 1 + prompt.input.chars().count() as u16,
-                (self.top() + self.height) as u16,
+                (self.top() + self.area_rows()) as u16,
             );
         }
-        let top = self.top() as u16;
         match self.picker.as_ref() {
             Some(picker) => {
-                let (x, y) = picker.cursor_screen(self.height);
-                (x, y + top)
+                let (x, y) = picker.cursor_screen(self.area_rows());
+                (x, y + self.top() as u16)
             }
             None => {
+                let rect = self.window_rect(self.focus);
                 let (x, y) = self.view().cursor_screen();
-                (x + self.gutter_width() as u16, y + top)
+                (x + (rect.x + self.gutter_width()) as u16, y + rect.y as u16)
             }
         }
     }
@@ -2076,10 +2323,14 @@ impl Editor {
     /// so they are what drives this, and `ciwword<esc>` comes back in one `u`.
     pub fn begin_undo_group(&mut self) {
         self.view_mut().begin_undo_group();
+        self.grouped_view = Some(self.current);
     }
 
+    /// Closed on the buffer it was opened on: a command that changed window or
+    /// buffer part way would otherwise leave that one grouping for ever.
     pub fn end_undo_group(&mut self) {
-        self.view_mut().end_undo_group();
+        let index = self.grouped_view.take().unwrap_or(self.current);
+        self.views[index].end_undo_group();
     }
 
     pub fn undo(&mut self) {

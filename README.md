@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 36: `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 37: window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -72,6 +72,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
+| `^w s` `^w v` | split the window: a new one below / beside, on the same place |
+| `^w h` `^w j` `^w k` `^w l` | go to the window left / below / above / right (arrows too) |
+| `^w w` `^w W` | next / previous window |
+| `^w c` `^w q` `^w o` | close this window / close it, quitting if it is the last / close all the others |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
 | `<space>?` | every key, searchable |
@@ -122,7 +126,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 |---|---|
 | `tab` `shift-tab` | complete the command, the option, or the path |
 | `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
-| `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit |
+| `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit — or close the window, while there is more than one |
+| `:sp [path]` `:vs [path]` | split below / beside, onto this file or another |
+| `:close` `:only` | close this window / every other one |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
@@ -213,6 +219,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   undo history and syntax tree. Movement is grapheme-aware and vertical
   movement keeps a sticky goal column. Every edit funnels through one `edit()`
   method. A `View` knows nothing about modes or registers.
+- `window.rs` — how the screen is divided: a tree of splits with window ids at
+  the leaves, the rectangles it works out to, and which window is beside which.
+  Arithmetic only; what a window shows is the editor's.
 - `editor.rs` — the open views plus everything shared across them: the mode,
   the registers, the theme, the viewport size and the status message. The
   editing commands live here because they touch both sides — `dd` cuts from a
@@ -507,6 +516,31 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## Windows
+
+`^w v` splits the window in two side by side, `^w s` one above the other, and
+`:vs path` or `:sp path` does it onto another file. `^w h j k l` moves between
+them, `^w w` goes round them in order, `^w c` or `:q` closes one and `^w o`
+closes the rest. A window is a place a buffer is shown, not the buffer: closing
+one never closes a file, so `:q` in a split never asks about unsaved changes -
+that is left for the last window, where it means quitting.
+
+Two windows on one file each have their own cursor and scroll. Changes made in
+one move the other's along with the text: delete a line above where the other
+window's cursor is and it stays on the same line of code, one number up. Undo
+is the file's, whichever window you are in.
+
+The focused window keeps its cursor and scroll in the buffer itself, exactly
+where they were when there was only ever one, so every motion and edit goes on
+working unchanged. The others keep a copy - cursor, the first character on
+screen, and how far through the buffer's edit log they have been brought - and
+are carried forward when they are drawn or focused. The log is only kept while
+a file is open in more than one window.
+
+The focused window has the full status line; the others show their file and
+position, dimmed. The command line, pickers and the buffer list still take the
+whole width of the screen.
 
 ## Comments
 

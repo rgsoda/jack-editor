@@ -149,11 +149,22 @@ pub struct View {
     /// Per-line git signs, and the revision they were computed for.
     pub signs: HashMap<usize, Sign>,
     pub signs_revision: Option<(usize, usize)>,
+    /// Every change made since another window started showing this buffer,
+    /// as (position, chars removed, chars inserted), for carrying that
+    /// window's cursor through edits made here. Kept only while `watched`:
+    /// a buffer in one window has nothing to carry and logs nothing.
+    log: Vec<(usize, usize, usize)>,
+    /// The log position of `log[0]`, so marks survive the log being cleared.
+    log_base: usize,
+    watched: bool,
 }
 
 impl View {
     pub fn new(doc: Document) -> Self {
         View {
+            log: Vec::new(),
+            log_base: 0,
+            watched: false,
             doc,
             sel: Selection::point(0),
             goal_col: None,
@@ -366,10 +377,7 @@ impl View {
         let count = changes.len();
         let (line, _) = self.cursor_coords();
         let tx = Transaction::new(changes, self.sel, self.sel);
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
-        }
+        self.apply_tx(&tx);
         // The cursor lands on the first non-blank of the line it was on, which
         // is where vim leaves it and the only column that still means the same
         // thing after the line has moved sideways.
@@ -427,10 +435,7 @@ impl View {
             })
             .collect();
         let tx = Transaction::new(changes, self.sel, self.sel);
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
-        }
+        self.apply_tx(&tx);
         let base = self.doc.line_to_char(first);
         let text = self.doc.line_str(first);
         let blank = text.chars().take_while(|c| c.is_whitespace()).count();
@@ -462,10 +467,7 @@ impl View {
         };
         let tx = Transaction::new(vec![change], self.sel, Selection::point(moved.max(base)));
 
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
-        }
+        self.apply_tx(&tx);
         self.sel = tx.sel_after;
         self.goal_col = None;
         match merge {
@@ -509,10 +511,7 @@ impl View {
 
         let count = changes.len();
         let tx = Transaction::new(changes, self.sel, Selection::point(moved));
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
-        }
+        self.apply_tx(&tx);
         self.sel = tx.sel_after;
         self.goal_col = None;
         self.history.push(tx);
@@ -888,10 +887,7 @@ impl View {
             sel_after,
         );
 
-        let edits = tx.apply(&mut self.doc);
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.edit(&edits, &self.doc.text);
-        }
+        self.apply_tx(&tx);
         self.sel = sel_after;
         self.goal_col = None;
         self.history.push(tx);
@@ -1039,15 +1035,64 @@ impl View {
         self.doc.path.is_none() && self.doc.len_chars() == 0 && !self.is_modified()
     }
 
+    /// Apply a transaction to the text and the syntax tree, and log it for any
+    /// other window looking at this buffer. Every edit comes through here.
+    fn apply_tx(&mut self, tx: &Transaction) {
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        if self.watched {
+            // In the coordinates of the text as each change found it, which is
+            // how a position is walked through them one at a time.
+            let mut shift: isize = 0;
+            for change in &tx.changes {
+                let pos = (change.pos as isize + shift) as usize;
+                let (removed, inserted) = (change.removed.chars().count(), change.inserted.chars().count());
+                self.log.push((pos, removed, inserted));
+                shift += inserted as isize - removed as isize;
+            }
+        }
+    }
+
+    /// Whether another window is showing this buffer. Turning it off lets the
+    /// log go.
+    pub fn set_watched(&mut self, watched: bool) {
+        if !watched {
+            self.log_base += self.log.len();
+            self.log.clear();
+        }
+        self.watched = watched;
+    }
+
+    /// Where the log has got to: a window takes this when it lets go of focus.
+    pub fn log_mark(&self) -> usize {
+        self.log_base + self.log.len()
+    }
+
+    /// A position from when the log stood at `mark`, where it is now. Text
+    /// that was deleted around it leaves it at the start of the deletion;
+    /// anything the log no longer covers is only clamped.
+    pub fn carry(&self, mark: usize, pos: usize) -> usize {
+        let mut pos = pos;
+        if mark >= self.log_base {
+            for &(at, removed, inserted) in &self.log[(mark - self.log_base).min(self.log.len())..] {
+                if pos >= at + removed {
+                    pos = pos + inserted - removed;
+                } else if pos > at {
+                    pos = at;
+                }
+            }
+        }
+        pos.min(self.doc.len_chars())
+    }
+
     /// One undo step, which is one command's worth of transactions. The
     /// cursor ends where the last of them says, so a step that typed a word
     /// leaves the caret where the typing began.
     fn apply_history(&mut self, txs: Vec<Transaction>) {
         for tx in &txs {
-            let edits = tx.apply(&mut self.doc);
-            if let Some(syntax) = self.syntax.as_mut() {
-                syntax.edit(&edits, &self.doc.text);
-            }
+            self.apply_tx(tx);
             self.sel = tx.sel_after;
         }
         self.goal_col = None;

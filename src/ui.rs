@@ -2,7 +2,8 @@ use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::editor::{Completing, Editor};
+use crate::editor::{Completing, Editor, Prompt};
+use crate::window::Rect;
 use crate::view::char_width;
 use crate::keys::Keys;
 use crate::picker::Picker;
@@ -15,67 +16,106 @@ use crate::syntax::Highlights;
 /// Draw a whole frame. Nothing here talks to the terminal; `Screen` works out
 /// which of these cells actually need sending.
 pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
-    let total_lines = editor.view().doc.len_lines();
+    let (rects, lines) = editor.window_rects();
+    for &(id, rect) in &rects {
+        draw_window(editor, surface, id, rect);
+        match id == editor.focus() {
+            true => draw_status(editor, keys, surface, rect),
+            false => draw_inactive_status(editor, surface, id, rect),
+        }
+    }
+    // The line between side-by-side windows, down through their status lines
+    // too, so a row of status lines still reads as separate windows.
+    let separator = editor.theme.style("ui.window.separator");
+    for line in lines {
+        for row in line.y..line.y + line.height {
+            surface.put(line.x, row, '\u{2502}', 1, separator);
+        }
+    }
+
+    if editor.show_tabline() {
+        draw_tabline(editor, surface);
+    }
+
+    if let Some(completion) = editor.completion.as_ref() {
+        draw_completion(editor, completion, surface);
+    }
+
+    if let Some(picker) = editor.picker.as_ref() {
+        draw_picker(editor, picker, surface);
+    }
+
+    // A prompt takes the bottom line of the screen, whichever window's status
+    // line is there, the way a command line does.
+    if let Some(prompt) = editor.prompt.as_ref() {
+        draw_prompt(editor, prompt, surface);
+    }
+}
+
+/// One window's text: gutter, highlighting, and for the focused one the
+/// selection, the cursor line and the bracket pair - the things that are about
+/// where you are rather than what is in the file.
+fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
+    let (view, cursor, scroll_top, scroll_left) = editor.window_state(id);
+    let focused = id == editor.focus();
+    let height = rect.text_height();
+    let total_lines = view.doc.len_lines();
 
     // Highlight only the visible rows. Tree-sitter keeps the whole parse tree,
     // but running the query over the viewport is what keeps big files cheap.
-    let first_byte = editor.view().doc.line_to_byte(editor.view().scroll_top);
-    let last_row = editor.view().scroll_top + editor.height;
+    let first_byte = view.doc.line_to_byte(scroll_top.min(total_lines.saturating_sub(1)));
+    let last_row = scroll_top + height;
     let last_byte = if last_row >= total_lines {
-        editor.view().doc.len_bytes()
+        view.doc.len_bytes()
     } else {
-        editor.view().doc.line_to_byte(last_row)
+        view.doc.line_to_byte(last_row)
     };
-    let highlights = editor.highlights(first_byte..last_byte);
+    let highlights = view.highlights(first_byte..last_byte, &editor.theme);
 
-    let gutter = editor.gutter_width();
+    let gutter = editor.gutter_width_for(view);
     let signs = editor.sign_width();
-    let (cursor_line, _) = editor.cursor_coords();
-    // The row the cursor is on, tinted the whole width of the screen. Drawn
-    // under everything else: the syntax keeps its colours, and a selection or
-    // a search match still wins on the cells it covers.
-    let cursorline = editor.cursorline.then(|| editor.theme.style("ui.cursorline"));
+    let (cursor_line, _) = view.doc.coords(cursor.head);
+    // The row the cursor is on, tinted the width of the window. Drawn under
+    // everything else: the syntax keeps its colours, and a selection or a
+    // search match still wins on the cells it covers.
+    let cursorline = (editor.cursorline && focused).then(|| editor.theme.style("ui.cursorline"));
     let number_style = editor.theme.style("ui.linenr");
     let current_style = editor.theme.style("ui.linenr.selected");
 
     // Matches are painted only while a search is live, and only for the rows
     // on screen - the pattern is run over the viewport, not the buffer.
     let matches = match editor.search.highlight {
-        true => editor.search.matches_in_lines(
-            &editor.view().doc,
-            editor.view().scroll_top,
-            last_row,
-        ),
+        true => editor.search.matches_in_lines(&view.doc, scroll_top, last_row),
         false => Vec::new(),
     };
 
     // The bracket under the cursor and its mate, so a pair can be seen at a
     // glance rather than counted.
-    let brackets = editor.bracket_pair();
+    let brackets = editor.bracket_pair().filter(|_| focused);
 
-    let selection = editor.selection_range();
+    let selection = editor.selection_range().filter(|_| focused);
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
     let styling = LineStyling {
         highlights: &highlights,
         selection: editor.theme.style("ui.selection"),
-        scroll_left: editor.view().scroll_left,
-        left: gutter,
+        scroll_left,
+        left: rect.x + gutter,
+        right: rect.x + rect.width,
         matches: &matches,
         match_style: editor.theme.style("ui.search.match"),
         brackets,
         bracket_style: editor.theme.style("ui.bracket.match"),
     };
 
-    let top = editor.top();
-    for row in top..top + editor.height {
-        let line = editor.view().scroll_top + row - top;
+    for row in rect.y..rect.y + height {
+        let line = scroll_top + row - rect.y;
         if line >= total_lines {
             // Past the end there is no line to number, and the `~` keeps the
             // far left column, as it does with no gutter at all.
-            for x in 0..gutter {
+            for x in rect.x..rect.x + gutter.min(rect.width) {
                 surface.put(x, row, ' ', 1, number_style);
             }
-            surface.put(0, row, '~', 1, editor.theme.style("ui.eof"));
+            surface.put(rect.x, row, '~', 1, editor.theme.style("ui.eof"));
             continue;
         }
 
@@ -83,21 +123,20 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         if let Some(tint) = here {
             // The whole row first, so the tint reaches past the end of the
             // text and behind the gutter; everything below draws over it.
-            let (width, _) = surface.size();
-            for x in 0..width {
+            for x in rect.x..rect.x + rect.width {
                 surface.put(x, row, ' ', 1, tint);
             }
         }
 
         if signs > 0 {
-            let (ch, key) = match editor.view().signs.get(&line) {
+            let (ch, key) = match view.signs.get(&line) {
                 Some(Sign::Added) => ('+', "ui.gutter.added"),
                 Some(Sign::Modified) => ('~', "ui.gutter.modified"),
                 Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
                 None => (' ', "ui.linenr"),
             };
             let style = editor.theme.style(key);
-            surface.put(0, row, ch, 1, under(here, style));
+            surface.put(rect.x, row, ch, 1, under(here, style));
         }
 
         if let Some(number) = editor.numbers.label(line, cursor_line) {
@@ -107,12 +146,13 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             };
             // Right-aligned, with the space either side the width allows for.
             let text = format!("{number:>width$} ", width = gutter - signs - 1);
-            put_str(surface, signs, row, &text, style, gutter);
+            let limit = (rect.x + gutter).min(rect.x + rect.width);
+            put_str(surface, rect.x + signs, row, &text, style, limit);
         }
 
-        let text = editor.view().doc.line_str(line);
-        let line_start = editor.view().doc.line_to_char(line);
-        let line_end = line_start + editor.view().doc.line_len_chars(line);
+        let text = view.doc.line_str(line);
+        let line_start = view.doc.line_to_char(line);
+        let line_end = line_start + view.doc.line_len_chars(line);
 
         // Selection clipped to this line, as char offsets within it.
         let sel = if selection.is_some() && sel_end > line_start && sel_start <= line_end {
@@ -128,27 +168,13 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
             surface,
             row,
             &text,
-            editor.view().doc.line_to_byte(line),
+            view.doc.line_to_byte(line),
             line_start,
             sel,
             here,
             &styling,
         );
     }
-
-    if editor.show_tabline() {
-        draw_tabline(editor, surface);
-    }
-
-    if let Some(completion) = editor.completion.as_ref() {
-        draw_completion(editor, completion, surface);
-    }
-
-    if let Some(picker) = editor.picker.as_ref() {
-        draw_picker(editor, picker, surface);
-    }
-
-    draw_status(editor, keys, surface);
 }
 
 /// The picker panel, drawn over the bottom rows of the text area. It is opaque:
@@ -217,7 +243,8 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
     let left = anchor.min(screen_width.saturating_sub(width));
 
     // Below the cursor unless the box would not fit, in which case above it.
-    let bottom = editor.top() + editor.height;
+    let rect = editor.window_rect(editor.focus());
+    let bottom = rect.y + rect.text_height();
     let below = cursor_y as usize + 1;
     let top = match below + rows <= bottom {
         true => below,
@@ -255,7 +282,7 @@ fn draw_completion(editor: &Editor, completion: &Completion, surface: &mut Surfa
 
 fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     let (width, _) = surface.size();
-    let rows = editor.height;
+    let rows = editor.area_rows();
     let panel = Picker::panel_height(rows);
     // Relative to the text area, which may start a row down.
     let top = editor.top() + rows.saturating_sub(panel);
@@ -343,8 +370,10 @@ struct LineStyling<'a> {
     highlights: &'a Highlights,
     selection: Style,
     scroll_left: usize,
-    /// First column the text may use: the gutter's width.
+    /// First column the text may use: past the window's gutter.
     left: usize,
+    /// The column after the last one the text may use: the window's edge.
+    right: usize,
     /// Search matches on screen, as absolute character ranges.
     matches: &'a [(usize, usize)],
     match_style: Style,
@@ -372,11 +401,10 @@ fn draw_line(
     cursorline: Option<Style>,
     styling: &LineStyling,
 ) {
-    let (width, _) = surface.size();
     let scroll_left = styling.scroll_left;
     // Columns here are the text's own, with the gutter added only when a cell
     // is actually written.
-    let right = scroll_left + width.saturating_sub(styling.left);
+    let right = scroll_left + styling.right.saturating_sub(styling.left);
     let mut col = 0usize;
 
     for (char_idx, (byte_in_line, ch)) in text.char_indices().enumerate() {
@@ -488,26 +516,60 @@ fn draw_wildmenu(editor: &Editor, completing: &Completing, surface: &mut Surface
     }
 }
 
-fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
+fn draw_prompt(editor: &Editor, prompt: &Prompt, surface: &mut Surface) {
     let (width, height) = surface.size();
     let row = height - 1;
-
-    // A prompt takes the whole status line, the way a command line does.
-    if let Some(prompt) = editor.prompt.as_ref() {
-        if let Some(completing) = prompt.completion.as_ref()
-            && row > 0
-        {
-            draw_wildmenu(editor, completing, surface, row - 1);
-        }
-        let style = editor.theme.style("ui.statusline");
-        let text = format!("{}{}", prompt.sigil(), prompt.input);
-        let mut x = put_str(surface, 0, row, &text, style, width);
-        while x < width {
-            surface.put(x, row, ' ', 1, style);
-            x += 1;
-        }
-        return;
+    if let Some(completing) = prompt.completion.as_ref()
+        && row > 0
+    {
+        draw_wildmenu(editor, completing, surface, row - 1);
     }
+    let style = editor.theme.style("ui.statusline");
+    let text = format!("{}{}", prompt.sigil(), prompt.input);
+    let mut x = put_str(surface, 0, row, &text, style, width);
+    while x < width {
+        surface.put(x, row, ' ', 1, style);
+        x += 1;
+    }
+}
+
+/// The status line of a window that is not the one being typed in: which
+/// file, and where in it, dimmed - enough to tell the windows apart.
+fn draw_inactive_status(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
+    let Some(row) = (rect.y + rect.height).checked_sub(1) else {
+        return;
+    };
+    let (view, cursor, _, _) = editor.window_state(id);
+    let style = editor.theme.style("ui.statusline.inactive");
+    let end = rect.x + rect.width;
+
+    let mut name = format!(" {}", view.doc.display_name());
+    if view.is_modified() {
+        name.push(' ');
+        name.push_str(status::glyphs(editor).modified);
+    }
+    let (line, column) = view.doc.coords(cursor.head);
+    let position = format!("{}:{} ", line + 1, column + 1);
+    let start = end.saturating_sub(str_width(&position)).max(rect.x);
+
+    let mut x = put_str(surface, rect.x, row, &name, style, start);
+    while x < start {
+        surface.put(x, row, ' ', 1, style);
+        x += 1;
+    }
+    x = put_str(surface, x, row, &position, style, end);
+    while x < end {
+        surface.put(x, row, ' ', 1, style);
+        x += 1;
+    }
+}
+
+fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface, rect: Rect) {
+    let Some(row) = (rect.y + rect.height).checked_sub(1) else {
+        return;
+    };
+    let (origin, width) = (rect.x, rect.width);
+    let end = origin + width;
 
     let bar = editor.theme.style("ui.statusline");
     let glyphs = status::glyphs(editor);
@@ -532,9 +594,9 @@ fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         status.right.remove(0);
     }
     let right = run(&status.right, bar, glyphs, false);
-    let start = width.saturating_sub(run_width(&right));
+    let start = end.saturating_sub(run_width(&right)).max(origin);
 
-    let mut x = 0;
+    let mut x = origin;
     for (text, style) in &left {
         x = put_str(surface, x, row, text, *style, start);
     }
@@ -554,9 +616,9 @@ fn draw_status(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         draw_dog(editor, surface, row, text_end..start, bar);
     }
     for (text, style) in &right {
-        x = put_str(surface, x, row, text, *style, width);
+        x = put_str(surface, x, row, text, *style, end);
     }
-    while x < width {
+    while x < end {
         surface.put(x, row, ' ', 1, bar);
         x += 1;
     }
@@ -886,6 +948,42 @@ mod tests {
         // Two rows repaint rather than none, which is the whole cost of it.
         assert!(on > off, "on {on} vs off {off}");
         assert!(on < off + 2000, "a cursor move costs {} bytes more", on - off);
+    }
+
+    #[test]
+    fn side_by_side_windows_are_drawn_with_a_line_between_them() {
+        let mut editor = editor_with_lines(30);
+        editor.set_viewport(81, 10);
+        editor.split_window(true, None);
+        editor.goto_line(4);
+        editor.scroll_to_cursor();
+        let keys = Keys::default();
+
+        let mut screen = Screen::new();
+        let surface = screen.begin(81, 11);
+        draw(&editor, &keys, surface);
+        let row = |y: usize| -> String { (0..81).map(|x| surface.get(x, y).ch).collect() };
+
+        for y in 0..11 {
+            assert_eq!(surface.get(40, y).ch, '\u{2502}', "row {y}");
+        }
+        // Both halves show the file, each with its own cursor line numbered.
+        assert!(row(0)[..40].contains("line 1 of text"), "{}", row(0));
+        assert!(row(0).chars().skip(41).collect::<String>().contains("line 1 of text"));
+
+        // The focused window - the new one, on the right - has the full status
+        // line; the other has its name and its own position, 1:1.
+        let status = row(10);
+        let left: String = status.chars().take(40).collect();
+        let right: String = status.chars().skip(41).collect();
+        assert!(right.contains("ABNORMAL"), "{right}");
+        assert!(right.contains("5:1"), "{right}");
+        assert!(!left.contains("ABNORMAL"), "{left}");
+        assert!(left.contains("[scratch]") && left.trim_end().ends_with("1:1"), "{left}");
+
+        // And the terminal cursor is in the right-hand window.
+        let (x, y) = editor.cursor_screen();
+        assert_eq!((x as usize, y as usize), (41 + editor.gutter_width(), 4));
     }
 
     fn status_row(editor: &Editor, keys: &Keys) -> String {
