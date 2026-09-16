@@ -13,7 +13,7 @@ use crate::complete::{self, Completion, Pick};
 use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
-use crate::picker::{Item, Outcome, Picker, Source};
+use crate::picker::{Item, Open, Outcome, Picker, Source};
 use crate::search::{self, Search};
 use crate::substitute;
 use crate::stream::{self, Message, Sign};
@@ -1345,13 +1345,24 @@ impl Editor {
                 self.retire();
             }
             Outcome::Search(pattern) => self.search(pattern),
-            Outcome::Confirm(source, choice) => {
+            Outcome::Confirm(source, choice, open) => {
                 self.picker = None;
                 self.retire();
                 // Where the picker was opened from, put on the jump list by
                 // whatever the choice turns out to reach - and not at all when
                 // the file will not open.
                 let origin = self.here();
+                // A split first, and the choice then goes to the new window
+                // the same way it would have gone to this one. No room for
+                // one is said and nothing opens: landing in the old window
+                // instead would look like the key had been ignored.
+                if open != Open::Here && source != Source::Help {
+                    let before = self.windows.len();
+                    self.split_window(open == Open::Beside, None);
+                    if self.windows.len() == before {
+                        return;
+                    }
+                }
                 match source {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}

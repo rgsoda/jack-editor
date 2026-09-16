@@ -64,14 +64,25 @@ pub struct Choice {
     pub target: String,
 }
 
+/// Where a chosen item opens: in the window the picker was opened from, or in
+/// a new one split off it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Open {
+    Here,
+    /// `^v`, a window beside.
+    Beside,
+    /// `^s` or `^x`, a window below.
+    Below,
+}
+
 /// What a keypress meant to the editor around the picker.
 pub enum Outcome {
     /// Handled; the picker stays open.
     Continue,
     /// Close without doing anything.
     Cancel,
-    /// Close and act on this item, from this source.
-    Confirm(Source, Choice),
+    /// Close and act on this item, from this source, in this window.
+    Confirm(Source, Choice, Open),
     /// The query of a live source changed: run it again with this pattern.
     Search(String),
 }
@@ -196,22 +207,28 @@ impl Picker {
         (column as u16, row as u16)
     }
 
+    fn confirm(&self, open: Open) -> Outcome {
+        match self.matches.get(self.cursor) {
+            Some(m) => {
+                let item = &self.items[m.index];
+                let choice = Choice { id: item.id, target: item.target.clone() };
+                Outcome::Confirm(self.source, choice, open)
+            }
+            // Confirming nothing closes rather than sitting there.
+            None => Outcome::Cancel,
+        }
+    }
+
     pub fn input(&mut self, key: KeyEvent, text_rows: usize) -> Outcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return Outcome::Cancel,
             KeyCode::Char('c') if ctrl => return Outcome::Cancel,
-            KeyCode::Enter => {
-                return match self.matches.get(self.cursor) {
-                    Some(m) => {
-                        let item = &self.items[m.index];
-                        let choice = Choice { id: item.id, target: item.target.clone() };
-                        Outcome::Confirm(self.source, choice)
-                    }
-                    // Confirming nothing closes rather than sitting there.
-                    None => Outcome::Cancel,
-                };
-            }
+            KeyCode::Enter => return self.confirm(Open::Here),
+            // The keys fzf and Telescope open a split with. Before the query
+            // editing below, which would otherwise ignore them as chords.
+            KeyCode::Char('v') if ctrl => return self.confirm(Open::Beside),
+            KeyCode::Char('s') | KeyCode::Char('x') if ctrl => return self.confirm(Open::Below),
             KeyCode::Down | KeyCode::Tab => self.step(1),
             KeyCode::Char('n') if ctrl => self.step(1),
             KeyCode::Up | KeyCode::BackTab => self.step(-1),
@@ -572,11 +589,24 @@ mod tests {
         let mut p = picker(&["zero", "one", "two"]);
         type_query(&mut p, "two");
         match p.input(code(KeyCode::Enter), 10) {
-            Outcome::Confirm(Source::Buffers, choice) => {
+            Outcome::Confirm(Source::Buffers, choice, Open::Here) => {
                 assert_eq!(choice.id, 2);
                 assert_eq!(choice.target, "two");
             }
             _ => panic!("expected a confirm"),
+        }
+    }
+
+    #[test]
+    fn the_split_keys_confirm_into_a_new_window() {
+        let chord = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for (c, open) in [('v', Open::Beside), ('s', Open::Below), ('x', Open::Below)] {
+            let mut p = picker(&["a", "b"]);
+            assert!(
+                matches!(p.input(chord(c), 10), Outcome::Confirm(_, _, got) if got == open),
+                "^{c}"
+            );
+            assert_eq!(p.query, "", "^{c} is not typed into the query");
         }
     }
 

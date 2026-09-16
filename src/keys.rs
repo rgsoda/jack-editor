@@ -153,6 +153,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "any character", what: "narrow the list, or search", mode: "picker" },
     Binding { keys: "^n ^p tab arrows", what: "next, previous match", mode: "picker" },
     Binding { keys: "enter", what: "choose", mode: "picker" },
+    Binding { keys: "^v ^s", what: "choose, in a split beside, below (^x too)", mode: "picker" },
     Binding { keys: "backspace ^w ^u", what: "delete a character, word, the query", mode: "picker" },
     Binding { keys: "esc ^c", what: "close", mode: "picker" },
 ];
@@ -2125,6 +2126,41 @@ mod tests {
         assert_eq!(vim.text(), "c\n");
         vim.press("u");
         assert_eq!(vim.text(), "bc\n", "two commands are still two undos");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_picker_can_open_its_choice_in_a_split() {
+        let dir = std::env::temp_dir().join(format!("jack_pick_split_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("alpha.rs"), dir.join("beta.rs"));
+        std::fs::write(&a, "fn one() {}\n\nfn two() {}\n").unwrap();
+        std::fs::write(&b, "beta\n").unwrap();
+
+        let mut vim = Vim { editor: Editor::open(&[&a, &b]).unwrap(), keys: Keys::default() };
+        vim.editor.set_viewport(81, 23);
+
+        // A buffer, beside: the new window is on the right and shows it, and
+        // the one the picker was opened from still shows alpha.
+        vim.press("<space>bbeta<C-v>");
+        assert!(vim.editor.picker.is_none());
+        assert_eq!(vim.editor.windows_open(), 2);
+        assert_eq!(vim.editor.window_rect(vim.editor.focus()).x, 41);
+        assert_eq!(vim.text(), "beta\n");
+        vim.press("<C-w>h");
+        assert_eq!(vim.text(), "fn one() {}\n\nfn two() {}\n");
+
+        // A definition, below: the split lands on its line.
+        vim.press("<space>dtwo<C-s>");
+        assert_eq!(vim.editor.windows_open(), 3);
+        assert_eq!(vim.cursor(), (3, 1));
+        vim.press("<C-w>k");
+        assert_eq!(vim.cursor(), (1, 1), "the window above did not move");
+
+        // Help has nowhere to open, so it does not split.
+        vim.press("<space>?<C-v>");
+        assert_eq!(vim.editor.windows_open(), 3);
 
         std::fs::remove_dir_all(&dir).ok();
     }

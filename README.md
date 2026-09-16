@@ -117,6 +117,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | any character | narrow the list, or (in `<space>s`) search for it |
 | `^n` `^p`, `tab`, arrows | next / previous match |
 | `enter` | choose |
+| `^v` `^s` `^x` | choose, opening it in a split beside / below / below |
 | `backspace` `^w` `^u` | delete a character / a word / the query |
 | `esc` `^c` | close |
 
