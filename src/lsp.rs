@@ -407,6 +407,12 @@ impl Client {
     }
 
     /// A notification, held back until the server is ready for it.
+    /// Stop waiting on answers about buffers by index, once a buffer has
+    /// closed and the indexes have moved. The answers are ignored on arrival.
+    pub fn forget_definitions(&mut self) {
+        self.pending.retain(|_, request| !matches!(request, Request::Definition { .. }));
+    }
+
     pub fn notify(&mut self, method: &str, params: Value) {
         let bytes = frame(&json!({ "jsonrpc": "2.0", "method": method, "params": params }));
         match self.state {

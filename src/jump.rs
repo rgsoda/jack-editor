@@ -49,6 +49,19 @@ impl Jumps {
         self.index = self.list.len();
     }
 
+    /// A buffer has been closed: its jumps go, and the ones into buffers
+    /// after it follow those buffers down a place.
+    pub fn forget(&mut self, view: usize) {
+        let before = self.list[..self.index.min(self.list.len())].iter().filter(|jump| jump.view == view).count();
+        self.list.retain(|jump| jump.view != view);
+        self.index -= before;
+        for jump in &mut self.list {
+            if jump.view > view {
+                jump.view -= 1;
+            }
+        }
+    }
+
     /// `^o`. `now` is where the cursor is, which is remembered the first time
     /// you step back so that `^i` has somewhere to return to.
     pub fn back(&mut self, now: Jump) -> Option<Jump> {
@@ -78,6 +91,19 @@ mod tests {
 
     fn at(line: usize) -> Jump {
         Jump { view: 0, line, column: 0 }
+    }
+
+    #[test]
+    fn a_closed_buffer_takes_its_jumps_with_it() {
+        let mut jumps = Jumps::default();
+        let jump = |view, line| Jump { view, line, column: 0 };
+        jumps.push(jump(0, 1));
+        jumps.push(jump(1, 2));
+        jumps.push(jump(2, 3));
+        jumps.forget(1);
+        assert_eq!(jumps.back(jump(0, 9)), Some(jump(1, 3)), "buffer 2 is buffer 1 now");
+        assert_eq!(jumps.back(jump(1, 3)), Some(jump(0, 1)));
+        assert_eq!(jumps.back(jump(0, 1)), None);
     }
 
     #[test]

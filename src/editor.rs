@@ -931,6 +931,7 @@ impl Editor {
                 self.close_window();
             }
             ("on" | "only", _) => self.only_window(),
+            ("bd" | "bdelete", _) => self.close_buffer(force),
             ("lsp", _) => self.lsp_report(),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
@@ -1675,6 +1676,67 @@ impl Editor {
             false => order[(index + count - 1) % count],
         };
         self.focus_window(next);
+    }
+
+    /// `:bdelete`, `<space>x`: the buffer in this window goes. Every window
+    /// showing it moves to the buffer before it in the list; closing the last
+    /// one leaves an empty scratch buffer, as starting with no file does.
+    /// Unsaved changes stop it unless forced.
+    pub fn close_buffer(&mut self, force: bool) {
+        let closing = self.current;
+        let name = self.views[closing].doc.display_name().to_string();
+        if !force && self.views[closing].is_modified() {
+            self.message = format!("{name} has unsaved changes - :bd! to close it anyway");
+            return;
+        }
+        self.lsp_closed(closing);
+        self.store_focus();
+
+        let last = self.views.len() == 1;
+        match last {
+            true => self.views[0] = View::new(Document::scratch()),
+            false => {
+                self.views.remove(closing);
+            }
+        }
+        let shift = |index: usize| match index > closing {
+            true => index - 1,
+            false => index,
+        };
+        let replacement = closing.saturating_sub(1).min(self.views.len() - 1);
+        for id in 0..self.windows.len() {
+            let window = self.windows[id];
+            self.windows[id] = match window.view == closing {
+                true => {
+                    let view = &self.views[replacement];
+                    Window {
+                        view: replacement,
+                        sel: view.sel,
+                        top_char: view.doc.line_to_char(view.scroll_top.min(view.last_line())),
+                        scroll_left: view.scroll_left,
+                        mark: view.log_mark(),
+                    }
+                }
+                false => Window { view: shift(window.view), ..window },
+            };
+        }
+
+        self.jumps.forget(closing);
+        if !last {
+            self.grouped_view = self.grouped_view.filter(|index| *index != closing).map(shift);
+        }
+        match self.signs_for == closing {
+            // The diff on its way is for text that is not open any more.
+            true => self.signs_token += 1,
+            false => self.signs_for = shift(self.signs_for),
+        }
+        self.last_visual = None;
+        self.completion = None;
+        self.dismissed = None;
+
+        self.load_focus();
+        self.refresh_watched();
+        self.message = format!("closed {name}");
     }
 
     pub fn next_view(&mut self) {
@@ -3142,6 +3204,52 @@ mod tests {
         e.delete_backward();
         assert_eq!(e.view().doc.text.to_string(), "abc");
         assert!(!e.is_modified());
+    }
+
+    #[test]
+    fn closing_a_buffer_moves_its_windows_and_jumps_along() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "one\n");
+        let two = write_file(&dir, "two.txt", "two\n");
+        let three = write_file(&dir, "three.txt", "three\n");
+        let mut e = Editor::open(&[one.clone(), two, three.clone()]).unwrap();
+        e.set_viewport(80, 20);
+        e.switch_to(2);
+        e.push_jump();
+        e.switch_to(1);
+        // Two windows on two.txt, and one on three.txt.
+        e.split_window(true, None);
+        e.split_window(true, Some(three.to_str().unwrap()));
+        e.focus_window(0);
+
+        e.run_command("bd");
+        assert_eq!(e.message, "closed two.txt");
+        let names: Vec<&str> = e.views().iter().map(|v| v.doc.display_name()).collect();
+        assert_eq!(names, ["one.txt", "three.txt"]);
+        let shown: Vec<usize> = e.windows.iter().map(|w| w.view).collect();
+        assert_eq!(shown, [0, 0, 1], "both of its windows went to the buffer before it");
+        assert_eq!(e.view().doc.path.as_ref(), Some(&one));
+
+        // The jump from three.txt still lands in three.txt.
+        e.jump_back();
+        assert_eq!(e.view().doc.path.as_ref(), Some(&three));
+    }
+
+    #[test]
+    fn a_buffer_with_changes_is_only_closed_when_forced() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "one\n");
+        let mut e = Editor::open(&[one]).unwrap();
+        type_str(&mut e, "x");
+        e.close_buffer(false);
+        assert!(e.message.contains("unsaved changes"), "{}", e.message);
+        assert_eq!(e.views().len(), 1);
+        assert_eq!(e.view().doc.display_name(), "one.txt");
+
+        // The last buffer closed leaves somewhere to stand.
+        e.run_command("bd!");
+        assert_eq!(e.views().len(), 1);
+        assert!(e.view().is_empty_scratch());
     }
 
     #[test]

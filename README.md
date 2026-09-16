@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 38: language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 39: closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -81,6 +81,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>d` | pick a definition in this buffer |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
+| `<space>x` | close this buffer |
 | `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
 | `"+y` `"+d` `"+p` | the same, spelled as a register |
 | `^d` `^u`, page up/down | scroll |
@@ -131,6 +132,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit — or close the window, while there is more than one |
 | `:sp [path]` `:vs [path]` | split below / beside, onto this file or another |
 | `:close` `:only` | close this window / every other one |
+| `:bd` `:bd!` | close this buffer; `!` throws away unsaved changes. Its windows move to the buffer before it, and closing the last leaves an empty one |
 | `:lsp` | which language servers are running, and this buffer's |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |

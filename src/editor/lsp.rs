@@ -110,6 +110,20 @@ impl Editor {
         }
     }
 
+    /// A buffer is closing: its server stops tracking it, and answers asked
+    /// for by buffer index are no longer to be trusted.
+    pub(super) fn lsp_closed(&mut self, index: usize) {
+        for client in &mut self.servers {
+            client.forget_definitions();
+        }
+        if let (Lsp::Open { server, .. }, Some(path)) = (self.views[index].lsp, self.views[index].doc.path.clone()) {
+            self.servers[server].notify(
+                "textDocument/didClose",
+                json!({ "textDocument": { "uri": lsp::uri(&absolute(&path)) } }),
+            );
+        }
+    }
+
     /// A message from server `server`, or `None` when it has gone away.
     pub fn lsp_message(&mut self, server: usize, message: Option<Value>) {
         let Some(client) = self.servers.get_mut(server) else {

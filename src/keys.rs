@@ -89,6 +89,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
+    Binding { keys: "<space>x", what: "close this buffer", mode: "normal" },
 
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste over the selection", mode: "visual" },
     Binding { keys: "any motion", what: "drag the selection", mode: "visual" },
@@ -130,6 +131,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
     Binding { keys: ":sp [path] :vs [path]", what: "split: below, beside - this file or another", mode: "command" },
     Binding { keys: ":close :only", what: "close this window, every other window", mode: "command" },
+    Binding { keys: ":bd :bd!", what: "close this buffer, even with unsaved changes", mode: "command" },
     Binding { keys: ":lsp", what: "which language servers are running", mode: "command" },
     Binding { keys: ":set lsp", what: "nolsp: start language servers for files that have one", mode: "command" },
     Binding { keys: ":q (windows)", what: "with more than one window, closes this one", mode: "command" },
@@ -564,6 +566,7 @@ impl Keys {
                     KeyCode::Char('d') => editor.open_symbol_picker(),
                     KeyCode::Char('?') => editor.open_help_picker(),
                     KeyCode::Char('n') => editor.cycle_numbers(),
+                    KeyCode::Char('x') => editor.close_buffer(false),
                     _ => {}
                 }
                 self.finish();
