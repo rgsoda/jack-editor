@@ -4190,8 +4190,9 @@ mod tests {
         let text_cursor = e.cursor_screen();
         e.open_buffer_picker();
         assert_ne!(e.cursor_screen(), text_cursor);
-        // On the prompt row, past "buffer> ".
-        assert_eq!(e.cursor_screen(), (8, 10));
+        // On the prompt row, past " buffer> " - the leading space included,
+        // which is what this used to be one short of.
+        assert_eq!(e.cursor_screen(), (9, 10));
     }
 
     #[test]

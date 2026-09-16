@@ -199,12 +199,22 @@ impl Picker {
         Picker::panel_height(text_rows) - 1
     }
 
+    /// The prompt row: the source's name and what has been typed into it.
+    ///
+    /// One function, used both to draw the row and to work out where the
+    /// cursor goes, because the cursor goes exactly at the end of this. Two
+    /// spellings of the same string is how the cursor came to sit on the last
+    /// letter typed rather than after it: the drawn row has a space in front
+    /// of the name and the arithmetic did not.
+    pub fn prompt_text(&self) -> String {
+        format!(" {}> {}", self.source.prompt(), self.query)
+    }
+
     /// Where the terminal cursor belongs: the end of the query on the prompt
     /// row, which is the top row of the panel.
     pub fn cursor_screen(&self, text_rows: usize) -> (u16, u16) {
         let row = text_rows.saturating_sub(Picker::panel_height(text_rows));
-        let column = self.source.prompt().chars().count() + 2 + self.query.chars().count();
-        (column as u16, row as u16)
+        (crate::ui::str_width(&self.prompt_text()) as u16, row as u16)
     }
 
     fn confirm(&self, open: Open) -> Outcome {
@@ -803,4 +813,22 @@ mod tests {
         assert!(p.is_complete());
     }
 
+
+    #[test]
+    fn the_cursor_sits_after_what_was_typed_not_on_it() {
+        let mut p = Picker::live(Source::Files);
+        p.query = "mode".into();
+        // " file> mode" is eleven columns, and the cursor is the twelfth.
+        assert_eq!(p.prompt_text(), " file> mode");
+        let (column, _) = p.cursor_screen(20);
+        assert_eq!(column as usize, p.prompt_text().chars().count());
+        assert_eq!(column, 11);
+
+        // Whatever the source is called, and however long the query is.
+        for (source, query) in [(Source::Grep, ""), (Source::Symbols, "a longer one")] {
+            let mut p = Picker::live(source);
+            p.query = query.into();
+            assert_eq!(p.cursor_screen(20).0 as usize, p.prompt_text().chars().count());
+        }
+    }
 }

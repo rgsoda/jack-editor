@@ -404,7 +404,7 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     let detail = editor.theme.style("ui.picker.detail");
 
     // Prompt row: the source's name, the query, and the match count.
-    let prompt = format!(" {}> {}", picker.source.prompt(), picker.query);
+    let prompt = picker.prompt_text();
     // A trailing `+` while a walk is still feeding the list, so a count that
     // is climbing does not look like the whole answer.
     let count = format!(
@@ -824,7 +824,7 @@ fn put_str(surface: &mut Surface, mut x: usize, row: usize, text: &str, style: S
     x
 }
 
-fn str_width(s: &str) -> usize {
+pub fn str_width(s: &str) -> usize {
     s.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum()
 }
 
