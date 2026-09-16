@@ -1425,6 +1425,7 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::budget;
     use ropey::Rope;
 
     struct Vim {
@@ -1925,10 +1926,9 @@ mod tests {
         let item = start.elapsed();
 
         assert_eq!(vim.cursor().0, 1, "the needle is on the first line");
-        // 25µs and 45ms release on this file; the bound is for a debug build
-        // on a slow machine.
-        assert!(binding.as_millis() < 50, "a binding took {binding:?}");
-        assert!(item.as_millis() < 800, "an item took {item:?}");
+        // 25µs and 45ms release on this file.
+        assert!(binding < budget(50), "a binding took {binding:?}");
+        assert!(item < budget(800), "an item took {item:?}");
     }
 
     #[test]
@@ -3649,7 +3649,7 @@ plain
         let elapsed = start.elapsed();
 
         assert!(vim.editor.completion.is_none(), "nothing matches zzaphod");
-        assert!(elapsed.as_millis() < 500, "typing took {elapsed:?}");
+        assert!(elapsed < budget(500), "typing took {elapsed:?}");
     }
 
     #[test]
@@ -3817,7 +3817,7 @@ plain
 
         let picker = vim.editor.picker.as_ref().expect("a picker");
         assert_eq!(picker.matches().len(), line);
-        assert!(elapsed.as_millis() < 500, "listing took {elapsed:?}");
+        assert!(elapsed < budget(500), "listing took {elapsed:?}");
     }
 
     #[test]

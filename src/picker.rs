@@ -472,6 +472,7 @@ pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::budget;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -870,9 +871,8 @@ mod tests {
             p.rank();
             let took = start.elapsed();
             assert_eq!(!p.matches().is_empty(), hits);
-            // 11ms and 7ms release for five times this many; the bound is for
-            // a debug build on a slow machine.
-            assert!(took.as_millis() < 500, "{query:?} took {took:?}");
+            // 11ms and 7ms release for five times this many.
+            assert!(took < budget(500), "{query:?} took {took:?}");
         }
     }
 }

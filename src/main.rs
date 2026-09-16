@@ -1,4 +1,6 @@
 mod buffer;
+#[cfg(test)]
+mod budget;
 mod clipboard;
 mod comment;
 mod command;
