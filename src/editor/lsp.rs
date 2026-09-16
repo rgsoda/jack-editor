@@ -4,8 +4,9 @@
 use serde_json::{Value, json};
 use std::path::Path;
 
-use super::Editor;
-use crate::lsp::{self, Client, Encoding, Event, Location, RawDiagnostic, Request, State};
+use super::{Editor, Mode};
+use crate::complete::{self, Completion};
+use crate::lsp::{self, Client, Encoding, Event, Location, RawDiagnostic, Request, State, Suggestion};
 use crate::syntax::language_for_path;
 use crate::view::{Diagnostic, Lsp, Selection};
 
@@ -146,6 +147,7 @@ impl Editor {
             Event::Say(text) => self.message = text,
             Event::Diagnostics { path, diagnostics } => self.set_diagnostics(&path, diagnostics, encoding),
             Event::Definition { request, locations } => self.definition_answer(request, locations, encoding),
+            Event::Completion { request, items } => self.completion_answer(request, items),
         }
     }
 
@@ -194,6 +196,82 @@ impl Editor {
         }
         self.message = format!("asking {}", client.name);
         true
+    }
+
+    /// Ask the server what could finish the word starting at `start`. The
+    /// popup does not wait for the answer: the buffer's own words are there
+    /// at once, and what the server sends is folded in when it arrives, which
+    /// is usually within a keystroke or two.
+    ///
+    /// Asked once per popup rather than once per keystroke. The list a server
+    /// returns is for the position, not for the prefix, and typing more of the
+    /// word only narrows what is already here - the same reason the buffer's
+    /// candidates are gathered once.
+    pub(super) fn lsp_complete(&mut self, start: usize, trigger: Option<char>) {
+        if !self.lsp_enabled {
+            return;
+        }
+        self.lsp_sync();
+        let view = &self.views[self.current];
+        let (Lsp::Open { server, .. }, Some(path)) = (view.lsp, view.doc.path.as_deref()) else {
+            return;
+        };
+        let client = &mut self.servers[server];
+        let (line, character) = lsp::to_position(&view.doc.text, view.sel.head, client.encoding);
+        // The context says why: a server answers a `.` with what is on the
+        // thing before it, and a bare ask with everything in scope.
+        let context = match trigger {
+            Some(c) => json!({ "triggerKind": 2, "triggerCharacter": c.to_string() }),
+            None => json!({ "triggerKind": 1 }),
+        };
+        let params = json!({
+            "textDocument": { "uri": lsp::uri(path) },
+            "position": { "line": line, "character": character },
+            "context": context,
+        });
+        let request = Request::Completion { view: self.current, start };
+        client.request("textDocument/completion", "completionProvider", params, request);
+    }
+
+    /// The characters this buffer's server wants to be asked after: `.` for
+    /// Python, where there is no word yet but plenty to offer.
+    pub(super) fn completion_triggers(&self) -> Vec<char> {
+        if !self.lsp_enabled {
+            return Vec::new();
+        }
+        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
+            return Vec::new();
+        };
+        match self.servers.get(server) {
+            Some(client) => client.completion_triggers(),
+            None => Vec::new(),
+        }
+    }
+
+    /// What the server offered, folded into the popup that asked - or opening
+    /// one, when the question was asked at a `.` where the buffer itself had
+    /// nothing to offer.
+    fn completion_answer(&mut self, request: Request, items: Vec<Suggestion>) {
+        let Request::Completion { view, start } = request else {
+            return;
+        };
+        // A different buffer, or a word since abandoned: nobody is waiting.
+        if self.current != view || self.mode != Mode::Insert || items.is_empty() {
+            return;
+        }
+        let at = self.view().sel.head;
+        // Typed something that is not part of a word since asking - a space,
+        // a bracket - and the word the answer is about is over.
+        let typed = self.view().doc.slice_str(start, at);
+        if at < start || !typed.chars().all(complete::is_word) {
+            return;
+        }
+        match self.completion.as_mut() {
+            Some(completion) if completion.start == start => completion.extend(items),
+            // The popup was closed, or is over a different word now.
+            Some(_) => {}
+            None => self.completion = Completion::from_server(start, items),
+        }
     }
 
     fn definition_answer(&mut self, request: Request, locations: Vec<Location>, encoding: Encoding) {
@@ -371,6 +449,96 @@ mod tests {
         editor.view_mut().diagnostics.clear();
         editor.goto_diagnostic(true);
         assert_eq!(editor.message, "no diagnostics");
+    }
+
+    /// The same, with a server that completes as well as defines.
+    fn editor_completing(path: &str, text: &str) -> (Editor, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let mut editor = Editor::scratch();
+        let view = editor.view_mut();
+        view.doc.text = ropey::Rope::from_str(text);
+        view.doc.path = Some(path.into());
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({
+            "completionProvider": { "triggerCharacters": ["."] },
+        }));
+        editor.servers.push(client);
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 0, synced: 0 };
+        editor.set_mode(Mode::Insert);
+        (editor, written)
+    }
+
+    fn answer(id: &Value, items: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "result": items })
+    }
+
+    #[test]
+    fn the_server_is_asked_what_the_buffer_cannot_know() {
+        let (mut editor, written) = editor_completing("/nowhere/a.py", "value = 1
+va");
+        editor.view_mut().sel = Selection::point(12);
+        editor.open_completion(false);
+
+        // The buffer answers at once, out of its own words.
+        assert_eq!(editor.completion.as_ref().map(|c| c.len()), Some(1));
+
+        let asked = sent(&written);
+        let request = asked.iter().find(|m| m["method"] == "textDocument/completion").expect("a request");
+        assert_eq!(request["params"]["position"], json!({ "line": 1, "character": 2 }));
+
+        // And the server's answer joins it, in front, with its kinds.
+        editor.lsp_message(0, Some(answer(&request["id"], json!([
+            { "label": "validate", "kind": 3, "sortText": "a" },
+            { "label": "value", "kind": 6, "sortText": "b" },
+        ]))));
+        let completion = editor.completion.as_ref().expect("still open");
+        let items: Vec<(&str, Option<&str>)> =
+            completion.items().map(|c| (c.text.as_str(), c.kind)).collect();
+        assert_eq!(items, [("validate", Some("fn")), ("value", Some("var"))]);
+        assert_eq!(items.len(), 2, "the buffer's own `value` gave way to the server's");
+    }
+
+    #[test]
+    fn a_dot_asks_the_server_and_opens_on_what_it_says() {
+        let (mut editor, written) = editor_completing("/nowhere/a.py", "self.");
+        editor.view_mut().sel = Selection::point(5);
+        editor.suggest_from_server('.');
+        assert!(editor.completion.is_none(), "nothing to show until it answers");
+
+        let asked = sent(&written);
+        let request = asked.iter().find(|m| m["method"] == "textDocument/completion").expect("a request");
+        editor.lsp_message(0, Some(answer(&request["id"], json!({
+            "isIncomplete": false,
+            "items": [
+                { "label": "competitions", "kind": 5, "sortText": "02" },
+                { "label": "save(self)", "kind": 2, "sortText": "01", "insertTextFormat": 2 },
+            ],
+        }))));
+        let completion = editor.completion.as_ref().expect("a popup");
+        let items: Vec<&str> = completion.items().map(|c| c.text.as_str()).collect();
+        // `sortText` is the order the server meant, and a snippet label is cut
+        // back to the name rather than pasted in with its brackets.
+        assert_eq!(items, ["save", "competitions"]);
+
+        // A character that is not a trigger asks nothing.
+        let (mut editor, written) = editor_completing("/nowhere/a.py", "x,");
+        editor.view_mut().sel = Selection::point(2);
+        editor.suggest_from_server(',');
+        assert!(sent(&written).iter().all(|m| m["method"] != "textDocument/completion"));
+    }
+
+    #[test]
+    fn an_answer_about_a_word_that_is_over_is_dropped() {
+        let (mut editor, written) = editor_completing("/nowhere/a.py", "va");
+        editor.view_mut().sel = Selection::point(2);
+        editor.open_completion(false);
+        let asked = sent(&written);
+        let request = asked.iter().find(|m| m["method"] == "textDocument/completion").expect("a request");
+
+        // Typed past the word since asking - a space ends it.
+        editor.view_mut().doc.text = ropey::Rope::from_str("va = ");
+        editor.view_mut().sel = Selection::point(5);
+        editor.lsp_message(0, Some(answer(&request["id"], json!([{ "label": "validate" }]))));
+        assert!(editor.completion.is_none(), "nobody is waiting for that");
     }
 
     #[test]

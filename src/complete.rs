@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::lsp::Suggestion;
 use crate::view::View;
 
 /// How much of the buffer a completion looks at, in chars either side of the
@@ -78,6 +79,61 @@ impl Completion {
         match completion.shown.is_empty() {
             true => None,
             false => Some(completion),
+        }
+    }
+
+    /// A popup made of nothing but what a server offered. This is what a `.`
+    /// opens: there is no word yet, so the buffer has nothing to say and the
+    /// server has everything to say.
+    pub fn from_server(start: usize, items: Vec<Suggestion>) -> Option<Completion> {
+        let mut completion = Completion {
+            start,
+            prefix: String::new(),
+            all: Vec::new(),
+            shown: Vec::new(),
+            selected: None,
+        };
+        completion.extend(items);
+        match completion.shown.is_empty() {
+            true => None,
+            false => Some(completion),
+        }
+    }
+
+    /// Fold a server's answer into a popup that is already open, ahead of what
+    /// the buffer found: a server knows what is *there*, while the buffer only
+    /// knows what has been typed somewhere before. Anything the buffer offered
+    /// under the same name gives way, since the server's copy carries a kind.
+    ///
+    /// Whatever was selected stays selected by name, so an answer landing a
+    /// keystroke late does not move the highlight out from under `enter`.
+    pub fn extend(&mut self, items: Vec<Suggestion>) {
+        if items.is_empty() {
+            return;
+        }
+        let chosen = self.selected_text().map(str::to_string);
+        let from_server: Vec<String> = items.iter().map(|item| item.text.clone()).collect();
+        let mut all: Vec<Candidate> = items
+            .into_iter()
+            .map(|item| Candidate { text: item.text, kind: item.kind })
+            .collect();
+        all.extend(
+            std::mem::take(&mut self.all)
+                .into_iter()
+                .filter(|candidate| !from_server.contains(&candidate.text)),
+        );
+        self.all = all;
+
+        let pick = match self.selected {
+            Some(_) => Pick::First,
+            None => Pick::Nothing,
+        };
+        self.filter(pick);
+        // Back to what was under the cursor, if it is still on offer.
+        if let Some(chosen) = chosen
+            && let Some(at) = self.shown.iter().position(|&i| self.all[i].text == chosen)
+        {
+            self.selected = Some(at);
         }
     }
 
@@ -177,7 +233,7 @@ pub fn is_word(c: char) -> bool {
 }
 
 /// Where the word ending at `at` begins.
-fn word_start(view: &View, at: usize) -> usize {
+pub fn word_start(view: &View, at: usize) -> usize {
     let mut start = at;
     while start > 0 && is_word(view.doc.text.char(start - 1)) {
         start -= 1;

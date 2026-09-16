@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 40: indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 41: completion from a language server, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -998,8 +998,39 @@ What it gives you, so far:
   whole project; `^o` comes back as usual. If the server has no answer - still
   indexing, or a name it cannot resolve - the tree-sitter lookup below has a
   go instead, so `gd` never does less than it did without one.
+- **Completion.** The popup asks the server as well as the buffer, so `self.`
+  in Python offers what is actually on `self` rather than words that happen to
+  be lying around the file. See below.
 - **What it is doing.** A server that is indexing says so in the status line,
   which is why `gd` is not answering yet. `:lsp` lists the servers running.
+
+### Completion from a server
+
+The popup does not wait for anybody. The buffer's own words are there in the
+same keystroke, and what the server sends is folded in when it arrives - in
+front, because a server knows what is *there* while the buffer only knows what
+someone has typed before. A name the buffer had already offered gives way to
+the server's copy of it, which carries a kind. Whatever you had selected stays
+selected by name, so an answer landing a keystroke late never moves the
+highlight out from under `enter`.
+
+A `.` opens a popup of its own. There is no word to complete after one, so the
+buffer has nothing to offer and nothing appears until the server answers -
+which is the one place the popup is worth waiting a moment for. The characters
+that do this are the ones the server asks to be told about; `.` for Python, and
+whatever else a server names.
+
+The server is asked once per popup rather than once per keystroke. What comes
+back is a list for the *position*, not for the prefix, so typing more of the
+word filters what is already here - the same reason the buffer's own candidates
+are gathered once and then filtered. An answer to a word you have finished with
+is dropped on arrival.
+
+Two things are declined on purpose. Snippets: a template with holes in it is
+not something to paste into a buffer, so an item that is one is cut back to its
+name. And ranking is left to the server - its `sortText` is the order it meant,
+which is how `value` comes before `__class__` without jack having opinions
+about dunders.
 
 How it works: a server is a child process speaking JSON-RPC over its stdin and
 stdout. A thread reads it and hands each message to the run loop on the same

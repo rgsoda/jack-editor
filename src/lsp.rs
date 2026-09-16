@@ -243,6 +243,14 @@ pub struct Location {
     pub position: (u32, u32),
 }
 
+/// One thing a server offers to finish a word with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    pub text: String,
+    /// The item's kind, as the popup spells kinds: `fn`, `var`, `type`.
+    pub kind: Option<&'static str>,
+}
+
 /// What a request was for, so the answer can be taken to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -251,6 +259,11 @@ pub enum Request {
     /// buffer had had, so an answer that arrives after you have moved on is
     /// dropped rather than yanking you back.
     Definition { view: usize, head: usize, edits: u64 },
+    /// The popup asked what the server would offer. `start` is where the word
+    /// being completed begins, which is what says whether the answer is still
+    /// about the same word - typing more of it since is fine and expected,
+    /// since a longer prefix only filters what came back.
+    Completion { view: usize, start: usize },
 }
 
 /// What a message from a server comes to.
@@ -260,6 +273,7 @@ pub enum Event {
     Ready,
     Diagnostics { path: PathBuf, diagnostics: Vec<RawDiagnostic> },
     Definition { request: Request, locations: Vec<Location> },
+    Completion { request: Request, items: Vec<Suggestion> },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -386,6 +400,26 @@ impl Client {
                     "synchronization": { "didSave": true },
                     "publishDiagnostics": { "versionSupport": false },
                     "definition": { "linkSupport": true },
+                    // Without this a server may decide the client is too
+                    // simple to be worth completing properly: pyright answers
+                    // a bare keyword list rather than what is on the thing
+                    // before the dot. Snippets are declined on purpose - a
+                    // template with holes in it is not something to paste
+                    // into a buffer.
+                    "completion": {
+                        "contextSupport": true,
+                        "completionItem": {
+                            "snippetSupport": false,
+                            "commitCharactersSupport": false,
+                            "documentationFormat": ["plaintext"],
+                            "deprecatedSupport": false,
+                            "preselectSupport": false,
+                            "insertReplaceSupport": false,
+                        },
+                        "completionItemKind": {
+                            "valueSet": (1..=25).collect::<Vec<u8>>(),
+                        },
+                    },
                 },
                 "window": { "workDoneProgress": true },
                 "workspace": { "configuration": true, "workspaceFolders": true },
@@ -411,6 +445,21 @@ impl Client {
     /// closed and the indexes have moved. The answers are ignored on arrival.
     pub fn forget_definitions(&mut self) {
         self.pending.retain(|_, request| !matches!(request, Request::Definition { .. }));
+    }
+
+    /// The characters this server wants to be asked after - `.` for Python,
+    /// and often `(` or `:` elsewhere. Empty when it named none, which means
+    /// a word is the only thing worth asking about.
+    pub fn completion_triggers(&self) -> Vec<char> {
+        self.capabilities["completionProvider"]["triggerCharacters"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|text| text.chars().next())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
@@ -498,6 +547,7 @@ impl Client {
                 Event::Ready
             }
             Request::Definition { .. } => Event::Definition { request, locations: locations(&result) },
+            Request::Completion { .. } => Event::Completion { request, items: suggestions(&result) },
         }
     }
 
@@ -624,6 +674,62 @@ fn locations(result: &Value) -> Vec<Location> {
         Value::Object(_) => one(result).into_iter().collect(),
         _ => Vec::new(),
     }
+}
+
+/// What a server offers, in either shape the protocol allows: a bare list, or
+/// a list with a flag saying it is only the start of one.
+///
+/// `sortText` is the server saying what order it meant - pyright puts the
+/// members of the thing before the dot above everything else that way - so it
+/// is what these are sorted by, falling back to the label.
+fn suggestions(result: &Value) -> Vec<Suggestion> {
+    let list = match result.get("items") {
+        Some(items) => items.as_array(),
+        None => result.as_array(),
+    };
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    let mut items: Vec<(String, Suggestion)> = list
+        .iter()
+        .filter_map(|item| {
+            let label = item["label"].as_str()?.trim();
+            // `insertText` is what to type when it differs from what to show -
+            // except in snippet form, which is a template with holes in it and
+            // not something to paste into a buffer. The label is the honest
+            // fallback, cut at the bracket where a server has written a
+            // signature into it.
+            let snippet = item["insertTextFormat"].as_u64() == Some(2);
+            let text = match item["insertText"].as_str() {
+                Some(text) if !snippet => text.trim(),
+                _ => label.split(['(', '<', ' ']).next().unwrap_or(label),
+            };
+            if text.is_empty() {
+                return None;
+            }
+            let sort = item["sortText"].as_str().unwrap_or(label).to_string();
+            Some((sort, Suggestion { text: text.to_string(), kind: kind_of(item["kind"].as_u64()) }))
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.into_iter().map(|(_, item)| item).collect()
+}
+
+/// `CompletionItemKind`, in the words the popup already uses for what the
+/// grammar finds. The numbers are the protocol's, and the ones that would say
+/// nothing useful in three letters are left unnamed.
+fn kind_of(number: Option<u64>) -> Option<&'static str> {
+    Some(match number? {
+        2 | 3 => "fn",
+        4 => "new",
+        5 => "field",
+        6 | 10 => "var",
+        7 | 8 | 22 => "type",
+        9 => "mod",
+        14 => "kw",
+        21 => "const",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

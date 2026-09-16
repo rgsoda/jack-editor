@@ -2011,6 +2011,9 @@ impl Editor {
         };
         self.completion = Completion::new(self.view(), at, pick);
         self.dismissed = None;
+        // The buffer answers now; the server answers in a moment, into the
+        // same popup - or into a new one, if the buffer had nothing.
+        self.lsp_complete(complete::word_start(self.view(), at), None);
         if self.completion.is_none() {
             self.message = "no completions".into();
         }
@@ -2043,13 +2046,28 @@ impl Editor {
             return;
         }
         self.completion = Completion::new(view, at, Pick::Nothing);
-        // Nothing to offer, and there never will be: the candidates come from
-        // a window that does not move while you type, and a longer prefix can
-        // only match fewer of them. Remembering that is what keeps typing a
-        // new name in a big file from gathering once per keystroke.
+        self.lsp_complete(start, None);
+        // Nothing to offer, and there never will be - from the buffer. The
+        // server may still answer, and `dismissed` is not in its way: what it
+        // stops is gathering the buffer's words again, once per keystroke.
         if self.completion.is_none() {
             self.dismissed = Some(start);
         }
+    }
+
+    /// A character the server asked to be told about - a `.`, most of the
+    /// time. There is no word here to complete, so there is nothing to show
+    /// until the answer lands; `completion_answer` opens the popup then.
+    pub fn suggest_from_server(&mut self, typed: char) {
+        if self.autocomplete == 0 || self.mode != Mode::Insert {
+            return;
+        }
+        if !self.completion_triggers().contains(&typed) {
+            return;
+        }
+        self.completion = None;
+        self.dismissed = None;
+        self.lsp_complete(self.view().sel.head, Some(typed));
     }
 
     pub fn completion_step(&mut self, forward: bool) {

@@ -1399,9 +1399,15 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
     if let KeyCode::Char(c) = key.code
         && !ctrl
         && !alt
-        && crate::complete::is_word(c)
     {
-        editor.suggest_completion();
+        match crate::complete::is_word(c) {
+            true => editor.suggest_completion(),
+            // `.` and the other characters a server asks to hear about: there
+            // is no word to complete, so nothing local can help, and the
+            // server is the only one who knows what is on the thing you just
+            // typed a dot after.
+            false => editor.suggest_from_server(c),
+        }
     }
 }
 
