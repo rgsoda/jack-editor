@@ -39,6 +39,8 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "lsp", argument: Argument::None },
     Command { name: "format", argument: Argument::None },
     Command { name: "shell", argument: Argument::None },
+    Command { name: "map", argument: Argument::None },
+    Command { name: "unmap", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
     Command { name: "config", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
@@ -200,6 +202,20 @@ pub fn default_config() -> String {
         out.push_str(line);
         out.push('\n');
     }
+    for line in [
+        "",
+        "# `<space>` is yours: `map {key} {command}` says what one of its keys",
+        "# does, written as it would be typed after `:`. `:map` on its own",
+        "# lists them, and `:unmap {key}` takes one back. The few leader keys",
+        "# jack already uses - b f s d n x ? - are not yours to take.",
+        "#",
+        "# map g !lazygit",
+        "# map t !cargo test",
+    ] {
+        out.push_str(line);
+        out.push('\n');
+    }
+
     for setting in SETTINGS {
         out.push('\n');
         for line in wrap(setting.about, 72) {

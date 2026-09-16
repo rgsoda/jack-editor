@@ -1,5 +1,6 @@
 use anyhow::Result;
 use regex::RegexBuilder;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -307,6 +308,10 @@ pub struct Editor {
     pub dog: Dog,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
+    /// What `<space>{key}` runs, as set by `:map`. The leader is the space
+    /// left for you: the rest of normal mode is vim's, and a mapping that
+    /// quietly took `d` or `w` away would be a different editor.
+    pub leader: BTreeMap<char, String>,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -422,6 +427,7 @@ impl Editor {
             completion: None,
             info: None,
             shell: None,
+            leader: BTreeMap::new(),
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -977,6 +983,8 @@ impl Editor {
             ("bd" | "bdelete", _) => self.close_buffer(force),
             ("lsp", _) => self.lsp_report(),
             ("sh" | "shell", _) => self.run_shell(""),
+            ("map", argument) => self.map_leader(argument),
+            ("unmap", argument) => self.unmap_leader(argument),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
                 if let Err(err) = self.open_file(path) {
@@ -988,6 +996,65 @@ impl Editor {
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
         }
+    }
+
+    /// `:map g !lazygit` - what `<space>g` runs. Bare `:map` lists what is
+    /// mapped; `:unmap g` takes one back.
+    ///
+    /// One character after the leader, and a command line as you would type it
+    /// after `:`. Not a key sequence and not a recording of keystrokes: a
+    /// command is a thing with a name that can be listed, said back, and put
+    /// in a config file, which is the whole point of having this be config.
+    fn map_leader(&mut self, argument: &str) {
+        if argument.is_empty() {
+            self.message = match self.leader.is_empty() {
+                true => "nothing mapped (:map g !lazygit)".into(),
+                false => self
+                    .leader
+                    .iter()
+                    .map(|(key, command)| format!("<space>{key} {command}"))
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            };
+            return;
+        }
+        let (key, command) = match argument.split_once(char::is_whitespace) {
+            Some((key, command)) => (key, command.trim()),
+            None => (argument, ""),
+        };
+        let mut chars = key.chars();
+        let (Some(key), None) = (chars.next(), chars.next()) else {
+            self.message = format!("one key after the leader, not {key:?}");
+            return;
+        };
+        if let Some(what) = built_in_leader(key) {
+            self.message = format!("<space>{key} is {what}");
+            return;
+        }
+        if command.is_empty() {
+            self.message = "nothing to map it to".into();
+            return;
+        }
+        // Written as it would be typed, `:` and all, or without - both spell
+        // the same thing and both are what someone reaches for.
+        //
+        // Nothing is said when it works, because a config file is read by
+        // running its lines and anything said there reads as a complaint about
+        // the line - the same silence `:set` keeps.
+        let command = command.trim_start_matches(':').trim().to_string();
+        self.leader.insert(key, command);
+    }
+
+    fn unmap_leader(&mut self, argument: &str) {
+        let key = argument.chars().next();
+        if key.and_then(|key| self.leader.remove(&key)).is_none() {
+            self.message = format!("{argument} is not mapped");
+        }
+    }
+
+    /// What `<space>{key}` runs, when it is one of yours.
+    pub fn leader_command(&self, key: char) -> Option<String> {
+        self.leader.get(&key).cloned()
     }
 
     /// `:!cmd`, and `:sh` for a shell of your own. The terminal goes to it
@@ -1418,6 +1485,18 @@ impl Editor {
     /// Every key, searchable by the key or by what it does.
     pub fn open_help_picker(&mut self) {
         let width = BINDINGS.iter().map(|b| b.keys.chars().count()).max().unwrap_or(0);
+        // What `:map` has been told, alongside what jack came with: a key you
+        // gave yourself is a key you want to be reminded of.
+        let mapped: Vec<Item> = self
+            .leader
+            .iter()
+            .map(|(key, command)| Item {
+                text: format!("{:width$}  :{command}", format!("<space>{key}")),
+                detail: "mapped".into(),
+                id: 0,
+                target: String::new(),
+            })
+            .collect();
         let items = BINDINGS
             .iter()
             .map(|binding| Item {
@@ -1428,6 +1507,7 @@ impl Editor {
                 id: 0,
                 target: String::new(),
             })
+            .chain(mapped)
             .collect();
         self.open_picker(Picker::new(Source::Help, items));
     }
@@ -3188,6 +3268,22 @@ impl Editor {
 }
 
 
+/// What a leader key already does, for the ones that are not yours to map.
+/// The leader is the space left for you, and these are the few corners of it
+/// jack has already furnished.
+fn built_in_leader(key: char) -> Option<&'static str> {
+    Some(match key {
+        'b' => "the buffer picker",
+        'f' => "the file picker",
+        's' => "the search picker",
+        'd' => "the symbol picker",
+        '?' => "the help picker",
+        'n' => "line numbers",
+        'x' => "close this buffer",
+        _ => return None,
+    })
+}
+
 /// Split a `path:line:text` hit back into an item. The path and line become
 /// what confirming it jumps to; the text is what is matched and shown.
 fn grep_item(hit: String) -> Item {
@@ -4232,6 +4328,55 @@ mod tests {
         e.write(None, true);
         assert!(e.message.starts_with("wrote"), "{}", e.message);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine original\n");
+    }
+
+    #[test]
+    fn the_leader_is_yours_to_map() {
+        let mut e = Editor::scratch();
+        e.run_command("map g !lazygit");
+        assert_eq!(e.leader_command('g').as_deref(), Some("!lazygit"));
+        assert_eq!(e.message, "", "silent, the way :set is");
+
+        // Written with the colon, as it would be typed: the same thing.
+        e.run_command("map t :!cargo test");
+        assert_eq!(e.leader_command('t').as_deref(), Some("!cargo test"));
+
+        e.run_command("map");
+        assert_eq!(e.message, "<space>g !lazygit, <space>t !cargo test");
+
+        e.run_command("unmap g");
+        assert_eq!(e.leader_command('g'), None);
+        e.run_command("unmap g");
+        assert_eq!(e.message, "g is not mapped");
+    }
+
+    #[test]
+    fn a_leader_key_jack_already_uses_is_not_yours() {
+        let mut e = Editor::scratch();
+        e.run_command("map f !lazygit");
+        assert_eq!(e.message, "<space>f is the file picker");
+        assert_eq!(e.leader_command('f'), None);
+
+        e.run_command("map gg !lazygit");
+        assert!(e.message.starts_with("one key after the leader"), "{}", e.message);
+        e.run_command("map g");
+        assert_eq!(e.message, "nothing to map it to");
+    }
+
+    #[test]
+    fn a_config_file_can_map_the_leader_and_the_map_can_then_run_things() {
+        let mut e = Editor::scratch();
+        // As a config file runs it: a message would read as a complaint about
+        // the line and stop the file there.
+        e.from_config = true;
+        e.run_command("map g !lazygit");
+        assert_eq!(e.message, "");
+        e.from_config = false;
+
+        // And pressing it is what leaves the command for the run loop.
+        assert_eq!(e.leader_command('g').as_deref(), Some("!lazygit"));
+        e.run_command(&e.leader_command('g').expect("mapped"));
+        assert_eq!(e.shell.as_deref(), Some("lazygit"));
     }
 
     #[test]

@@ -568,6 +568,13 @@ impl Keys {
                     KeyCode::Char('?') => editor.open_help_picker(),
                     KeyCode::Char('n') => editor.cycle_numbers(),
                     KeyCode::Char('x') => editor.close_buffer(false),
+                    // Anything else is yours, if you have said what it is:
+                    // `:map g !lazygit`, in a config file or typed.
+                    KeyCode::Char(key) => {
+                        if let Some(command) = editor.leader_command(key) {
+                            editor.run_command(&command);
+                        }
+                    }
                     _ => {}
                 }
                 self.finish();

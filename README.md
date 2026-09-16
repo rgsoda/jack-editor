@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 44: running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 45: a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -138,6 +138,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:fmt` `:'<,'>fmt` | format the buffer with what the server formats with — rustfmt, gofmt — or just the lines a range names |
 | `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
 | `:sh` | a shell; `exit` comes back |
+| `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
@@ -1054,6 +1055,35 @@ rust-analyzer runs `cargo check`. Quitting stops it.
 
 Not yet: rename, code actions, references. Each of these is one request and an
 answer to draw, on top of what is here.
+
+## Mapping the leader
+
+`<space>` is the space left for you. `:map g !lazygit` says what `<space>g`
+does, `:map` on its own lists what is mapped, and `:unmap g` takes one back.
+Put the line in the config file and it is yours every time:
+
+```
+map g !lazygit
+map t !cargo test
+```
+
+What is mapped is a *command*, written exactly as it would be typed after `:`
+(with the colon or without - both spell the same thing). Not a key sequence,
+not a recording of keystrokes: a command has a name, so it can be listed, said
+back to you, and read out of a config file, which is the whole point of this
+being config rather than a key macro. `<space>?` lists yours alongside jack's
+own, marked as mapped.
+
+Only the leader. The rest of normal mode is vim's, and a config file that
+quietly took `d` or `w` away would be a different editor wearing jack's name -
+you would not be able to read anyone else's keystrokes, or type your own into
+anything else. The seven leader keys jack has already furnished - `b f s d n x
+?` - are not yours to take either, and say what they are already for instead of
+being replaced.
+
+Nothing is said when a mapping works. A config file is read by running its
+lines, so anything said there reads as a complaint about the line and stops the
+file - which is the same silence `:set` keeps, for the same reason.
 
 ## Handing the terminal over
 
