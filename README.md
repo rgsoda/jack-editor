@@ -1177,7 +1177,7 @@ the list itself is twenty lines.
 ## The status line
 
 ```
- NORMAL   main.rs ● 1/2   3  1                    rust   42%    128   17 
+ NORMAL   main.rs ● 1/2  +3 ~1                    rust   42%    128   17 
 ```
 
 Blocks, left to right: the mode, the file (its language's icon, its name, a dot
@@ -1199,7 +1199,14 @@ block's colours to the terminal degrades to hairlines rather than to mud.
 The glyphs are Nerd Font code points — the Powerline wedges, the Devicons file
 icons, and `` in front of the position, which reads `12:13`: line and column
 the way every other tool writes them, one marker rather than a label on each
-number. If your terminal font is not patched you will see boxes, and `:set
+number.
+
+The counts are not icons, in either set. `+3 ~1 -2` for git and `E4 W2` for the
+language server are what the pretty set draws too, because an icon squeezed
+into one cell with a number pushed against it is a smudge at terminal sizes —
+and these are the parts of the line you read rather than recognise. They are
+the same characters the gutter draws down the side, so the status line is a
+tally of what is already there, and the colour still says which is which. If your terminal font is not patched you will see boxes, and `:set
 noglyphs` swaps in an ASCII set (`|`, `+`, and a bare `12:13`) that keeps the
 colours and loses the pictures. Everything else is unaffected: the glyph set is
 ten strings in `status.rs` and nothing else knows about it.

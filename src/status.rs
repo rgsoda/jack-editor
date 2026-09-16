@@ -68,12 +68,17 @@ pub const NERD: Glyphs = Glyphs {
     modified: "\u{25cf}",
     position: "\u{e0a1}",
     scratch: "\u{f15b}",
-    added: "\u{f457}",
-    modified_sign: "\u{f459}",
-    deleted: "\u{f458}",
+    // The counts are text even in the pretty set, and on purpose: an icon in
+    // one cell with a number against it is a smudge, and these are the parts
+    // of the line you are meant to read rather than recognise. The signs are
+    // the gutter's own, so the status line reads as a tally of what is drawn
+    // down the side, and the colour still says which is which.
+    added: "+",
+    modified_sign: "~",
+    deleted: "-",
     truncated: "\u{e0b3}",
-    error: "\u{f057} ",
-    warning: "\u{f071} ",
+    error: "E",
+    warning: "W",
     diagnostic: "\u{25cf}",
 };
 
