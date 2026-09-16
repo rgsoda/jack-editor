@@ -39,6 +39,10 @@ pub enum PromptKind {
     Search { backward: bool },
     /// `:`: a command, run when it is accepted.
     Command,
+    /// `gR`: the new name for the thing under the cursor. It starts with the
+    /// old name written in, since a rename is usually a word being adjusted
+    /// rather than replaced.
+    Rename,
 }
 
 pub struct Prompt {
@@ -62,14 +66,22 @@ pub struct Completing {
 }
 
 impl Prompt {
-    /// The character the prompt starts with, which is also how you can tell
-    /// which way the search is going.
-    pub fn sigil(&self) -> char {
+    /// What the prompt starts with, which is also how you can tell which way
+    /// a search is going. A rename says so in a word: it is not a command and
+    /// not a search, and a lone `:` would claim it was one of them.
+    pub fn prefix(&self) -> &'static str {
         match self.kind {
-            PromptKind::Search { backward: true } => '?',
-            PromptKind::Search { backward: false } => '/',
-            PromptKind::Command => ':',
+            PromptKind::Search { backward: true } => "?",
+            PromptKind::Search { backward: false } => "/",
+            PromptKind::Command => ":",
+            PromptKind::Rename => "rename> ",
         }
+    }
+
+    /// The whole line as it is drawn, which is also what the cursor's column
+    /// is counted along: one string, so the two cannot disagree.
+    pub fn line(&self) -> String {
+        format!("{}{}", self.prefix(), self.input)
     }
 
     fn backward(&self) -> bool {
@@ -586,6 +598,17 @@ impl Editor {
         };
         if prompt.kind == PromptKind::Command {
             return self.run_command(&prompt.input.clone());
+        }
+        if prompt.kind == PromptKind::Rename {
+            let name = prompt.input.trim().to_string();
+            if name.is_empty() {
+                self.message.clear();
+                return;
+            }
+            if !self.lsp_rename(&name) {
+                self.message = "no language server to rename with".into();
+            }
+            return;
         }
         let origin = self.jump_at(prompt.origin.0);
         if prompt.input.is_empty() {
@@ -1637,7 +1660,7 @@ impl Editor {
                         Ok(()) => self.jumps.push(origin),
                         Err(err) => self.message = format!("{err:#}"),
                     },
-                    Source::Grep => match self.open_file(&choice.target) {
+                    Source::Grep | Source::References => match self.open_file(&choice.target) {
                         // Line numbers count from one; lines here count from zero.
                         Ok(()) => {
                             self.jumps.push(origin);
@@ -1670,6 +1693,25 @@ impl Editor {
             false => end,
         };
         true
+    }
+
+    /// `gr`: every use of the name under the cursor, from the language server.
+    /// There is no tree-sitter fallback: what one file can see is the file's
+    /// own uses, which `*` already finds and which is not what this is for.
+    pub fn references(&mut self) {
+        if !self.lsp_references() {
+            self.message = "no language server for this buffer".into();
+        }
+    }
+
+    /// `gR`: ask what to rename the name under the cursor to. The prompt opens
+    /// with the old name in it, and the server is asked when it is accepted.
+    pub fn start_rename(&mut self) {
+        let word = self.view().word_under_cursor().unwrap_or_default();
+        self.open_prompt(PromptKind::Rename);
+        if let Some(prompt) = self.prompt.as_mut() {
+            prompt.input.push_str(&word);
+        }
     }
 
     pub fn view(&self) -> &View {
@@ -2110,7 +2152,7 @@ impl Editor {
         // A prompt puts the cursor on the status line, after what is typed.
         if let Some(prompt) = self.prompt.as_ref() {
             return (
-                1 + prompt.input.chars().count() as u16,
+                crate::ui::str_width(&prompt.line()) as u16,
                 (self.top() + self.area_rows()) as u16,
             );
         }

@@ -660,7 +660,7 @@ fn draw_prompt(editor: &Editor, prompt: &Prompt, surface: &mut Surface) {
         draw_wildmenu(editor, completing, surface, row - 1);
     }
     let style = editor.theme.style("ui.statusline");
-    let text = format!("{}{}", prompt.sigil(), prompt.input);
+    let text = prompt.line();
     let mut x = put_str(surface, 0, row, &text, style, width);
     while x < width {
         surface.put(x, row, ' ', 1, style);

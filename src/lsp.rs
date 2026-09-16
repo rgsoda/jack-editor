@@ -272,6 +272,20 @@ pub struct TextEdit {
     pub text: String,
 }
 
+/// Everything a server wants changed, over however many files: a rename
+/// touches every use of the name, and most of them are not the file you are
+/// looking at. The edits for one file are in the order the server sent them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceEdit {
+    pub changes: Vec<(PathBuf, Vec<TextEdit>)>,
+}
+
+impl WorkspaceEdit {
+    pub fn is_empty(&self) -> bool {
+        self.changes.iter().all(|(_, edits)| edits.is_empty())
+    }
+}
+
 /// What a request was for, so the answer can be taken to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -293,6 +307,13 @@ pub enum Request {
     /// list of positions and applying it to text that has moved on would
     /// scramble the file rather than tidy it.
     Format { view: usize, edits: u64 },
+    /// `gr`: every use of the name under the cursor. Stale the moment the
+    /// cursor moves - the answer is a list about one name, and by then it
+    /// would be a list about a different one.
+    References { view: usize, head: usize, edits: u64 },
+    /// `gR`: the name under the cursor, everywhere, replaced. What it is being
+    /// renamed to travelled with the request and comes back in the edits.
+    Rename { view: usize, head: usize, edits: u64 },
     /// The popup asked what the server would offer. `start` is where the word
     /// being completed begins, which is what says whether the answer is still
     /// about the same word - typing more of it since is fine and expected,
@@ -313,6 +334,8 @@ pub enum Event {
     Hover { request: Request, markup: Option<String> },
     Signature { request: Request, help: Option<Signature> },
     Format { request: Request, edits: Vec<TextEdit> },
+    References { request: Request, locations: Vec<Location> },
+    Rename { request: Request, edit: WorkspaceEdit },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -441,6 +464,10 @@ impl Client {
                     "definition": { "linkSupport": true },
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
                     "formatting": { "dynamicRegistration": false },
+                    "references": { "dynamicRegistration": false },
+                    // No `prepareSupport`: the answer to "can this be renamed"
+                    // is the rename failing, which it says anyway.
+                    "rename": { "dynamicRegistration": false, "prepareSupport": false },
                     "rangeFormatting": { "dynamicRegistration": false },
                     "signatureHelp": {
                         "contextSupport": true,
@@ -616,6 +643,8 @@ impl Client {
             Request::Hover { .. } => Event::Hover { request, markup: hover_markup(&result) },
             Request::Format { .. } => Event::Format { request, edits: text_edits(&result) },
             Request::Signature { .. } => Event::Signature { request, help: signature(&result) },
+            Request::References { .. } => Event::References { request, locations: locations(&result) },
+            Request::Rename { .. } => Event::Rename { request, edit: workspace_edit(&result) },
         }
     }
 
@@ -798,6 +827,46 @@ fn text_edits(result: &Value) -> Vec<TextEdit> {
             })
         })
         .collect()
+}
+
+/// What a server wants changed, in either shape the protocol allows: a
+/// `changes` map of uri to edits, or `documentChanges`, which is the same list
+/// with a document version attached to each file - and may also carry creates,
+/// renames and deletions of whole files, which are skipped. A rename that
+/// needs a file moved is one jack will not do quietly.
+fn workspace_edit(result: &Value) -> WorkspaceEdit {
+    let mut changes: Vec<(PathBuf, Vec<TextEdit>)> = Vec::new();
+    let mut add = |uri: Option<&str>, edits: &Value| {
+        let Some(path) = uri.and_then(path_of) else {
+            return;
+        };
+        let edits = text_edits(edits);
+        if edits.is_empty() {
+            return;
+        }
+        match changes.iter_mut().find(|(known, _)| *known == path) {
+            Some((_, known)) => known.extend(edits),
+            None => changes.push((path, edits)),
+        }
+    };
+
+    if let Some(map) = result["changes"].as_object() {
+        for (uri, edits) in map {
+            add(Some(uri.as_str()), edits);
+        }
+    }
+    if let Some(list) = result["documentChanges"].as_array() {
+        for change in list {
+            // A `kind` is a create, rename or delete of a file rather than an
+            // edit to one, and has no `edits` to take.
+            if change.get("kind").is_some() {
+                continue;
+            }
+            add(change["textDocument"]["uri"].as_str(), &change["edits"]);
+        }
+    }
+    changes.sort_by(|a, b| a.0.cmp(&b.0));
+    WorkspaceEdit { changes }
 }
 
 /// A hover answer's text, in any of the shapes the protocol has collected over

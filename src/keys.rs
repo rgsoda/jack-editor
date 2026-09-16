@@ -35,6 +35,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "%", what: "jump to the matching bracket", mode: "normal" },
     Binding { keys: "gd gD", what: "go to the definition: the language server's, or in scope; in the file", mode: "normal" },
     Binding { keys: "K", what: "what the language server says this is", mode: "normal" },
+    Binding { keys: "gr gR", what: "every use of this name; rename it everywhere", mode: "normal" },
     Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
@@ -546,6 +547,8 @@ impl Keys {
                     }
                     KeyCode::Char('d') => editor.goto_definition(true),
                     KeyCode::Char('D') => editor.goto_definition(false),
+                    KeyCode::Char('r') => editor.references(),
+                    KeyCode::Char('R') => editor.start_rename(),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
                     KeyCode::Char('n') => match count {
                         Some(n) => editor.switch_to(n - 1),

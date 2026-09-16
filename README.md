@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 46: bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 47: renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -69,6 +69,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `*` | search for the word under the cursor |
 | `%` | jump to the matching bracket |
 | `gd` `gD` | go to the definition: the language server's, or in scope / in the file |
+| `gr` `gR` | every use of the name, in a picker / rename it everywhere |
 | `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
 | `^o` `^i` | back / forward along the jump list |
@@ -1181,6 +1182,33 @@ it was on.
 
 The popup wins any row they both want: it is the thing being typed into.
 
+## Every use of a name, and renaming it
+
+`gr` asks the server for every use of the name under the cursor and puts them
+in a picker: the line each one is on, with the file and line number beside it.
+The declaration is in the list too - looking at what calls a function, the
+function is one of the places you want to get back to. Typing filters the list
+rather than asking again, because unlike the grep picker this list is already
+in hand. Choosing one opens the file at the line, in a split with `^v` or `^s`
+like every other picker.
+
+The line each use is on comes from the open buffer where the file is open and
+from the disk where it is not, so a file you have edited but not written reads
+as what is on your screen rather than as what the disk still says.
+
+`gR` renames it. The prompt opens with the old name already in it - a rename is
+usually a word being adjusted rather than replaced - and what comes back is a
+list of edits over however many files. Files that were not open are opened to
+be changed, each file's edits are one undo step in its own buffer, and the
+buffer you asked from is the one you are left looking at. Nothing is written:
+`gR` leaves you with modified buffers to look at and `u` to change your mind
+with, and `:w` when you are happy. A server that will not rename something -
+a keyword, a name from a library you cannot edit - says so and changes nothing.
+
+There is no tree-sitter fallback for either. What one file can see is one
+file's uses, which `*` already finds, and a rename that only reached the file
+you are looking at would be worse than no rename at all.
+
 ## Go to definition
 
 `gd` on a name goes to where it is defined, and `^o` comes back. Three tiers,
@@ -1542,8 +1570,8 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- More from the language server: rename, references in a picker, code actions
-  on the diagnostics already in the gutter, formatting.
+- More from the language server: code actions on the diagnostics already in
+  the gutter.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

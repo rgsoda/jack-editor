@@ -9,8 +9,9 @@ use crate::complete::{self, Completion};
 use crate::info::{self, Info};
 use crate::lsp::{
     self, Client, Encoding, Event, Location, RawDiagnostic, Request, Signature, State, Suggestion,
-    TextEdit,
+    TextEdit, WorkspaceEdit,
 };
+use crate::picker::{Item, Picker, Source};
 use crate::syntax::language_for_path;
 use crate::view::{Diagnostic, Lsp, Selection};
 
@@ -155,6 +156,8 @@ impl Editor {
             Event::Hover { request, markup } => self.hover_answer(request, markup),
             Event::Signature { request, help } => self.signature_answer(request, help),
             Event::Format { request, edits } => self.format_answer(request, edits, encoding),
+            Event::References { request, locations } => self.references_answer(request, locations),
+            Event::Rename { request, edit } => self.rename_answer(request, edit, encoding),
         }
     }
 
@@ -498,6 +501,179 @@ impl Editor {
         };
     }
 
+    /// `gr`: every use of the name under the cursor, in a picker. The
+    /// declaration is included - looking at what uses a function, the function
+    /// itself is one of the places you want to get back to.
+    pub(super) fn lsp_references(&mut self) -> bool {
+        let Some((server, mut params, head, edits)) = self.at_cursor() else {
+            return false;
+        };
+        params["context"] = json!({ "includeDeclaration": true });
+        let request = Request::References { view: self.current, head, edits };
+        if !self.servers[server].request("textDocument/references", "referencesProvider", params, request) {
+            return false;
+        }
+        self.message = format!("asking {}", self.servers[server].name);
+        true
+    }
+
+    /// The uses the server found, as a list to walk. Each row is the line the
+    /// use is on, read from the buffer if the file is open and from the disk
+    /// if it is not, so the list says what the code does rather than only
+    /// where it is.
+    fn references_answer(&mut self, request: Request, locations: Vec<Location>) {
+        let Request::References { view, head, edits } = request else {
+            return;
+        };
+        if !self.still_asking(view, head, edits) {
+            return;
+        }
+        self.message.clear();
+        if locations.is_empty() {
+            self.message = "no references".into();
+            return;
+        }
+
+        let root = std::env::current_dir().ok();
+        let mut cached: Option<(std::path::PathBuf, Vec<String>)> = None;
+        let mut items = Vec::with_capacity(locations.len());
+        for location in &locations {
+            let line = location.position.0 as usize;
+            // The open buffer first: it has what is on screen, which after an
+            // edit is not what the file on disk says.
+            let open = self.views.iter().find(|view| {
+                view.doc.path.as_deref().map(absolute).as_deref() == Some(location.path.as_path())
+            });
+            let text = match open {
+                Some(view) if line < view.doc.len_lines() => view.doc.line_str(line).trim().to_string(),
+                Some(_) => String::new(),
+                None => {
+                    if cached.as_ref().is_none_or(|(path, _)| path != &location.path) {
+                        let read = std::fs::read_to_string(&location.path).unwrap_or_default();
+                        let lines = read.lines().map(str::to_string).collect();
+                        cached = Some((location.path.clone(), lines));
+                    }
+                    let (_, lines) = cached.as_ref().expect("just set");
+                    lines.get(line).map(|text| text.trim().to_string()).unwrap_or_default()
+                }
+            };
+            // Shown relative to where jack was started, which is how every
+            // other list of paths here reads.
+            let shown = root
+                .as_deref()
+                .and_then(|root| location.path.strip_prefix(root).ok())
+                .unwrap_or(location.path.as_path());
+            items.push(Item {
+                text,
+                detail: format!("{}:{}", shown.display(), line + 1),
+                id: line + 1,
+                target: location.path.display().to_string(),
+            });
+        }
+        self.open_picker(Picker::new(Source::References, items));
+    }
+
+    /// `gR`: rename the name under the cursor, everywhere the server knows of
+    /// it. The new name was typed into the prompt; what comes back is a list
+    /// of edits over however many files.
+    pub(super) fn lsp_rename(&mut self, name: &str) -> bool {
+        let Some((server, mut params, head, edits)) = self.at_cursor() else {
+            return false;
+        };
+        params["newName"] = json!(name);
+        let request = Request::Rename { view: self.current, head, edits };
+        if !self.servers[server].request("textDocument/rename", "renameProvider", params, request) {
+            return false;
+        }
+        self.message = format!("renaming to {name}");
+        true
+    }
+
+    /// The rename the server worked out, applied. Files it touches that are
+    /// not open are opened, and nothing is written: a rename you can see and
+    /// undo is worth more than one that has already happened on disk.
+    fn rename_answer(&mut self, request: Request, edit: WorkspaceEdit, encoding: Encoding) {
+        let Request::Rename { view, head, edits } = request else {
+            return;
+        };
+        if !self.still_asking(view, head, edits) {
+            return;
+        }
+        if edit.is_empty() {
+            self.message = "nothing to rename".into();
+            return;
+        }
+        match self.apply_workspace_edit(edit, encoding) {
+            Ok((places, files)) => {
+                self.message = match files {
+                    1 => format!("renamed: {places} places"),
+                    files => format!("renamed: {places} places in {files} files"),
+                }
+            }
+            Err(err) => self.message = format!("{err:#}"),
+        }
+    }
+
+    /// Everything a server wants changed, over however many files. Each file
+    /// is one undo step in its own buffer, back to front so that the edits
+    /// still to come are still where the server said they were.
+    ///
+    /// The buffer that was in front stays in front: an edit is not a reason to
+    /// be taken somewhere else.
+    fn apply_workspace_edit(
+        &mut self,
+        edit: WorkspaceEdit,
+        encoding: Encoding,
+    ) -> anyhow::Result<(usize, usize)> {
+        let was = self.current;
+        let here = self.view().doc.path.as_deref().map(absolute);
+        let (mut places, mut files) = (0, 0);
+
+        for (path, edits) in edit.changes {
+            if edits.is_empty() {
+                continue;
+            }
+            let index = match self
+                .views
+                .iter()
+                .position(|view| view.doc.path.as_deref().map(absolute).as_deref() == Some(path.as_path()))
+            {
+                Some(index) => index,
+                None => {
+                    self.open_file(&path)?;
+                    self.current
+                }
+            };
+            self.current = index;
+
+            let mut edits = edits;
+            edits.sort_by_key(|edit| edit.start);
+            self.begin_undo_group();
+            for edit in edits.iter().rev() {
+                let doc = &self.views[index].doc;
+                let start = lsp::from_position(&doc.text, edit.start.0, edit.start.1, encoding);
+                let end = lsp::from_position(&doc.text, edit.end.0, edit.end.1, encoding);
+                self.views[index].edit_at(start, end.saturating_sub(start), &edit.text, None);
+            }
+            self.end_undo_group();
+            places += edits.len();
+            files += 1;
+        }
+
+        // Back where it started, by path rather than by index: opening a file
+        // can take the scratch buffer's place and move the indexes about.
+        let back = here
+            .and_then(|here| {
+                self.views
+                    .iter()
+                    .position(|view| view.doc.path.as_deref().map(absolute).as_deref() == Some(here.as_path()))
+            })
+            .unwrap_or(was.min(self.views.len() - 1));
+        self.switch_to(back);
+        self.clamp_cursor();
+        Ok((places, files))
+    }
+
     fn definition_answer(&mut self, request: Request, locations: Vec<Location>, encoding: Encoding) {
         let Request::Definition { view, head, edits } = request else {
             return;
@@ -609,6 +785,7 @@ mod tests {
     use super::*;
     use crate::lsp::Severity;
     use crate::lsp::tests::sent;
+    use std::path::PathBuf;
 
     /// A scratch editor on a file at `path` - which need not exist - whose
     /// buffer is open in a ready server that answers nothing by itself.
@@ -990,6 +1167,98 @@ va");
         editor.view_mut().sel = Selection::point(1);
         editor.update_info();
         assert_eq!(editor.info, None, "back out of the call, and it is about nothing");
+    }
+
+    /// A scratch editor whose server answers about references and renames,
+    /// on a real file in a real directory: both of those answer with paths,
+    /// and a path that does not exist cannot be read or opened.
+    fn editor_in_a_project(name: &str, files: &[(&str, &str)]) -> (Editor, PathBuf, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let dir = std::env::temp_dir().join(format!("jack_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, text) in files {
+            std::fs::write(dir.join(file), text).unwrap();
+        }
+
+        let mut editor = Editor::scratch();
+        editor.open_file(dir.join(files[0].0)).unwrap();
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({ "referencesProvider": true, "renameProvider": true }));
+        editor.servers.push(client);
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 0, synced: 0 };
+        (editor, dir, written)
+    }
+
+    #[test]
+    fn gr_lists_every_use_with_the_line_it_is_on() {
+        let (mut editor, dir, written) = editor_in_a_project(
+            "refs",
+            &[("a.rs", "fn count() {}
+let n = count();
+"), ("b.rs", "use crate::count;
+")],
+        );
+        editor.references();
+        assert_eq!(editor.message, "asking fake");
+        let id = asked_for(&written, "textDocument/references");
+
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            { "uri": lsp::uri(&dir.join("a.rs")), "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 8 } } },
+            { "uri": lsp::uri(&dir.join("a.rs")), "range": { "start": { "line": 1, "character": 8 }, "end": { "line": 1, "character": 13 } } },
+            { "uri": lsp::uri(&dir.join("b.rs")), "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 16 } } },
+        ]})));
+
+        let picker = editor.picker.as_ref().expect("a picker");
+        let rows: Vec<&Item> = picker.matches().iter().map(|m| picker.item(m)).collect();
+        let shown: Vec<&str> = rows.iter().map(|item| item.text.as_str()).collect();
+        // The open buffer is read from the buffer; the other file from disk.
+        assert_eq!(shown, ["fn count() {}", "let n = count();", "use crate::count;"]);
+        let lines: Vec<usize> = rows.iter().map(|item| item.id).collect();
+        assert_eq!(lines, [1, 2, 1], "line numbers, counted from one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_reaches_files_that_were_not_open() {
+        let (mut editor, dir, written) = editor_in_a_project(
+            "rename",
+            &[("a.rs", "fn count() {}
+"), ("b.rs", "use crate::count;
+")],
+        );
+        assert_eq!(editor.views().len(), 1, "only the one file is open");
+
+        editor.start_rename();
+        assert_eq!(editor.prompt.as_ref().expect("a prompt").input, "fn", "the word under the cursor");
+        editor.prompt.as_mut().expect("a prompt").input = "total".into();
+        editor.prompt_input(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let id = asked_for(&written, "textDocument/rename");
+        let edit = |line: u32, first: u32, last: u32| json!({
+            "range": { "start": { "line": line, "character": first }, "end": { "line": line, "character": last } },
+            "newText": "total",
+        });
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+            "changes": {
+                lsp::uri(&dir.join("a.rs")): [edit(0, 3, 8)],
+                lsp::uri(&dir.join("b.rs")): [edit(0, 11, 16)],
+            },
+        }})));
+
+        assert_eq!(editor.message, "renamed: 2 places in 2 files");
+        assert_eq!(editor.views().len(), 2, "the other file was opened to be changed");
+        // Still looking at the file it was asked from.
+        assert_eq!(editor.view().doc.path.as_deref(), Some(dir.join("a.rs").as_path()));
+        assert_eq!(editor.view().doc.text.to_string(), "fn total() {}\n");
+        let other = editor.views().iter().find(|view| view.doc.path.as_deref() == Some(dir.join("b.rs").as_path()));
+        assert_eq!(other.expect("open").doc.text.to_string(), "use crate::total;\n");
+        // Nothing is written: a rename you can undo is worth more than one
+        // that has already happened on disk.
+        assert_eq!(std::fs::read_to_string(dir.join("b.rs")).unwrap(), "use crate::count;\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A scratch editor whose server formats.
