@@ -15,6 +15,9 @@ pub enum Source {
     Grep,
     /// What this buffer defines - functions, types, methods. `id` is the line.
     Symbols,
+    /// What a language server offers to do about the place the cursor is in.
+    /// `id` is which of them, as an index into what the editor kept.
+    Actions,
     /// Every use of a name, as a language server has it. Like grep in what an
     /// item is - `target` the path, `id` the line - but a list already in
     /// hand, so typing filters it rather than asking the server again.
@@ -30,6 +33,7 @@ impl Source {
             Source::Grep => "grep",
             Source::Symbols => "symbol",
             Source::References => "reference",
+            Source::Actions => "action",
         }
     }
 

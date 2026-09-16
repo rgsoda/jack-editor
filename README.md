@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 47: renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 48: code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -70,6 +70,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `%` | jump to the matching bracket |
 | `gd` `gD` | go to the definition: the language server's, or in scope / in the file |
 | `gr` `gR` | every use of the name, in a picker / rename it everywhere |
+| `ga` | what the server can do here: fixes, imports, refactors |
 | `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
 | `^o` `^i` | back / forward along the jump list |
@@ -1013,6 +1014,10 @@ What it gives you, so far:
   are on marked. See below.
 - **Formatting.** `:fmt` hands the buffer to whatever the server formats with.
   See below.
+- **Uses and renames.** `gr` lists every use of a name; `gR` renames it
+  wherever it is, over as many files as that takes. See below.
+- **Code actions.** `ga` offers what the server can do about where the cursor
+  is: fix the diagnostic, add the import, run the refactor. See below.
 - **What it is doing.** A server that is indexing says so in the status line,
   which is why `gd` is not answering yet. `:lsp` lists the servers running.
 
@@ -1181,6 +1186,29 @@ and the mark on the active parameter is carried across the break with the text
 it was on.
 
 The popup wins any row they both want: it is the thing being typed into.
+
+## What can be done about this
+
+`ga` asks the server what it offers to do about where the cursor is, and puts
+the answers in a picker: the fix for the diagnostic under the cursor, the
+import for the name that is not in scope, the refactor over the selection -
+`ga` in visual mode asks about the selection, which is what a refactor needs to
+know. The diagnostics the range covers go with the question, as the server sent
+them, `data` and all: a server recognises its own fix by that and offers
+nothing for a reconstruction of it.
+
+What comes back is often only a list of titles. Working out every fix on the
+chance that one is wanted is expensive, so a server is allowed to answer with
+the name of a thing it could do and wait to be asked for the rest; choosing one
+asks. Some actions are a command for the server to run rather than an edit to
+make, and what the command does arrives afterwards as a request in the other
+direction - the server asking for the edit, and waiting to be told it was made.
+All three shapes end in the same place: edits applied to buffers, each file one
+undo step, nothing written until you write it.
+
+An action that reaches a file you do not have open opens it. That is the point
+of the ones that do - an import added at the top of a module, a symbol renamed
+where it is defined rather than where you are looking.
 
 ## Every use of a name, and renaming it
 
@@ -1570,8 +1598,6 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- More from the language server: code actions on the diagnostics already in
-  the gutter.
 - The line picker: the current buffer's lines, which is `/` without leaving
   the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's

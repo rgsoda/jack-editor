@@ -1177,6 +1177,7 @@ mod tests {
             end: start + 1,
             severity: crate::lsp::Severity::Warning,
             message: "two is suspicious\nsecond line".into(),
+            raw: serde_json::Value::Null,
         }];
         let keys = Keys::default();
 

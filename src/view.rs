@@ -191,6 +191,11 @@ pub struct Diagnostic {
     pub end: usize,
     pub severity: Severity,
     pub message: String,
+    /// The diagnostic as the server sent it. A code action is asked for with
+    /// the diagnostics it is meant to fix, and a server will only offer the
+    /// fix if it gets back its own object - `data` and all - rather than a
+    /// reconstruction of it.
+    pub raw: serde_json::Value,
 }
 
 impl View {

@@ -357,6 +357,11 @@ pub struct Editor {
     /// The box beside the cursor: what `K` asked the server, or the signature
     /// of the call being typed.
     pub info: Option<Info>,
+    /// What the server last offered to do about the place the cursor was in,
+    /// and which server offered it: the picker of titles holds an index into
+    /// this, and running one may mean going back to that server for the rest
+    /// of it.
+    pub actions: Option<(usize, Vec<crate::lsp::CodeAction>)>,
     /// The status-line prompt, when one is open. It owns the keyboard too.
     pub prompt: Option<Prompt>,
     pub search: Search,
@@ -438,6 +443,7 @@ impl Editor {
             jumps: Jumps::default(),
             completion: None,
             info: None,
+            actions: None,
             shell: None,
             leader: BTreeMap::new(),
             prompt: None,
@@ -1637,7 +1643,7 @@ impl Editor {
                 // the same way it would have gone to this one. No room for
                 // one is said and nothing opens: landing in the old window
                 // instead would look like the key had been ignored.
-                if open != Open::Here && source != Source::Help {
+                if open != Open::Here && !matches!(source, Source::Help | Source::Actions) {
                     let before = self.windows.len();
                     self.split_window(open == Open::Beside, None);
                     if self.windows.len() == before {
@@ -1647,6 +1653,7 @@ impl Editor {
                 match source {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
+                    Source::Actions => self.run_code_action(choice.id),
                     Source::Buffers => {
                         self.jumps.push(origin);
                         self.switch_to(choice.id);
@@ -1693,6 +1700,15 @@ impl Editor {
             false => end,
         };
         true
+    }
+
+    /// `ga`: what the server offers to do about where the cursor is. In visual
+    /// mode the selection is what it is asked about, which is what a refactor
+    /// over a few lines needs.
+    pub fn code_actions(&mut self) {
+        if !self.lsp_code_actions() {
+            self.message = "no language server for this buffer".into();
+        }
     }
 
     /// `gr`: every use of the name under the cursor, from the language server.

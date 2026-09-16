@@ -234,6 +234,9 @@ pub struct RawDiagnostic {
     pub end: (u32, u32),
     pub severity: Severity,
     pub message: String,
+    /// The whole thing as it arrived, to be handed back when asking what
+    /// could be done about it.
+    pub raw: Value,
 }
 
 /// A place in a file, as a definition answer has it.
@@ -286,6 +289,32 @@ impl WorkspaceEdit {
     }
 }
 
+/// One thing a server offers to do about the place the cursor is in: a quick
+/// fix for a diagnostic, an import to add, a refactor.
+///
+/// It carries either the edits themselves, a command for the server to run, or
+/// neither - in which case it is a title and a promise, and asking for the
+/// rest of it is a second request. Servers send the cheap shape by default
+/// because working out every fix on the chance one is wanted is expensive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeAction {
+    pub title: String,
+    pub edit: Option<WorkspaceEdit>,
+    /// `{ command, arguments }`, run by `workspace/executeCommand`.
+    pub command: Option<Value>,
+    /// The action as it arrived, which is what `codeAction/resolve` wants back
+    /// when neither of the two above is filled in.
+    pub raw: Value,
+}
+
+impl CodeAction {
+    /// True when there is nothing here to do yet: the server sent a title and
+    /// is waiting to be asked for the rest.
+    pub fn needs_resolving(&self) -> bool {
+        self.edit.is_none() && self.command.is_none()
+    }
+}
+
 /// What a request was for, so the answer can be taken to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -314,6 +343,13 @@ pub enum Request {
     /// `gR`: the name under the cursor, everywhere, replaced. What it is being
     /// renamed to travelled with the request and comes back in the edits.
     Rename { view: usize, head: usize, edits: u64 },
+    /// `ga`: what could be done about the place the cursor is in - the
+    /// diagnostics under it, most often.
+    CodeAction { view: usize, head: usize, edits: u64 },
+    /// A command the server offered, handed back to it to run.
+    Execute,
+    /// The rest of a code action, asked for once one has been chosen.
+    ResolveAction { view: usize, edits: u64 },
     /// The popup asked what the server would offer. `start` is where the word
     /// being completed begins, which is what says whether the answer is still
     /// about the same word - typing more of it since is fine and expected,
@@ -335,6 +371,12 @@ pub enum Event {
     Signature { request: Request, help: Option<Signature> },
     Format { request: Request, edits: Vec<TextEdit> },
     References { request: Request, locations: Vec<Location> },
+    CodeActions { request: Request, actions: Vec<CodeAction> },
+    ResolvedAction { request: Request, action: Option<CodeAction> },
+    /// The server asking for an edit to be made, rather than answering with
+    /// one: what `workspace/executeCommand` usually comes back as. It is a
+    /// request, so it wants an answer - `id` is what to answer.
+    ApplyEdit { id: Value, edit: WorkspaceEdit },
     Rename { request: Request, edit: WorkspaceEdit },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
@@ -465,6 +507,28 @@ impl Client {
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
                     "formatting": { "dynamicRegistration": false },
                     "references": { "dynamicRegistration": false },
+                    "codeAction": {
+                        "dynamicRegistration": false,
+                        // Without this a server may answer only with bare
+                        // commands, or with nothing: it is how a client says
+                        // it understands a code action as an object rather
+                        // than as a command to run.
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "", "quickfix", "refactor", "refactor.extract",
+                                    "refactor.inline", "refactor.rewrite", "source",
+                                    "source.organizeImports", "source.fixAll",
+                                ],
+                            },
+                        },
+                        "isPreferredSupport": true,
+                        // Every kind, and resolved in a second request when
+                        // the server would rather not work them all out up
+                        // front - which is every server worth asking.
+                        "resolveSupport": { "properties": ["edit", "command"] },
+                        "dataSupport": true,
+                    },
                     // No `prepareSupport`: the answer to "can this be renamed"
                     // is the rename failing, which it says anyway.
                     "rename": { "dynamicRegistration": false, "prepareSupport": false },
@@ -554,6 +618,12 @@ impl Client {
             .unwrap_or_default()
     }
 
+    /// Answer a request the server made. Only `workspace/applyEdit` needs
+    /// this: the rest are answered where they arrive.
+    pub fn respond(&self, id: Value, result: Value) {
+        self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+    }
+
     pub fn notify(&mut self, method: &str, params: Value) {
         let bytes = frame(&json!({ "jsonrpc": "2.0", "method": method, "params": params }));
         match self.state {
@@ -599,6 +669,12 @@ impl Client {
             // A request from the server. The ones that need an answer to keep
             // it going get the least that satisfies them.
             (Some(id), Some(method)) => {
+                // An edit is the one request that is not answered here: the
+                // editor has to make it first, and only it can say whether it
+                // could be made.
+                if method == "workspace/applyEdit" {
+                    return Event::ApplyEdit { id, edit: workspace_edit(&message["params"]["edit"]) };
+                }
                 let result = match method.as_str() {
                     "workspace/configuration" => {
                         let items = message["params"]["items"].as_array().map_or(0, Vec::len);
@@ -645,6 +721,11 @@ impl Client {
             Request::Signature { .. } => Event::Signature { request, help: signature(&result) },
             Request::References { .. } => Event::References { request, locations: locations(&result) },
             Request::Rename { .. } => Event::Rename { request, edit: workspace_edit(&result) },
+            Request::CodeAction { .. } => Event::CodeActions { request, actions: code_actions(&result) },
+            Request::ResolveAction { .. } => Event::ResolvedAction { request, action: code_action(&result) },
+            // Nothing comes back from a command worth acting on: what it does
+            // arrives as a `workspace/applyEdit` of its own.
+            Request::Execute => Event::Nothing,
         }
     }
 
@@ -751,6 +832,7 @@ fn diagnostic(value: &Value) -> Option<RawDiagnostic> {
         end: position(&value["range"]["end"])?,
         severity: Severity::from_number(value["severity"].as_u64()),
         message: value["message"].as_str()?.to_string(),
+        raw: value.clone(),
     })
 }
 
@@ -867,6 +949,26 @@ fn workspace_edit(result: &Value) -> WorkspaceEdit {
     }
     changes.sort_by(|a, b| a.0.cmp(&b.0));
     WorkspaceEdit { changes }
+}
+
+/// What a server offers to do, out of the list it answered with. A list may
+/// hold bare commands as well as code actions - the older shape - and both
+/// are a title and something to do.
+fn code_actions(result: &Value) -> Vec<CodeAction> {
+    result.as_array().map(|list| list.iter().filter_map(code_action).collect()).unwrap_or_default()
+}
+
+fn code_action(value: &Value) -> Option<CodeAction> {
+    let title = value["title"].as_str()?.to_string();
+    // A bare command has its name in `command` as a string; a code action's
+    // `command` is an object of one, when it has one at all.
+    let command = match &value["command"] {
+        Value::Object(_) => Some(value["command"].clone()),
+        Value::String(_) => Some(value.clone()),
+        _ => None,
+    };
+    let edit = value.get("edit").map(workspace_edit).filter(|edit| !edit.is_empty());
+    Some(CodeAction { title, edit, command, raw: value.clone() })
 }
 
 /// A hover answer's text, in any of the shapes the protocol has collected over

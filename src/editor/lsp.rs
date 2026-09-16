@@ -8,8 +8,8 @@ use super::{Editor, Mode};
 use crate::complete::{self, Completion};
 use crate::info::{self, Info};
 use crate::lsp::{
-    self, Client, Encoding, Event, Location, RawDiagnostic, Request, Signature, State, Suggestion,
-    TextEdit, WorkspaceEdit,
+    self, Client, CodeAction, Encoding, Event, Location, RawDiagnostic, Request, Signature, State,
+    Suggestion, TextEdit, WorkspaceEdit,
 };
 use crate::picker::{Item, Picker, Source};
 use crate::syntax::language_for_path;
@@ -158,6 +158,9 @@ impl Editor {
             Event::Format { request, edits } => self.format_answer(request, edits, encoding),
             Event::References { request, locations } => self.references_answer(request, locations),
             Event::Rename { request, edit } => self.rename_answer(request, edit, encoding),
+            Event::CodeActions { request, actions } => self.code_actions_answer(request, actions),
+            Event::ResolvedAction { request, action } => self.resolved_action(request, action),
+            Event::ApplyEdit { id, edit } => self.apply_edit_request(server, id, edit, encoding),
         }
     }
 
@@ -177,6 +180,7 @@ impl Editor {
                 end: lsp::from_position(rope, d.end.0, d.end.1, encoding),
                 severity: d.severity,
                 message: d.message,
+                raw: d.raw,
             })
             .collect();
         diagnostics.sort_by_key(|d| (d.start, d.severity));
@@ -501,6 +505,177 @@ impl Editor {
         };
     }
 
+    /// `ga`: what the server offers to do about where the cursor is - a fix
+    /// for the diagnostic under it, an import to add, a refactor over the
+    /// selection. `false` when there is no server to ask.
+    pub(super) fn lsp_code_actions(&mut self) -> bool {
+        let Some((server, mut params, head, edits)) = self.at_cursor() else {
+            return false;
+        };
+        let view = &self.views[self.current];
+        let encoding = self.servers[server].encoding;
+        // A selection is the range to act on; without one it is the cursor,
+        // which is a range of no width. Servers offer refactors over a
+        // selection and fixes at a point, and this is the difference.
+        let (from, to) = view.sel.range();
+        let (start, end) = (
+            lsp::to_position(&view.doc.text, from, encoding),
+            lsp::to_position(&view.doc.text, to, encoding),
+        );
+        // The diagnostics the range touches, as the server sent them: a fix is
+        // offered for a diagnostic the server recognises as its own.
+        let diagnostics: Vec<Value> = view
+            .diagnostics
+            .iter()
+            .filter(|d| d.start <= to && d.end >= from && !d.raw.is_null())
+            .map(|d| d.raw.clone())
+            .collect();
+        params.as_object_mut().expect("an object").remove("position");
+        params["range"] = json!({
+            "start": { "line": start.0, "character": start.1 },
+            "end": { "line": end.0, "character": end.1 },
+        });
+        params["context"] = json!({ "diagnostics": diagnostics });
+
+        let request = Request::CodeAction { view: self.current, head, edits };
+        if !self.servers[server].request("textDocument/codeAction", "codeActionProvider", params, request) {
+            return false;
+        }
+        self.message = format!("asking {}", self.servers[server].name);
+        true
+    }
+
+    /// What the server offered, as a picker of titles. Nothing offered is
+    /// said out loud: `ga` was asked for, and an empty list that closes itself
+    /// looks like a key that did nothing.
+    fn code_actions_answer(&mut self, request: Request, actions: Vec<CodeAction>) {
+        let Request::CodeAction { view, head, edits } = request else {
+            return;
+        };
+        if !self.still_asking(view, head, edits) {
+            return;
+        }
+        self.message.clear();
+        if actions.is_empty() {
+            self.message = "nothing to do here".into();
+            return;
+        }
+        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
+            return;
+        };
+        let items = actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| Item {
+                text: action.title.clone(),
+                detail: String::new(),
+                id: index,
+                target: String::new(),
+            })
+            .collect();
+        self.actions = Some((server, actions));
+        self.open_picker(Picker::new(Source::Actions, items));
+    }
+
+    /// One of them, chosen. An action that came with its edits is applied
+    /// here; one that came as a title and a promise is asked about again, and
+    /// one that is a command is handed back to the server to run - which is
+    /// how an action that has to look at more than one file works.
+    pub(super) fn run_code_action(&mut self, index: usize) {
+        let Some((server, actions)) = self.actions.take() else {
+            return;
+        };
+        let Some(action) = actions.into_iter().nth(index) else {
+            return;
+        };
+        if action.needs_resolving() {
+            let edits = self.view().edits();
+            let request = Request::ResolveAction { view: self.current, edits };
+            let asked = self.servers[server].request("codeAction/resolve", "codeActionProvider", action.raw, request);
+            if !asked {
+                self.message = format!("{} would not say what that does", self.servers[server].name);
+            }
+            return;
+        }
+        self.do_action(server, action);
+    }
+
+    /// An action with everything it needs: the edits, applied, and the
+    /// command, handed to the server. Both, where there are both - the
+    /// protocol allows it, and means the edits first.
+    fn do_action(&mut self, server: usize, action: CodeAction) {
+        let encoding = self.servers[server].encoding;
+        if let Some(edit) = action.edit {
+            match self.apply_workspace_edit(edit, encoding) {
+                Ok((places, _)) => self.message = format!("{}: {}", action.title, changes(places)),
+                Err(err) => {
+                    self.message = format!("{err:#}");
+                    return;
+                }
+            }
+        }
+        if let Some(command) = action.command {
+            let params = json!({
+                "command": command["command"],
+                "arguments": command["arguments"],
+            });
+            let asked = self.servers[server].request(
+                "workspace/executeCommand",
+                "executeCommandProvider",
+                params,
+                Request::Execute,
+            );
+            if !asked {
+                self.message = format!("{} cannot run {}", self.servers[server].name, command["command"]);
+                return;
+            }
+            self.message = action.title;
+        }
+    }
+
+    /// The rest of an action the server was asked to fill in.
+    fn resolved_action(&mut self, request: Request, action: Option<CodeAction>) {
+        let Request::ResolveAction { view, edits } = request else {
+            return;
+        };
+        if self.current != view || self.view().edits() != edits {
+            self.message = "the buffer changed while that was being worked out".into();
+            return;
+        }
+        let Lsp::Open { server, .. } = self.views[self.current].lsp else {
+            return;
+        };
+        match action {
+            Some(action) if !action.needs_resolving() => self.do_action(server, action),
+            _ => self.message = "nothing came back".into(),
+        }
+    }
+
+    /// The server asking for an edit rather than answering with one, which is
+    /// what running a command comes back as. It is a request: it wants to be
+    /// told whether the edit was made.
+    fn apply_edit_request(&mut self, server: usize, id: Value, edit: WorkspaceEdit, encoding: Encoding) {
+        let applied = match edit.is_empty() {
+            true => Ok((0, 0)),
+            false => self.apply_workspace_edit(edit, encoding),
+        };
+        let result = match &applied {
+            Ok((places, _)) => {
+                if *places > 0 {
+                    self.message = changes(*places);
+                }
+                json!({ "applied": true })
+            }
+            Err(err) => {
+                self.message = format!("{err:#}");
+                json!({ "applied": false, "failureReason": err.to_string() })
+            }
+        };
+        if let Some(client) = self.servers.get(server) {
+            client.respond(id, result);
+        }
+    }
+
     /// `gr`: every use of the name under the cursor, in a picker. The
     /// declaration is included - looking at what uses a function, the function
     /// itself is one of the places you want to get back to.
@@ -780,6 +955,14 @@ fn absolute(path: &Path) -> std::path::PathBuf {
     })
 }
 
+/// "1 change", "4 changes".
+fn changes(places: usize) -> String {
+    match places {
+        1 => "1 change".into(),
+        many => format!("{many} changes"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,7 +985,7 @@ mod tests {
     }
 
     fn raw(start: (u32, u32), end: (u32, u32), severity: Severity, message: &str) -> RawDiagnostic {
-        RawDiagnostic { start, end, severity, message: message.into() }
+        RawDiagnostic { start, end, severity, message: message.into(), raw: Value::Null }
     }
 
     #[test]
@@ -1258,6 +1441,152 @@ let n = count();
         // Nothing is written: a rename you can undo is worth more than one
         // that has already happened on disk.
         assert_eq!(std::fs::read_to_string(dir.join("b.rs")).unwrap(), "use crate::count;\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch editor whose server offers code actions and runs commands.
+    fn editor_acting(text: &str) -> (Editor, PathBuf, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let dir = std::env::temp_dir().join(format!("jack_actions_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), text).unwrap();
+
+        let mut editor = Editor::scratch();
+        editor.open_file(dir.join("a.rs")).unwrap();
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({
+            "codeActionProvider": { "resolveProvider": true },
+            "executeCommandProvider": { "commands": ["fake.fix"] },
+        }));
+        editor.servers.push(client);
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 0, synced: 0 };
+        (editor, dir, written)
+    }
+
+    #[test]
+    fn ga_asks_about_the_range_with_the_diagnostics_it_covers() {
+        let (mut editor, dir, written) = editor_acting("let x = 1;\nlet y = 2;\n");
+        let path = absolute(&dir.join("a.rs"));
+        editor.set_diagnostics(
+            &path,
+            vec![
+                RawDiagnostic {
+                    start: (0, 4),
+                    end: (0, 5),
+                    severity: Severity::Warning,
+                    message: "unused x".into(),
+                    raw: json!({ "message": "unused x", "data": { "id": 7 } }),
+                },
+                RawDiagnostic {
+                    start: (1, 4),
+                    end: (1, 5),
+                    severity: Severity::Warning,
+                    message: "unused y".into(),
+                    raw: json!({ "message": "unused y" }),
+                },
+            ],
+            Encoding::Utf16,
+        );
+        editor.view_mut().sel = Selection::point(4);
+        editor.code_actions();
+
+        let sent = sent(&written);
+        let request = sent.iter().find(|m| m["method"] == "textDocument/codeAction").expect("asked");
+        assert_eq!(request["params"]["range"]["start"], json!({ "line": 0, "character": 4 }));
+        // Only the diagnostic the cursor is in, and as the server wrote it:
+        // the `data` is what it recognises its own fix by.
+        let context = &request["params"]["context"]["diagnostics"];
+        assert_eq!(context.as_array().map(Vec::len), Some(1));
+        assert_eq!(context[0]["data"]["id"], 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choosing_an_action_that_came_with_its_edits_applies_them() {
+        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        editor.code_actions();
+        let id = asked_for(&written, "textDocument/codeAction");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            {
+                "title": "Remove unused variable",
+                "edit": { "changes": { lsp::uri(&dir.join("a.rs")): [{
+                    "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } },
+                    "newText": "_x",
+                }]}},
+            },
+            { "title": "Something else" },
+        ]})));
+
+        let picker = editor.picker.as_ref().expect("a picker");
+        let titles: Vec<&str> = picker.matches().iter().map(|m| picker.item(m).text.as_str()).collect();
+        assert_eq!(titles, ["Remove unused variable", "Something else"]);
+
+        editor.run_code_action(0);
+        assert_eq!(editor.view().doc.text.to_string(), "let _x = 1;\n");
+        assert_eq!(editor.message, "Remove unused variable: 1 change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_action_that_is_only_a_title_is_asked_about_again() {
+        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        editor.code_actions();
+        let id = asked_for(&written, "textDocument/codeAction");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            { "title": "Import the thing", "kind": "quickfix", "data": { "token": 3 } },
+        ]})));
+        editor.run_code_action(0);
+
+        let sent = sent(&written);
+        let resolve = sent.iter().find(|m| m["method"] == "codeAction/resolve").expect("resolved");
+        // The action goes back whole - the server knows it by its `data`.
+        assert_eq!(resolve["params"]["data"]["token"], 3);
+
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": resolve["id"], "result": {
+            "title": "Import the thing",
+            "data": { "token": 3 },
+            "edit": { "documentChanges": [{
+                "textDocument": { "uri": lsp::uri(&dir.join("a.rs")), "version": 1 },
+                "edits": [{
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                    "newText": "use thing;\n",
+                }],
+            }]},
+        }})));
+        assert_eq!(editor.view().doc.text.to_string(), "use thing;\nlet x = 1;\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_is_handed_back_and_the_edit_it_asks_for_is_made() {
+        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        editor.code_actions();
+        let id = asked_for(&written, "textDocument/codeAction");
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            { "title": "Fix it", "command": { "command": "fake.fix", "arguments": [1] } },
+        ]})));
+        editor.run_code_action(0);
+
+        let run = sent(&written)
+            .into_iter()
+            .find(|m| m["method"] == "workspace/executeCommand")
+            .expect("ran");
+        assert_eq!(run["params"]["command"], "fake.fix");
+
+        // What the command does comes back as a request of the server's own.
+        editor.lsp_message(0, Some(json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "workspace/applyEdit",
+            "params": { "edit": { "changes": { lsp::uri(&dir.join("a.rs")): [{
+                "range": { "start": { "line": 0, "character": 8 }, "end": { "line": 0, "character": 9 } },
+                "newText": "2",
+            }]}}},
+        })));
+        assert_eq!(editor.view().doc.text.to_string(), "let x = 2;\n");
+        // And it is a request: it is told the edit was made.
+        let answer = sent(&written).into_iter().find(|m| m["id"] == 99).expect("answered");
+        assert_eq!(answer["result"]["applied"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

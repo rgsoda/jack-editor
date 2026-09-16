@@ -36,6 +36,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "gd gD", what: "go to the definition: the language server's, or in scope; in the file", mode: "normal" },
     Binding { keys: "K", what: "what the language server says this is", mode: "normal" },
     Binding { keys: "gr gR", what: "every use of this name; rename it everywhere", mode: "normal" },
+    Binding { keys: "ga", what: "what the language server can do here: fixes, imports", mode: "normal" },
     Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
@@ -547,6 +548,7 @@ impl Keys {
                     }
                     KeyCode::Char('d') => editor.goto_definition(true),
                     KeyCode::Char('D') => editor.goto_definition(false),
+                    KeyCode::Char('a') => editor.code_actions(),
                     KeyCode::Char('r') => editor.references(),
                     KeyCode::Char('R') => editor.start_rename(),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
@@ -699,6 +701,9 @@ impl Keys {
                     editor.comment_selection();
                     editor.set_mode(Mode::Normal);
                 }
+                // The selection is what the server is asked about, so this is
+                // the one `g` command worth having in visual mode too.
+                KeyCode::Char('a') => editor.code_actions(),
                 _ => {}
             }
             self.finish();
