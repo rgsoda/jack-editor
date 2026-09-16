@@ -56,6 +56,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "p P", what: "put after, before the cursor", mode: "normal" },
     Binding { keys: ">> << >{motion}", what: "indent, dedent lines", mode: "normal" },
     Binding { keys: "== ={motion}", what: "re-indent: ask the grammar where lines go", mode: "normal" },
+    Binding { keys: "gcc gc{motion}", what: "comment lines out, or back in", mode: "normal" },
     Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
     Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
@@ -94,6 +95,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "> <", what: "indent, dedent the lines ({n} steps)", mode: "visual" },
     Binding { keys: ":", what: "a command over the selection ('<,'>)", mode: "visual" },
     Binding { keys: "=", what: "re-indent the lines", mode: "visual" },
+    Binding { keys: "gc", what: "comment the lines out, or back in", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
     Binding { keys: "D X Y C S", what: "the same, on whole lines", mode: "visual" },
     Binding { keys: "esc", what: "back to normal mode", mode: "visual" },
@@ -164,6 +166,8 @@ enum Pending {
     Dedent,
     /// `=`, which asks the grammar where the lines belong.
     Reindent,
+    /// `gc`, which comments the lines out, or back in.
+    Comment,
     /// The `g` prefix, waiting for `gg` and the rest. `operator` is the key of
     /// the operator waiting for it - `dgg` deletes to the top of the file -
     /// or `None` when the `g` command is the whole of it.
@@ -389,7 +393,7 @@ impl Keys {
         // what the user has pressed and so what the indicator should say.
         // Drawing runs on every frame, so there is nothing here that can fail.
         if let Some(Pending::Find { operator, till, backward }) = self.pending {
-            text.extend(operator);
+            text.push_str(&operator.map(operator_text).unwrap_or_default());
             text.push(match (till, backward) {
                 (false, false) => 'f',
                 (false, true) => 'F',
@@ -399,7 +403,7 @@ impl Keys {
             return text;
         }
         if let Some(Pending::Object { operator, around }) = self.pending {
-            text.extend(operator);
+            text.push_str(&operator.map(operator_text).unwrap_or_default());
             text.push(match around {
                 true => 'a',
                 false => 'i',
@@ -413,6 +417,7 @@ impl Keys {
             Some(Pending::Indent) => ">",
             Some(Pending::Dedent) => "<",
             Some(Pending::Reindent) => "=",
+            Some(Pending::Comment) => "gc",
             Some(Pending::Go { .. }) => "g",
             Some(Pending::Replace) => "r",
             Some(Pending::Reveal) => "z",
@@ -492,6 +497,12 @@ impl Keys {
                         editor.clamp_cursor();
                     }
                     KeyCode::Char('v') => editor.reselect(),
+                    // An operator of its own, so it keeps the count typed
+                    // before it and waits for a motion: `3gcc`, `gcap`.
+                    KeyCode::Char('c') => {
+                        self.pending = Some(Pending::Comment);
+                        return;
+                    }
                     KeyCode::Char('d') => editor.goto_definition(true),
                     KeyCode::Char('D') => editor.goto_definition(false),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
@@ -631,8 +642,13 @@ impl Keys {
         }
 
         if let Some(Pending::Go { .. }) = self.pending.take() {
-            if key.code == KeyCode::Char('g') {
-                editor.goto_line_extending(count.unwrap_or(1) - 1);
+            match key.code {
+                KeyCode::Char('g') => editor.goto_line_extending(count.unwrap_or(1) - 1),
+                KeyCode::Char('c') => {
+                    editor.comment_selection();
+                    editor.set_mode(Mode::Normal);
+                }
+                _ => {}
             }
             self.finish();
             return;
@@ -972,6 +988,7 @@ impl Keys {
             '>' => editor.shift_count(true, count),
             '<' => editor.shift_count(false, count),
             '=' => editor.reindent_lines(first, last),
+            COMMENT => editor.comment_lines(first, last),
             _ => editor.delete_lines(self.register, count),
         }
     }
@@ -983,6 +1000,7 @@ impl Keys {
             Some('>') => editor.shift_selection(true, 1),
             Some('<') => editor.shift_selection(false, 1),
             Some('=') => editor.reindent_selection(),
+            Some(COMMENT) => editor.comment_selection(),
             Some('y') => editor.yank_selection(self.register),
             Some('c') => {
                 // An empty object - `ci(` on `()` - deletes nothing, but the
@@ -1011,6 +1029,7 @@ impl Keys {
                 | (Pending::Indent, KeyCode::Char('>'))
                 | (Pending::Dedent, KeyCode::Char('<'))
                 | (Pending::Reindent, KeyCode::Char('='))
+                | (Pending::Comment, KeyCode::Char('c'))
         );
         if doubled {
             match operator {
@@ -1022,6 +1041,10 @@ impl Keys {
                 Pending::Reindent => {
                     let (line, _) = editor.view().cursor_coords();
                     editor.reindent_lines(line, line + count - 1);
+                }
+                Pending::Comment => {
+                    let (line, _) = editor.view().cursor_coords();
+                    editor.comment_lines(line, line + count - 1);
                 }
                 Pending::Go { .. }
                 | Pending::Replace
@@ -1073,6 +1096,7 @@ impl Keys {
             Pending::Indent => editor.shift_motion(true),
             Pending::Dedent => editor.shift_motion(false),
             Pending::Reindent => editor.reindent_motion(),
+            Pending::Comment => editor.comment_motion(),
             _ => editor.delete_selection(self.register),
         }
         if operator == Pending::Change {
@@ -1089,7 +1113,21 @@ fn operator_key(operator: Pending) -> char {
         Pending::Indent => '>',
         Pending::Dedent => '<',
         Pending::Reindent => '=',
+        Pending::Comment => COMMENT,
         _ => 'd',
+    }
+}
+
+/// `gc` is two keys, and the operators travel as one character: this is the
+/// one that stands for it. Not a key any operator is typed with, so it cannot
+/// be mistaken for one.
+const COMMENT: char = '#';
+
+/// An operator as it was typed, for the indicator.
+fn operator_text(operator: char) -> String {
+    match operator {
+        COMMENT => "gc".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -1914,6 +1952,61 @@ mod tests {
     }
 
     #[test]
+    fn gcc_comments_a_line_and_the_same_keys_bring_it_back() {
+        let mut vim = Vim::rust("fn main() {\n    one();\n    two();\n}\n");
+        vim.at(2, 7).press("gcc");
+        assert_eq!(vim.text(), "fn main() {\n    // one();\n    two();\n}\n");
+        // The first non-blank of the line, which is now the marker.
+        assert_eq!(vim.cursor(), (2, 5));
+
+        vim.press("gcc");
+        assert_eq!(vim.text(), "fn main() {\n    one();\n    two();\n}\n");
+
+        // A count is lines, lined up at the shallowest of them.
+        vim.at(1, 1).press("3gcc");
+        assert_eq!(vim.text(), "// fn main() {\n//     one();\n//     two();\n}\n");
+        assert_eq!(vim.editor.message, "3 lines commented");
+    }
+
+    #[test]
+    fn gc_takes_motions_objects_and_selections() {
+        let text = "a = 1\nb = 2\n\nc = 3\n";
+        let mut vim = Vim::file("demo.py", text);
+        vim.press("gcj");
+        assert_eq!(vim.text(), "# a = 1\n# b = 2\n\nc = 3\n");
+        vim.press("u");
+        assert_eq!(vim.text(), text, "one command, one undo");
+
+        vim.press("gcap");
+        assert_eq!(vim.text(), "# a = 1\n# b = 2\n\nc = 3\n", "the blank line stays blank");
+        vim.press("u");
+
+        vim.press("gggcG");
+        assert_eq!(vim.text(), "# a = 1\n# b = 2\n\n# c = 3\n");
+        vim.press("u");
+
+        vim.press("ggjVgc");
+        assert_eq!(vim.text(), "a = 1\n# b = 2\n\nc = 3\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn gc_is_a_change_that_dot_repeats() {
+        let mut vim = Vim::rust("one\ntwo\nthree\n");
+        vim.press("gccj.");
+        assert_eq!(vim.text(), "// one\n// two\nthree\n");
+    }
+
+    #[test]
+    fn gc_without_a_marker_says_so_and_changes_nothing() {
+        let mut vim = Vim::new("plain\n");
+        vim.press("gcc");
+        assert_eq!(vim.text(), "plain\n");
+        assert_eq!(vim.editor.message, "no comment marker for this file");
+        assert_eq!(vim.keys.pending_text(), "");
+    }
+
+    #[test]
     fn z_puts_the_cursors_line_where_you_ask() {
         let mut vim = Vim::new(&"line\n".repeat(100));
         vim.editor.set_viewport(80, 20);
@@ -2297,6 +2390,7 @@ mod tests {
             ("f", "f"), ("F", "F"), ("t", "t"), ("T", "T"),
             ("dt", "dt"), ("cf", "cf"), ("yT", "yT"), ("2dF", "2dF"),
             ("di", "di"), ("ca", "ca"),
+            ("gc", "gc"), ("3gc", "3gc"), ("gct", "gct"), ("gci", "gci"),
         ];
         for (keys, shown) in states {
             let mut vim = Vim::new("one, two\n");

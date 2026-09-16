@@ -9,6 +9,7 @@ use std::sync::mpsc::Sender;
 use crate::buffer::Document;
 use crate::clipboard;
 use crate::command;
+use crate::comment::{self, Toggled};
 use crate::complete::{self, Completion, Pick};
 use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
@@ -1777,6 +1778,34 @@ impl Editor {
         let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
         let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
         self.reindent_lines(first, last);
+    }
+
+    /// `gc`: comment lines out, or back in when they all already are.
+    pub fn comment_lines(&mut self, first: usize, last: usize) {
+        let Some(marker) = comment::marker_for(self.view().doc.path.as_deref()) else {
+            self.message = "no comment marker for this file".into();
+            return;
+        };
+        // A count is worth reporting once it is more than the line you can see.
+        match self.view_mut().toggle_comments(first, last, marker) {
+            Toggled::Commented(n) if n > 1 => self.message = format!("{n} lines commented"),
+            Toggled::Uncommented(n) if n > 1 => self.message = format!("{n} lines uncommented"),
+            _ => {}
+        }
+    }
+
+    /// The lines a selection covers, for visual `gc` and `gcap`.
+    pub fn comment_selection(&mut self) {
+        let (first, last) = self.selection_lines();
+        self.comment_lines(first, last);
+    }
+
+    /// The lines a motion covered, for `gcj`.
+    pub fn comment_motion(&mut self) {
+        let view = self.view();
+        let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
+        let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
+        self.comment_lines(first, last);
     }
 
     /// Re-indent the line the cursor is on. `merge` makes it part of the edit

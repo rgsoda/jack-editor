@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 35: `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 36: `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -96,6 +96,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `diw` `daw` `ciw` `yiw` | an operator over a text object (see below) |
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `==` `={motion}` | re-indent: ask the grammar where the lines go |
+| `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
 | `v` `V` | select characters / whole lines |
 | `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
@@ -165,6 +166,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `y` | yank it |
 | `>` `<` `{n}>` | indent / dedent the lines, n steps |
 | `=` | re-indent the lines |
+| `gc` | comment the lines out, or back in |
 | `p` `P` | replace it with a register |
 | `^c` `^x` `^v` | copy / cut / paste over the selection |
 | `D` `X` `Y` `C` `S` | the same, on whole lines |
@@ -260,6 +262,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `search.rs` — in-file search: compiling a pattern, finding the next match
   from a position, and gathering the matches on a range of lines. It walks the
   rope line by line, so nothing ever builds a copy of the buffer to search.
+- `comment.rs` — `gc`: which marker a file comments with, and the edits that
+  toggle a run of lines, worked out on plain strings.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
@@ -503,6 +507,25 @@ rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Both glyphs are
 Material Design icons from the patched font, so `:set noglyphs` has no dog
 either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## Comments
+
+`gc` is an operator, like `d` or `=`: `gcc` toggles the line, `3gcc` three of
+them, `gcap` the paragraph, `gcG` to the end of the file, and `gc` in visual
+mode the selected lines. `.` repeats it and `u` takes the whole of it back.
+
+It works the way vim-commentary does. A run of lines moves together: if every
+line with something on it is already a comment they all come back, and
+otherwise they are all commented out - including the ones that already were,
+so that the same keys undo it rather than leaving a patchwork. The marker goes
+in at the shallowest indent in the run, which keeps a commented block lined up
+as a block, and blank lines are left blank.
+
+The marker comes from the file's name rather than its grammar, so it reaches
+further than highlighting does: `//` for Rust, Go, C and the rest, `#` for
+Python, TOML, shell, YAML and Makefiles, `--` for Lua and SQL, and
+`<!-- -->` or `/* */` around the line for HTML, Markdown and CSS. A file jack
+has no marker for says so and is left alone.
 
 ## Moving the view
 

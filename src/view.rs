@@ -5,6 +5,7 @@ use unicode_segmentation::GraphemeCursor;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Document;
+use crate::comment::{self, Marker, Toggled};
 use crate::history::{Change, History, Transaction};
 use crate::search::Search;
 use crate::stream::Sign;
@@ -404,6 +405,39 @@ impl View {
             })
             .collect();
         self.set_indents(&targets, indent)
+    }
+
+    /// `gc`: comment out lines `first..=last`, or back in, as one transaction.
+    /// The cursor goes to the first non-blank of the first line, where vim
+    /// leaves it - for `gcc` that is the line it was already on.
+    pub fn toggle_comments(&mut self, first: usize, last: usize, marker: Marker) -> Toggled {
+        let last = last.min(self.last_line());
+        let lines: Vec<String> = (first..=last).map(|line| self.doc.line_str(line).into_owned()).collect();
+        let (edits, toggled) = comment::toggle(&lines, first, marker);
+        if edits.is_empty() {
+            return toggled;
+        }
+
+        let changes = edits
+            .into_iter()
+            .map(|edit| Change {
+                pos: self.doc.line_to_char(edit.line) + edit.column,
+                removed: edit.removed,
+                inserted: edit.inserted,
+            })
+            .collect();
+        let tx = Transaction::new(changes, self.sel, self.sel);
+        let edits = tx.apply(&mut self.doc);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.edit(&edits, &self.doc.text);
+        }
+        let base = self.doc.line_to_char(first);
+        let text = self.doc.line_str(first);
+        let blank = text.chars().take_while(|c| c.is_whitespace()).count();
+        self.sel = Selection::point(base + blank.min(self.doc.line_len_chars(first)));
+        self.goal_col = None;
+        self.history.push(Transaction { sel_after: self.sel, ..tx });
+        toggled
     }
 
     /// Put one line at `column`, keeping the cursor where it is in the text

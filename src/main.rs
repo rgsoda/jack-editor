@@ -1,5 +1,6 @@
 mod buffer;
 mod clipboard;
+mod comment;
 mod command;
 mod complete;
 mod editor;
