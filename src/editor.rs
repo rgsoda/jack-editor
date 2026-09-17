@@ -26,6 +26,7 @@ use crate::window::{self, Direction, Layout, Rect, Window};
 
 mod git;
 mod lsp;
+mod replace;
 mod surround;
 
 /// How many characters of a word bring the completion popup up on its own.
@@ -45,6 +46,9 @@ pub enum PromptKind {
     /// old name written in, since a rename is usually a word being adjusted
     /// rather than replaced.
     Rename,
+    /// `^r` in the grep picker: what the pattern it searched for becomes, in
+    /// every file. The pattern waits in `Editor::replacing`.
+    Replace,
 }
 
 /// How often the disk is looked at for open files that changed behind our
@@ -82,6 +86,7 @@ impl Prompt {
             PromptKind::Search { backward: false } => "/",
             PromptKind::Command => ":",
             PromptKind::Rename => "rename> ",
+            PromptKind::Replace => "replace with> ",
         }
     }
 
@@ -348,6 +353,8 @@ pub struct Editor {
     /// `:set inlayhints`: types and parameter names from the language server,
     /// written into the lines.
     pub inlayhints: bool,
+    /// The grep pattern a project-wide replace is waiting on a replacement for.
+    replacing: String,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -476,6 +483,7 @@ impl Editor {
             undo_dir: None,
             undofile: true,
             inlayhints: true,
+            replacing: String::new(),
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -634,6 +642,12 @@ impl Editor {
         };
         if prompt.kind == PromptKind::Command {
             return self.run_command(&prompt.input.clone());
+        }
+        // An empty replacement is an answer - delete what matched - so unlike a
+        // rename it is not taken for changing your mind.
+        if prompt.kind == PromptKind::Replace {
+            let pattern = std::mem::take(&mut self.replacing);
+            return self.replace_in_project(&pattern, &prompt.input);
         }
         if prompt.kind == PromptKind::Rename {
             let name = prompt.input.trim().to_string();
@@ -1027,6 +1041,14 @@ impl Editor {
             // the buffer stays open, so there is nothing to lose by it.
             ("q" | "quit", _) => {
                 if !(self.windows.len() > 1 && self.close_window()) {
+                    self.quit = Some(force);
+                }
+            }
+            ("wa" | "wall", _) => {
+                self.write_all(force);
+            }
+            ("wqa" | "wqall" | "xa" | "xall", _) => {
+                if self.write_all(force) {
                     self.quit = Some(force);
                 }
             }
@@ -1763,6 +1785,7 @@ impl Editor {
                 self.retire();
             }
             Outcome::Search(pattern) => self.search(pattern),
+            Outcome::Replace(pattern) => self.start_project_replace(pattern),
             Outcome::Confirm(source, choice, open) => {
                 self.picker = None;
                 self.retire();
@@ -3218,6 +3241,37 @@ impl Editor {
         }
     }
 
+    /// `:wa`: every buffer with unsaved changes and a file to write them to,
+    /// written. `true` when nothing was left unwritten.
+    pub fn write_all(&mut self, force: bool) -> bool {
+        let was = self.current;
+        let (mut wrote, mut failed) = (0, None);
+        for index in 0..self.views.len() {
+            let view = &self.views[index];
+            if !view.is_modified() || view.doc.path.is_none() {
+                continue;
+            }
+            self.current = index;
+            self.write(None, force);
+            match self.message.starts_with("wrote") {
+                true => wrote += 1,
+                false => {
+                    failed.get_or_insert(std::mem::take(&mut self.message));
+                }
+            }
+        }
+        self.current = was;
+        let unnamed = self.views.iter().filter(|view| view.is_modified() && view.doc.path.is_none()).count();
+        self.message = match (failed, wrote, unnamed) {
+            (Some(err), _, _) => err,
+            (None, _, n) if n > 0 => format!("wrote {wrote}, but {n} unnamed buffer(s) have nowhere to go - :w name"),
+            (None, 0, _) => "nothing to write".into(),
+            (None, 1, _) => "wrote 1 buffer".into(),
+            (None, n, _) => format!("wrote {n} buffers"),
+        };
+        self.message.starts_with("wrote") && unnamed == 0 || self.message == "nothing to write"
+    }
+
     /// `:e` with no argument: read the file again. Refuses to throw away
     /// unsaved changes unless told twice.
     pub fn reload(&mut self, force: bool) {
@@ -4277,11 +4331,14 @@ mod tests {
         assert_eq!(e.prompt.as_ref().unwrap().input, "write");
         e.prompt_input(key(KeyCode::Tab));
         assert_eq!(e.prompt.as_ref().unwrap().input, "wq");
+        e.prompt_input(key(KeyCode::Tab));
+        e.prompt_input(key(KeyCode::Tab));
+        assert_eq!(e.prompt.as_ref().unwrap().input, "wqall");
         // Round the end, and back the other way.
         e.prompt_input(key(KeyCode::Tab));
         assert_eq!(e.prompt.as_ref().unwrap().input, "write");
         e.prompt_input(key(KeyCode::BackTab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "wq");
+        assert_eq!(e.prompt.as_ref().unwrap().input, "wqall");
     }
 
     #[test]

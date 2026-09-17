@@ -30,6 +30,8 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "write", argument: Argument::Path },
     Command { name: "quit", argument: Argument::None },
     Command { name: "wq", argument: Argument::None },
+    Command { name: "wall", argument: Argument::None },
+    Command { name: "wqall", argument: Argument::None },
     Command { name: "edit", argument: Argument::Path },
     Command { name: "split", argument: Argument::Path },
     Command { name: "vsplit", argument: Argument::Path },
@@ -443,7 +445,7 @@ mod tests {
 
     #[test]
     fn a_half_typed_command_offers_the_commands() {
-        assert_eq!(names("w"), ["write", "wq"]);
+        assert_eq!(names("w"), ["write", "wq", "wall", "wqall"]);
         assert_eq!(names("q"), ["quit"]);
         assert!(names("").len() == COMMANDS.len());
         assert!(names("zz").is_empty());

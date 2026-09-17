@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 59: sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 60: replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -130,6 +130,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^n` `^p`, `tab`, arrows | next / previous match |
 | `enter` | choose |
 | `^v` `^s` `^x` | choose, opening it in a split beside / below / below |
+| `^r` | in `<space>s`: replace what the pattern found, in every file |
 | `backspace` `^w` `^u` | delete a character / a word / the query |
 | `esc` `^c` | close |
 
@@ -139,6 +140,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 |---|---|
 | `tab` `shift-tab` | complete the command, the option, or the path |
 | `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
+| `:wa` `:wqa` `:xa` | write every changed buffer, and quit |
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit — or close the window, while there is more than one |
 | `:sp [path]` `:vs [path]` | split below / beside, onto this file or another |
 | `:close` `:only` | close this window / every other one |
@@ -1756,6 +1758,18 @@ lower-case matches either case, a capital means it - and a pattern that is not
 a valid regex says why in the status line rather than silently finding nothing.
 A search stops at 5,000 hits, skips binary files, and truncates a matching line
 at 300 characters. Confirming one opens the file at that line.
+
+`^r` turns the list into a replace. It asks what the pattern should become -
+`\1` and `&` as `:s` spells them - and makes the change on every line the
+pattern is on, in every file, all matches on a line. The files are changed as
+buffers, not on disk: one that was not open is opened, each file's share is
+one undo step in its own buffer, and `:wa` writes the lot when the result looks
+right. The cursor stays in the buffer it was in, where it was.
+
+The search is run again for the replace rather than read off the list. The list
+stops at 5,000 and cuts long lines short, and it searched the disk, so a file
+open with unsaved edits would be replaced by line numbers that are not its own.
+The replace reads every file whole, and reads an open one from its buffer.
 
 Cancellation is what makes this usable: a search checks whether it is still
 wanted before every file, not every batch, so the one you have stopped caring

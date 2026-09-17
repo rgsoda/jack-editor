@@ -168,6 +168,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^n ^p tab arrows", what: "next, previous match", mode: "picker" },
     Binding { keys: "enter", what: "choose", mode: "picker" },
     Binding { keys: "^v ^s", what: "choose, in a split beside, below (^x too)", mode: "picker" },
+    Binding { keys: "^r", what: "grep: replace what it found, in every file", mode: "picker" },
     Binding { keys: "backspace ^w ^u", what: "delete a character, word, the query", mode: "picker" },
     Binding { keys: "esc ^c", what: "close", mode: "picker" },
 ];

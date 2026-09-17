@@ -104,6 +104,8 @@ pub enum Outcome {
     Confirm(Source, Choice, Open),
     /// The query of a live source changed: run it again with this pattern.
     Search(String),
+    /// `^r` over grep's matches: replace this pattern in every file.
+    Replace(String),
 }
 
 /// The one picker. Four planned sources - buffers, files, lines, matches -
@@ -259,6 +261,9 @@ impl Picker {
             KeyCode::Char('v') if ctrl => return self.confirm(Open::Beside),
             KeyCode::Char('s') | KeyCode::Char('x') if ctrl => return self.confirm(Open::Below),
             KeyCode::Down | KeyCode::Tab => self.step(1),
+            KeyCode::Char('r') if ctrl && self.source == Source::Grep => {
+                return Outcome::Replace(self.query.clone());
+            }
             KeyCode::Char('n') if ctrl => self.step(1),
             KeyCode::Up | KeyCode::BackTab => self.step(-1),
             KeyCode::Char('p') if ctrl => self.step(-1),

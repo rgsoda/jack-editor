@@ -1115,7 +1115,7 @@ impl Editor {
 
 /// A path as a server names it: absolute, with links resolved where the file
 /// exists.
-fn absolute(path: &Path) -> std::path::PathBuf {
+pub(super) fn absolute(path: &Path) -> std::path::PathBuf {
     path.canonicalize().unwrap_or_else(|_| match std::env::current_dir() {
         Ok(dir) => dir.join(path),
         Err(_) => path.to_path_buf(),
