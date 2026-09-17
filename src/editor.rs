@@ -353,6 +353,9 @@ pub struct Editor {
     /// `:set inlayhints`: types and parameter names from the language server,
     /// written into the lines.
     pub inlayhints: bool,
+    /// `:set wrap`: long lines continue on the rows below rather than off
+    /// the right edge.
+    pub wrap: bool,
     /// The grep pattern a project-wide replace is waiting on a replacement for.
     replacing: String,
     /// A command line the run loop should hand the terminal to. The editor
@@ -483,6 +486,7 @@ impl Editor {
             undo_dir: None,
             undofile: true,
             inlayhints: true,
+            wrap: false,
             replacing: String::new(),
             prompt: None,
             search: Search::default(),
@@ -1441,6 +1445,8 @@ impl Editor {
             "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
             "noautoindent" | "noai" => self.autoindent = false,
+            "wrap" => self.wrap = true,
+            "nowrap" => self.wrap = false,
             "inlayhints" => self.inlayhints = true,
             "noinlayhints" => {
                 self.inlayhints = false;
@@ -1496,7 +1502,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1509,6 +1515,7 @@ impl Editor {
                     self.autopairs,
                     self.undofile,
                     self.inlayhints,
+                    self.wrap,
                     self.emacs,
                     self.lsp_enabled,
                     self.tabline.name(),
@@ -2326,6 +2333,11 @@ impl Editor {
         self.sign_width() + numbers
     }
 
+    /// The width lines wrap at, when they wrap.
+    pub fn wrap_width(&self) -> Option<usize> {
+        self.wrap.then(|| self.text_width())
+    }
+
     /// What is left for text once the gutter has taken its columns.
     pub fn text_width(&self) -> usize {
         self.width.saturating_sub(self.gutter_width()).max(1)
@@ -2352,7 +2364,7 @@ impl Editor {
             }
             None => {
                 let rect = self.window_rect(self.focus);
-                let (x, y) = self.view().cursor_screen();
+                let (x, y) = self.view().cursor_screen(self.wrap_width());
                 (x + (rect.x + self.gutter_width()) as u16, y + rect.y as u16)
             }
         }
@@ -2375,20 +2387,21 @@ impl Editor {
     /// the screen, without moving the cursor off it.
     pub fn reveal(&mut self, where_to: Reveal) {
         let height = self.height;
-        self.view_mut().reveal(where_to, height);
+        let wrap = self.wrap_width();
+        self.view_mut().reveal(where_to, height, wrap);
     }
 
     /// `^e` and `^y`: scroll without moving the cursor, until the cursor would
     /// be scrolled off and has to come along.
     pub fn scroll_lines(&mut self, down: bool, count: usize) {
-        let height = self.height;
+        let height = self.view().lines_on_screen(self.height, self.wrap_width());
         self.view_mut().scroll_lines(down, count, height);
     }
 
     /// `H`, `M`, `L`: the line at the top, middle or bottom of what is on
     /// screen. Zero-based, for the caller to move to or operate over.
     pub fn screen_line(&self, which: Screen, count: usize) -> usize {
-        self.view().screen_line(which, count, self.height)
+        self.view().screen_line(which, count, self.view().lines_on_screen(self.height, self.wrap_width()))
     }
 
     /// `H`, `M`, `L` as a motion: a jump, so `^o` comes back from it.
@@ -2405,11 +2418,11 @@ impl Editor {
     }
 
     pub fn scroll_to_cursor(&mut self) {
-        let (width, height) = (self.text_width(), self.height);
+        let (width, height, wrap) = (self.text_width(), self.height, self.wrap);
         if std::mem::take(&mut self.view_mut().centre) {
-            self.view_mut().reveal(Reveal::Middle, height);
+            self.view_mut().reveal(Reveal::Middle, height, wrap.then_some(width));
         }
-        self.view_mut().scroll_to_cursor(width, height);
+        self.view_mut().scroll_to_cursor(width, height, wrap);
     }
 
     // --- undo that outlives the editor ---------------------------------

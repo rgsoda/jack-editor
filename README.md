@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 60: replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -167,6 +167,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set autopairs` | `noautopairs`: close brackets and quotes as they are opened |
+| `:set wrap` | `nowrap`: long lines continue on the rows below instead of off the right edge |
 | `:set inlayhints` | `noinlayhints`: types and parameter names from the language server, drawn into the line |
 | `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
@@ -698,6 +699,21 @@ further than highlighting does: `//` for Rust, Go, C and the rest, `#` for
 Python, TOML, shell, YAML and Makefiles, `--` for Lua and SQL, and
 `<!-- -->` or `/* */` around the line for HTML, Markdown and CSS. A file jack
 has no marker for says so and is left alone.
+
+## Long lines
+
+A line wider than its window scrolls the view sideways to wherever the cursor
+is, which is right for code. `:set wrap` is for prose and for logs: a long line
+goes on as many rows as it needs, broken at the last space that fits, and
+mid-word only when a word is wider than the window. The number and the git sign
+go on the line's first row, and the rows after it leave the gutter blank, so
+you can still tell one line of the file from the next.
+
+`j` and `k` still move by lines of the file, as vim's do. Everything that has
+to do with the screen counts rows instead. The cursor is kept on screen by the
+rows above it, `zz` centres its row, and `H`, `M` and `L` reach the lines that
+actually start on screen. Inlay hints take their room in the wrapping like the
+text does, so a row never runs past the edge because of one.
 
 ## Moving the view
 

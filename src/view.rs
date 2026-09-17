@@ -772,9 +772,19 @@ impl View {
 
     /// `zt`, `zz`, `zb`: the view moved so the cursor's line sits where asked.
     /// The cursor does not move; only what is around it does.
-    pub fn reveal(&mut self, where_to: Reveal, height: usize) {
+    pub fn reveal(&mut self, where_to: Reveal, height: usize, wrap: Option<usize>) {
         let (line, _) = self.cursor_coords();
         let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        // Wrapped, a line can be several rows, and what is counted is rows.
+        if let Some(width) = wrap {
+            let (row, _) = self.wrapped_cursor(width);
+            self.scroll_top = match where_to {
+                Reveal::Top => line.saturating_sub(pad),
+                Reveal::Middle => self.top_with_rows_above(line, row, height / 2, width),
+                Reveal::Bottom => self.top_with_rows_above(line, row, height.saturating_sub(pad + 1), width),
+            };
+            return;
+        }
         // The padding is honoured, as vim honours `scrolloff` here: `zt` with
         // three lines of margin leaves three lines above, not none, or the
         // next redraw would scroll it back anyway.
@@ -830,11 +840,14 @@ impl View {
 
     /// Scroll the viewport so the cursor is visible, keeping SCROLLOFF rows of
     /// context where the buffer allows it.
-    pub fn scroll_to_cursor(&mut self, width: usize, height: usize) {
+    pub fn scroll_to_cursor(&mut self, width: usize, height: usize, wrap: bool) {
         let (line, _) = self.cursor_coords();
+        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
+        if wrap {
+            return self.scroll_to_wrapped_cursor(width, height, pad);
+        }
         let col = self.cursor_screen_col();
 
-        let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
         if line < self.scroll_top + pad {
             self.scroll_top = line.saturating_sub(pad);
         }
@@ -856,9 +869,82 @@ impl View {
     pub fn cursor_coords(&self) -> (usize, usize) {
         self.doc.coords(self.sel.head)
     }
-    /// Where to leave the terminal cursor, in screen coordinates.
-    pub fn cursor_screen(&self) -> (u16, u16) {
+    /// Wrapped, nothing scrolls sideways, and a line below the top counts as
+    /// the rows it takes: the cursor's row, plus the padding, has to fit.
+    fn scroll_to_wrapped_cursor(&mut self, width: usize, height: usize, pad: usize) {
         let (line, _) = self.cursor_coords();
+        self.scroll_left = 0;
+        if line < self.scroll_top + pad {
+            self.scroll_top = line.saturating_sub(pad);
+        }
+        let (row, _) = self.wrapped_cursor(width);
+        let below = pad.min(self.last_line() - line);
+        let mut above: usize = (self.scroll_top..line).map(|l| self.line_rows(l, width).len()).sum::<usize>() + row;
+        while above + 1 + below > height && self.scroll_top < line {
+            above -= self.line_rows(self.scroll_top, width).len();
+            self.scroll_top += 1;
+        }
+    }
+
+    /// The top line that leaves about `rows` screen rows above the cursor,
+    /// which is on row `row` of `line`: whole lines, and never more than asked.
+    fn top_with_rows_above(&self, line: usize, row: usize, rows: usize, width: usize) -> usize {
+        let (mut top, mut above) = (line, row);
+        while top > 0 {
+            let more = self.line_rows(top - 1, width).len();
+            if above + more > rows {
+                break;
+            }
+            above += more;
+            top -= 1;
+        }
+        top
+    }
+
+    /// Where each screen row of `line` starts, wrapped at `width`.
+    pub fn line_rows(&self, line: usize, width: usize) -> Vec<usize> {
+        wrap_starts(&self.doc.line_str(line), &self.hints_on(line), width)
+    }
+
+    /// The cursor's row within its wrapped line, and its column on that row.
+    pub fn wrapped_cursor(&self, width: usize) -> (usize, usize) {
+        let (line, col) = self.cursor_coords();
+        let text = self.doc.line_str(line);
+        let hints = self.hints_on(line);
+        let starts = wrap_starts(&text, &hints, width);
+        let row = starts.iter().rposition(|&start| start <= col).unwrap_or(0);
+        let start = starts[row];
+        let segment: String = text.chars().skip(start).collect();
+        let hints: Vec<(usize, &str)> = hints.iter().filter(|(at, _)| *at >= start).map(|&(at, label)| (at - start, label)).collect();
+        // A cursor after a row that is exactly full would sit past the edge.
+        (row, hinted_col(&segment, col - start, &hints).min(width.saturating_sub(1)))
+    }
+
+    /// How many lines, from the top one down, start on a screen `height` rows
+    /// tall: the lines `H`, `M` and `L` can reach.
+    pub fn lines_on_screen(&self, height: usize, wrap: Option<usize>) -> usize {
+        let Some(width) = wrap else {
+            return height;
+        };
+        let (mut rows, mut lines) = (0, 0);
+        for line in self.scroll_top..self.doc.len_lines() {
+            if rows >= height {
+                break;
+            }
+            rows += self.line_rows(line, width).len();
+            lines += 1;
+        }
+        lines.max(1)
+    }
+
+    /// Where to leave the terminal cursor, in screen coordinates.
+    pub fn cursor_screen(&self, wrap: Option<usize>) -> (u16, u16) {
+        let (line, _) = self.cursor_coords();
+        if let Some(width) = wrap {
+            let above: usize = (self.scroll_top..line).map(|l| self.line_rows(l, width).len()).sum();
+            let (row, x) = self.wrapped_cursor(width);
+            return (x as u16, (above + row) as u16);
+        }
         (
             self.cursor_screen_col().saturating_sub(self.scroll_left) as u16,
             line.saturating_sub(self.scroll_top) as u16,
@@ -1399,6 +1485,45 @@ pub struct Hint {
     pub label: String,
 }
 
+/// Where each screen row of `text` starts, as char columns, when it is
+/// wrapped to `width` cells: at the last space on a row where there is one,
+/// so words are not cut in half, and mid-word only when a word is wider than
+/// the row. A hint is kept with the character it comes before, and counts.
+pub fn wrap_starts(text: &str, hints: &[(usize, &str)], width: usize) -> Vec<usize> {
+    let width = width.max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut starts = vec![0];
+    let (mut start, mut col, mut i) = (0, 0, 0);
+    // The column after the last space on this row, where a break can go.
+    let mut after_space = None;
+    while i < chars.len() {
+        let hint: usize = hints.iter().filter(|(at, _)| *at == i).map(|(_, label)| crate::ui::str_width(label)).sum();
+        let cells = hint + char_width(chars[i], col + hint);
+        let space = chars[i] == ' ' || chars[i] == '\t';
+        if col + cells > width && i > start {
+            // A space that does not fit hangs off the end of its row rather
+            // than starting the next one.
+            let next = match (space, after_space) {
+                (true, _) => i + 1,
+                (false, Some(after)) if after > start && after <= i => after,
+                _ => i,
+            };
+            if next >= chars.len() {
+                break;
+            }
+            starts.push(next);
+            (start, col, i, after_space) = (next, 0, next, None);
+            continue;
+        }
+        col += cells;
+        if space {
+            after_space = Some(i + 1);
+        }
+        i += 1;
+    }
+    starts
+}
+
 /// The screen column of `char_col` in `line` with `hints` - columns in the
 /// line, and their text - drawn in: every hint at or before the column pushes
 /// it right. Tab stops are counted with the hints in, which is how the line
@@ -1524,5 +1649,20 @@ mod tests {
         assert_eq!(view.cursor_screen_col(), 9, "before the hint, the cursor is where it was");
         view.sel = Selection::point(10);
         assert_eq!(view.cursor_screen_col(), 15);
+    }
+
+    #[test]
+    fn a_line_wraps_at_its_last_space_and_mid_word_only_when_it_must() {
+        use super::wrap_starts;
+        assert_eq!(wrap_starts("one two three", &[], 8), [0, 8]);
+        assert_eq!(wrap_starts("short", &[], 8), [0]);
+        assert_eq!(wrap_starts("", &[], 8), [0]);
+        // A space that would start a row hangs off the end of the last one.
+        assert_eq!(wrap_starts("abcdefgh ijk", &[], 8), [0, 9]);
+        assert_eq!(wrap_starts("abcdefghijk", &[], 4), [0, 4, 8]);
+        // A hint takes room, and goes with the character after it.
+        assert_eq!(wrap_starts("let x = 1", &[(5, ": i32")], 10), [0, 6]);
+        // Wide characters are two cells.
+        assert_eq!(wrap_starts("日本語", &[], 4), [0, 2]);
     }
 }

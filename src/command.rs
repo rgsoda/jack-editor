@@ -142,6 +142,13 @@ pub static SETTINGS: &[Setting] = &[
                 closer when it is typed, and take both back with backspace.",
     },
     Setting {
+        name: "wrap",
+        kind: Kind::Flag(false),
+        about: "Show a line too long for the window on as many rows as it \
+                takes, broken at a space where there is one, instead of \
+                scrolling sideways. j and k still move by lines of the file.",
+    },
+    Setting {
         name: "inlayhints",
         kind: Kind::Flag(true),
         about: "Show the types and parameter names a language server would \

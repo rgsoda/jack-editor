@@ -87,7 +87,6 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     // search match still wins on the cells it covers.
     let cursorline = (editor.cursorline && focused).then(|| editor.theme.style("ui.cursorline"));
     let number_style = editor.theme.style("ui.linenr");
-    let current_style = editor.theme.style("ui.linenr.selected");
 
     // Matches are painted only while a search is live, and only for the rows
     // on screen - the pattern is run over the viewport, not the buffer.
@@ -127,6 +126,11 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     }
     let glyphs = status::glyphs(editor);
 
+    let wrap = editor.wrap.then(|| rect.width.saturating_sub(gutter).max(1));
+    let scroll_left = match wrap {
+        Some(_) => 0,
+        None => scroll_left,
+    };
     let styling = LineStyling {
         highlights: &highlights,
         selection: editor.theme.style("ui.selection"),
@@ -141,8 +145,12 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         hint_style: editor.theme.style("ui.inlayhint"),
     };
 
-    for row in rect.y..rect.y + height {
-        let line = scroll_top + row - rect.y;
+    // Wrapped, a line takes as many rows as it needs and nothing scrolls
+    // sideways; each row is drawn as a line of its own, with the columns,
+    // bytes and selection it covers.
+    let mut line = scroll_top;
+    let mut row = rect.y;
+    while row < rect.y + height {
         if line >= total_lines {
             // Past the end there is no line to number, and the `~` keeps the
             // far left column, as it does with no gutter at all.
@@ -150,51 +158,21 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                 surface.put(x, row, ' ', 1, number_style);
             }
             surface.put(rect.x, row, '~', 1, editor.theme.style("ui.eof"));
+            row += 1;
             continue;
         }
 
         let here = cursorline.filter(|_| line == cursor_line);
-        if let Some(tint) = here {
-            // The whole row first, so the tint reaches past the end of the
-            // text and behind the gutter; everything below draws over it.
-            for x in rect.x..rect.x + rect.width {
-                surface.put(x, row, ' ', 1, tint);
-            }
-        }
-
         let diagnostic = worst.get(&line).copied();
-        if signs > 0 {
-            let (ch, key) = match view.signs.get(&line) {
-                Some(Sign::Added) => ('+', "ui.gutter.added"),
-                Some(Sign::Modified) => ('~', "ui.gutter.modified"),
-                Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
-                None => (' ', "ui.linenr"),
-            };
-            // A diagnostic has the column over the git sign: the one needs
-            // doing something about, the other is only news.
-            let (ch, key) = match diagnostic {
-                Some(d) => (glyphs.diagnostic.chars().next().unwrap_or('!'), format!("diagnostic.{}", d.severity.name())),
-                None => (ch, key.to_string()),
-            };
-            let style = editor.theme.style(&key);
-            surface.put(rect.x, row, ch, 1, under(here, style));
-        }
-
-        if let Some(number) = editor.numbers.label(line, cursor_line) {
-            let style = match line == cursor_line {
-                true => under(here, current_style),
-                false => number_style,
-            };
-            // Right-aligned, with the space either side the width allows for.
-            let text = format!("{number:>width$} ", width = gutter - signs - 1);
-            let limit = (rect.x + gutter).min(rect.x + rect.width);
-            put_str(surface, rect.x + signs, row, &text, style, limit);
-        }
-
         let text = view.doc.line_str(line);
         let hints = view.hints_on(line);
         let line_start = view.doc.line_to_char(line);
         let line_end = line_start + view.doc.line_len_chars(line);
+        let length = text.chars().count();
+        let starts = match wrap {
+            Some(width) => crate::view::wrap_starts(&text, &hints, width),
+            None => vec![0],
+        };
 
         // Selection clipped to this line, as char offsets within it.
         let sel = if selection.is_some() && sel_end > line_start && sel_start <= line_end {
@@ -206,37 +184,117 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             None
         };
 
-        draw_line(
-            surface,
-            Row {
-                y: row,
-                text: &text,
-                byte: view.doc.line_to_byte(line),
-                start: line_start,
-                selection: sel,
-                cursorline: here,
-                hints: &hints,
-            },
-            &styling,
-        );
-
-        // The worst diagnostic's message, after the text where there is room.
-        // Its first line: the rest is for `]d`.
-        if let Some(d) = diagnostic {
-            let end = crate::view::hinted_col(&text, text.chars().count(), &hints);
-            let x = styling.left + end.saturating_sub(scroll_left) + 2;
-            let right = rect.x + rect.width;
-            if x < right {
-                let style = under(here, editor.theme.style(&format!("diagnostic.{}", d.severity.name())));
-                let message = format!("{} {}", glyphs.diagnostic, d.message.lines().next().unwrap_or(""));
-                put_str(surface, x, row, &message, style, right);
+        for (segment, &from) in starts.iter().enumerate() {
+            if row >= rect.y + height {
+                break;
             }
+            if let Some(tint) = here {
+                // The whole row first, so the tint reaches past the end of the
+                // text and behind the gutter; everything below draws over it.
+                for x in rect.x..rect.x + rect.width {
+                    surface.put(x, row, ' ', 1, tint);
+                }
+            }
+            let last = segment + 1 == starts.len();
+            if segment == 0 {
+                draw_gutter(editor, surface, view, GutterRow { row, line, cursor_line, here, diagnostic, x: rect.x, width: rect.width, gutter, signs });
+            } else {
+                for x in rect.x..rect.x + gutter.min(rect.width) {
+                    surface.put(x, row, ' ', 1, under(here, number_style));
+                }
+            }
+
+            let to = starts.get(segment + 1).copied().unwrap_or(length);
+            let (byte_from, byte_to) = (byte_of(&text, from), byte_of(&text, to));
+            let piece = &text[byte_from..byte_to];
+            let piece_hints: Vec<(usize, &str)> = hints
+                .iter()
+                .filter(|(at, _)| *at >= from && (*at < to || last))
+                .map(|&(at, label)| (at - from, label))
+                .collect();
+            draw_line(
+                surface,
+                Row {
+                    y: row,
+                    text: piece,
+                    byte: view.doc.line_to_byte(line) + byte_from,
+                    start: line_start + from,
+                    selection: sel.map(|(a, b)| (a.saturating_sub(from), b.saturating_sub(from))),
+                    cursorline: here,
+                    hints: &piece_hints,
+                },
+                &styling,
+            );
+
+            // The worst diagnostic's message, after the text where there is
+            // room. Its first line: the rest is for `]d`.
+            if let (Some(d), true) = (diagnostic, last) {
+                let end = crate::view::hinted_col(piece, piece.chars().count(), &piece_hints);
+                let x = styling.left + end.saturating_sub(styling.scroll_left) + 2;
+                let right = rect.x + rect.width;
+                if x < right {
+                    let style = under(here, editor.theme.style(&format!("diagnostic.{}", d.severity.name())));
+                    let message = format!("{} {}", glyphs.diagnostic, d.message.lines().next().unwrap_or(""));
+                    put_str(surface, x, row, &message, style, right);
+                }
+            }
+            row += 1;
         }
+        line += 1;
     }
 }
 
-/// The picker panel, drawn over the bottom rows of the text area. It is opaque:
-/// every cell in the panel is written, so nothing of the text shows through.
+/// The byte offset of char `index` in `text`, or its length past the end.
+fn byte_of(text: &str, index: usize) -> usize {
+    text.char_indices().nth(index).map_or(text.len(), |(byte, _)| byte)
+}
+
+/// One row's gutter: where it is, and what decides what goes in it.
+struct GutterRow<'a> {
+    row: usize,
+    line: usize,
+    cursor_line: usize,
+    here: Option<Style>,
+    diagnostic: Option<&'a Diagnostic>,
+    x: usize,
+    width: usize,
+    gutter: usize,
+    signs: usize,
+}
+
+/// The sign column and the line number, for the first row of a line.
+fn draw_gutter(editor: &Editor, surface: &mut Surface, view: &crate::view::View, at: GutterRow) {
+    let GutterRow { row, line, cursor_line, here, diagnostic, x, width, gutter, signs } = at;
+    if signs > 0 {
+        let (ch, key) = match view.signs.get(&line) {
+            Some(Sign::Added) => ('+', "ui.gutter.added"),
+            Some(Sign::Modified) => ('~', "ui.gutter.modified"),
+            Some(Sign::Deleted) => ('_', "ui.gutter.deleted"),
+            None => (' ', "ui.linenr"),
+        };
+        // A diagnostic has the column over the git sign: the one needs
+        // doing something about, the other is only news.
+        let glyphs = status::glyphs(editor);
+        let (ch, key) = match diagnostic {
+            Some(d) => (glyphs.diagnostic.chars().next().unwrap_or('!'), format!("diagnostic.{}", d.severity.name())),
+            None => (ch, key.to_string()),
+        };
+        let style = editor.theme.style(&key);
+        surface.put(x, row, ch, 1, under(here, style));
+    }
+
+    if let Some(number) = editor.numbers.label(line, cursor_line) {
+        let style = match line == cursor_line {
+            true => under(here, editor.theme.style("ui.linenr.selected")),
+            false => editor.theme.style("ui.linenr"),
+        };
+        // Right-aligned, with the space either side the width allows for.
+        let text = format!("{number:>width$} ", width = gutter - signs - 1);
+        let limit = (x + gutter).min(x + width);
+        put_str(surface, x + signs, row, &text, style, limit);
+    }
+}
+
 /// The open buffers along the top. Scrolled from the left when there are more
 /// than fit, so the one you are in is always on it.
 fn draw_tabline(editor: &Editor, surface: &mut Surface) {
@@ -390,6 +448,8 @@ fn draw_info(editor: &Editor, info: &Info, surface: &mut Surface) {
     }
 }
 
+/// The picker panel, drawn over the bottom rows of the text area. It is opaque:
+/// every cell in the panel is written, so nothing of the text shows through.
 fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
     let (width, _) = surface.size();
     let rows = editor.area_rows();
@@ -1363,5 +1423,50 @@ mod tests {
         assert_eq!(row_text(&editor, &keys, 0).trim_end(), "let x: i32 = f(n: 2);");
         editor.view_mut().sel = crate::view::Selection::point(10);
         assert_eq!(editor.cursor_screen(), (18, 0), "on the 2, past the hint before it");
+    }
+
+    #[test]
+    fn a_wrapped_line_takes_the_rows_it_needs_and_the_cursor_follows() {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str("one two three four five six\nnext\n");
+        editor.numbers = Numbers::Absolute;
+        editor.signs_enabled = false;
+        // The gutter takes four columns, which leaves ten for the text.
+        editor.set_viewport(14, 6);
+        editor.wrap = true;
+        let keys = Keys::default();
+        let rows: Vec<String> = (0..5).map(|y| row_text(&editor, &keys, y).trim_end().to_string()).collect();
+        assert_eq!(rows, ["  1 one two", "    three four", "    five six", "  2 next", "  3"]);
+
+        // On "five": the third row, at the start of it.
+        editor.view_mut().sel = crate::view::Selection::point(19);
+        assert_eq!(editor.cursor_screen(), (4, 2));
+
+        // Off, it is one row again, scrolled sideways to where the cursor is.
+        editor.wrap = false;
+        editor.scroll_to_cursor();
+        assert!(row_text(&editor, &keys, 1).starts_with("  2 "));
+        assert_eq!(editor.cursor_screen(), (13, 0));
+    }
+
+    #[test]
+    fn scrolling_to_a_wrapped_cursor_counts_rows_not_lines() {
+        let mut editor = Editor::scratch();
+        let long = "word ".repeat(10);
+        let text: String = (0..10).map(|_| format!("{long}\n")).collect();
+        editor.view_mut().doc.text = ropey::Rope::from_str(&text);
+        editor.numbers = Numbers::Off;
+        editor.signs_enabled = false;
+        editor.set_viewport(10, 8);
+        editor.wrap = true;
+        // Each line is five rows at ten wide; line 3 is rows 15 to 19.
+        editor.goto_line(3);
+        editor.scroll_to_cursor();
+        let (_, y) = editor.cursor_screen();
+        assert!((y as usize) < 8, "on screen: {y}");
+        assert!(editor.view().scroll_top >= 2, "{}", editor.view().scroll_top);
+
+        editor.reveal(crate::view::Reveal::Top);
+        assert_eq!(editor.view().scroll_top, 0, "three lines kept above it, as without wrap");
     }
 }
