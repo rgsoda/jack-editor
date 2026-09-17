@@ -1445,8 +1445,10 @@ let n = count();
     }
 
     /// A scratch editor whose server offers code actions and runs commands.
-    fn editor_acting(text: &str) -> (Editor, PathBuf, std::sync::mpsc::Receiver<Vec<u8>>) {
-        let dir = std::env::temp_dir().join(format!("jack_actions_{}", std::process::id()));
+    /// Each test names its own directory: they run at once, and one that
+    /// deletes a shared directory deletes the others' files with it.
+    fn editor_acting(name: &str, text: &str) -> (Editor, PathBuf, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let dir = std::env::temp_dir().join(format!("jack_actions_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.rs"), text).unwrap();
@@ -1465,7 +1467,7 @@ let n = count();
 
     #[test]
     fn ga_asks_about_the_range_with_the_diagnostics_it_covers() {
-        let (mut editor, dir, written) = editor_acting("let x = 1;\nlet y = 2;\n");
+        let (mut editor, dir, written) = editor_acting("range", "let x = 1;\nlet y = 2;\n");
         let path = absolute(&dir.join("a.rs"));
         editor.set_diagnostics(
             &path,
@@ -1503,7 +1505,7 @@ let n = count();
 
     #[test]
     fn choosing_an_action_that_came_with_its_edits_applies_them() {
-        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        let (mut editor, dir, written) = editor_acting("edits", "let x = 1;\n");
         editor.code_actions();
         let id = asked_for(&written, "textDocument/codeAction");
         editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
@@ -1529,7 +1531,7 @@ let n = count();
 
     #[test]
     fn an_action_that_is_only_a_title_is_asked_about_again() {
-        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        let (mut editor, dir, written) = editor_acting("resolve", "let x = 1;\n");
         editor.code_actions();
         let id = asked_for(&written, "textDocument/codeAction");
         editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
@@ -1559,7 +1561,7 @@ let n = count();
 
     #[test]
     fn a_command_is_handed_back_and_the_edit_it_asks_for_is_made() {
-        let (mut editor, dir, written) = editor_acting("let x = 1;\n");
+        let (mut editor, dir, written) = editor_acting("command", "let x = 1;\n");
         editor.code_actions();
         let id = asked_for(&written, "textDocument/codeAction");
         editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [

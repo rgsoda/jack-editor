@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 48: code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 49: reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -458,6 +458,27 @@ What counts as changed is the file's modification time and length, checked
 against what they were when it was last read or written - not a hash, because
 this runs on every save. A file that has been *deleted* counts as changed too:
 recreating it silently is the same surprise.
+
+## Files changed behind your back
+
+A formatter in another pane, a `git checkout`, a rebase: something other than
+jack changes a file jack has open. A buffer with nothing to lose is reloaded
+without asking, and one with unsaved changes is named in the status line and
+left alone, for `:e!` or `:w!` — said once per change to the file, not once a
+second for as long as the two disagree.
+
+It looks when the terminal gets the focus back, which is when it matters: you
+were in the other pane, and you have just come back. It also looks at most once
+a second on the frames that happen anyway, for terminals that do not report
+focus. Never while typing, though — an insert is one undo step, and a reload
+that landed inside one would be taken back by the `u` you meant for your
+typing.
+
+A reload is an edit, not a swap of the text. The undo history is a list of
+changes to the text you had, so `u` after a reload takes the reload back,
+rather than replaying old edits over a file they were never about. And only the
+part that differs is replaced, so a change at the bottom of the file leaves the
+cursor, the diagnostics and the syntax tree at the top of it where they were.
 
 ## Trailing whitespace
 

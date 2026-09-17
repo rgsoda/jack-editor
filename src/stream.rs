@@ -15,6 +15,9 @@ pub enum Message {
     /// bracketed paste wraps it in. It is text and never keystrokes: the
     /// editor is spared interpreting a pasted `dd` as a command.
     Paste(String),
+    /// The terminal window has the focus again - the moment another program
+    /// is likeliest to have changed a file.
+    Focus,
     /// How the current buffer differs from what git has, as one sign per
     /// changed line. `token` identifies the view that asked.
     Signs { token: u64, signs: Vec<(usize, Sign)> },
@@ -130,6 +133,7 @@ pub fn spawn_input(tx: Sender<Message>, input: Arc<Input>) {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Message::Key(key),
                 Ok(Event::Resize(..)) => Message::Resize,
                 Ok(Event::Paste(text)) => Message::Paste(text),
+                Ok(Event::FocusGained) => Message::Focus,
                 Ok(_) => continue,
                 // The terminal is gone; the main thread will find out too.
                 Err(_) => return,

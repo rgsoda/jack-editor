@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::{execute, queue};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use std::io::{self, Write};
 
@@ -51,7 +51,9 @@ impl TerminalGuard {
         // arrives as one event rather than as a burst of keystrokes that
         // normal mode would read as commands and insert mode would auto-indent
         // line by line.
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        // Focus reports: coming back to the terminal is when to look for
+        // files another program changed while you were away.
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
         Ok(TerminalGuard)
     }
 }
@@ -66,6 +68,7 @@ fn restore() {
     let _ = execute!(
         io::stdout(),
         DisableBracketedPaste,
+        DisableFocusChange,
         LeaveAlternateScreen,
         SetCursorStyle::DefaultUserShape,
         Show
@@ -186,6 +189,10 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
             shown_mode = None;
         }
 
+        // A stat per buffer, at most once a second - and first, so that what
+        // it reloads is scrolled to, synced and drawn in this same frame.
+        editor.watch_disk();
+
         let (cols, rows) = terminal::size()?;
         let (cols, rows) = (cols.max(1) as usize, rows.max(2) as usize);
         // One row goes to the status line, and one to the buffer list when it
@@ -273,6 +280,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
                 editor.dismiss_hover();
                 editor.paste(&text);
                 editor.dog_runs();
+            } else if let Message::Focus = message {
+                editor.focus_gained();
             } else if let Message::Items { token, items, done } = message {
                 if token != streamed_token {
                     editor.stream_items(streamed_token, std::mem::take(&mut streamed), streamed_done);
@@ -347,7 +356,7 @@ fn hand_over(editor: &mut Editor, command: &str, input: &stream::Input) -> Resul
             break;
         }
     }
-    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
     input.resume();
     // What it did to the files that are open here.
     editor.reload_changed_files();

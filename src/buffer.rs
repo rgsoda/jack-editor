@@ -26,6 +26,10 @@ pub struct Document {
     /// What the file looked like when it was last read or written, so a change
     /// made behind our back can be noticed before we overwrite it.
     disk: Option<Stamp>,
+    /// What the disk held the last time a change to it was reported and could
+    /// not be taken in, because there were unsaved changes here. Reported once
+    /// per change to the file, not once a second for as long as it lasts.
+    told: Option<Option<Stamp>>,
 }
 
 /// Cheap evidence that a file is the one we last saw: when it was modified and
@@ -54,7 +58,7 @@ pub fn indent_of(text: &str) -> &str {
 
 impl Document {
     pub fn scratch() -> Self {
-        Document { text: Rope::new(), path: None, disk: None }
+        Document { text: Rope::new(), path: None, disk: None, told: None }
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -68,7 +72,7 @@ impl Document {
             // Opening a path that doesn't exist yet is a new file, not an error.
             Rope::new()
         };
-        Ok(Document { text, path: Some(path.to_path_buf()), disk: Stamp::of(path) })
+        Ok(Document { text, path: Some(path.to_path_buf()), disk: Stamp::of(path), told: None })
     }
 
     pub fn len_lines(&self) -> usize {
@@ -79,7 +83,6 @@ impl Document {
         self.text.len_chars()
     }
 
-    /// The line's text with any trailing line break removed.
     /// The whitespace `line` begins with: what a line opened beside it should
     /// copy, and what its indentation is made of.
     pub fn line_indent(&self, line: usize) -> String {
@@ -92,6 +95,7 @@ impl Document {
         indent_of(&self.line_str(line)).chars().count()
     }
 
+    /// The line's text with any trailing line break removed.
     pub fn line_str(&self, line: usize) -> Cow<'_, str> {
         let slice = self.text.line(line);
         match Cow::<str>::from(slice) {
@@ -179,6 +183,7 @@ impl Document {
             .write_to(BufWriter::new(file))
             .with_context(|| format!("writing {}", path.display()))?;
         self.disk = Stamp::of(&path);
+        self.told = None;
         Ok(())
     }
 
@@ -205,13 +210,34 @@ impl Document {
         }
     }
 
-    /// Re-read from disk, throwing away what is in memory.
-    pub fn reload(&mut self) -> Result<()> {
+    /// True the first time a particular change on disk is asked about, and
+    /// false after that until the file changes again - for a conflict that
+    /// is worth saying once rather than on every look.
+    pub fn first_news_of_disk(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else {
+            return false;
+        };
+        let now = Stamp::of(path);
+        if self.told == Some(now) {
+            return false;
+        }
+        self.told = Some(now);
+        true
+    }
+
+    /// The file as it is on disk now, read into a document of its own. Nothing
+    /// here changes: the view decides how the text gets in, which is as an
+    /// edit, so that undo still knows what the buffer said before.
+    pub fn read_disk(&self) -> Result<Document> {
         let path = self.path.clone().context("no file name")?;
-        let fresh = Document::open(&path)?;
-        self.text = fresh.text;
+        Document::open(&path)
+    }
+
+    /// Take the other document's word for what the disk holds: after its text
+    /// has been brought in, the file is the one we last saw.
+    pub fn seen_on_disk(&mut self, fresh: &Document) {
         self.disk = fresh.disk;
-        Ok(())
+        self.told = None;
     }
 
     pub fn display_name(&self) -> &str {

@@ -198,6 +198,24 @@ pub struct Diagnostic {
     pub raw: serde_json::Value,
 }
 
+/// Where two texts stop agreeing: the char offset, how many chars of the old
+/// one differ from there, and what the new one has in their place. The ends
+/// they share are left out, and never counted twice when one text is the
+/// other with something added.
+fn difference(old: &str, new: &str) -> (usize, usize, String) {
+    let prefix = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).count();
+    let old_rest: Vec<char> = old.chars().skip(prefix).collect();
+    let new_rest: Vec<char> = new.chars().skip(prefix).collect();
+    let suffix = old_rest
+        .iter()
+        .rev()
+        .zip(new_rest.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let inserted = new_rest[..new_rest.len() - suffix].iter().collect();
+    (prefix, old_rest.len() - suffix, inserted)
+}
+
 impl View {
     pub fn new(doc: Document) -> Self {
         View {
@@ -1100,9 +1118,33 @@ impl View {
         self.edits
     }
 
-    /// The text changed without an edit - a reload from disk.
-    pub fn touch(&mut self) {
-        self.edits += 1;
+    /// Bring in the file as it is on disk now, as one edit.
+    ///
+    /// An edit rather than a swap of the text: the undo history is a list of
+    /// changes to *this* text, and swapping it underneath them would have `u`
+    /// replaying them over a different file. As an edit, `u` takes the reload
+    /// back instead, and the diagnostics, the syntax tree and the language
+    /// server all hear about it the way they hear about typing.
+    ///
+    /// Only the part that differs is replaced - what the two have in common at
+    /// either end is left alone - so a change at the bottom of a file does not
+    /// move a cursor or a squiggle at the top of it.
+    pub fn reload(&mut self) -> Result<()> {
+        let fresh = self.doc.read_disk()?;
+        let (old, new) = (self.doc.text.to_string(), fresh.text.to_string());
+        let (at, removed, inserted) = difference(&old, &new);
+
+        // The line and column the cursor was on, in the new text.
+        let (line, column) = self.cursor_coords();
+        let line = line.min(fresh.len_lines().saturating_sub(1));
+        let cursor = fresh.line_to_char(line) + column.min(fresh.line_len_chars(line));
+
+        self.edit_at(at, removed, &inserted, Some(cursor));
+        self.doc.seen_on_disk(&fresh);
+        self.history.mark_saved();
+        // A different file as far as its indentation is concerned.
+        self.indent = crate::indent::detect(&self.doc);
+        Ok(())
     }
 
     /// Whether another window is showing this buffer. Turning it off lets the
@@ -1287,5 +1329,24 @@ fn class_of(ch: char) -> CharClass {
         CharClass::Word
     } else {
         CharClass::Punct
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::difference;
+
+    #[test]
+    fn a_difference_leaves_out_what_both_ends_share() {
+        assert_eq!(difference("one two three", "one 2 three"), (4, 3, "2".to_string()));
+        // Something added: nothing of the old text is replaced.
+        assert_eq!(difference("abc", "abXc"), (2, 0, "X".to_string()));
+        // Something taken away.
+        assert_eq!(difference("abXc", "abc"), (2, 1, String::new()));
+        // A repeated character is not counted at both ends.
+        assert_eq!(difference("aa", "aaa"), (2, 0, "a".to_string()));
+        assert_eq!(difference("same", "same"), (4, 0, String::new()));
+        // Counted in chars, which is what the rope is addressed in.
+        assert_eq!(difference("zażółć", "zażółw"), (5, 1, "w".to_string()));
     }
 }

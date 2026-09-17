@@ -45,6 +45,11 @@ pub enum PromptKind {
     Rename,
 }
 
+/// How often the disk is looked at for open files that changed behind our
+/// back. A stat per buffer is nothing; once a keystroke would still be
+/// wasted, and once a second is quicker than anyone switches panes.
+const DISK_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: String,
@@ -324,6 +329,8 @@ pub struct Editor {
     /// left for you: the rest of normal mode is vim's, and a mapping that
     /// quietly took `d` or `w` away would be a different editor.
     pub leader: BTreeMap<char, String>,
+    /// When the disk was last looked at for files changed behind our back.
+    disk_checked: Option<std::time::Instant>,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -446,6 +453,7 @@ impl Editor {
             actions: None,
             shell: None,
             leader: BTreeMap::new(),
+            disk_checked: None,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -1119,13 +1127,14 @@ impl Editor {
             }
             let name = self.views[index].doc.display_name().to_string();
             if self.views[index].is_modified() {
-                conflicts.push(name);
+                // Said once per change to the file: this runs every second,
+                // and a warning repeated that often is one you stop reading.
+                if self.views[index].doc.first_news_of_disk() {
+                    conflicts.push(name);
+                }
                 continue;
             }
-            let view = &mut self.views[index];
-            if view.doc.reload().is_ok() {
-                view.touch();
-                view.indent = crate::indent::detect(&view.doc);
+            if self.views[index].reload().is_ok() {
                 reloaded.push(name);
             }
         }
@@ -1143,7 +1152,39 @@ impl Editor {
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect();
-        self.message = parts.join("; ");
+        // Nothing found is nothing to say, and certainly no reason to wipe
+        // whatever the status line was saying before the look.
+        if !parts.is_empty() {
+            self.message = parts.join("; ");
+        }
+    }
+
+    /// Look at the disk for files changed behind our back, at most once a
+    /// second: a stat per open buffer, on the frames that happen to fall after
+    /// the second is up. What changes a file is usually another program in
+    /// another pane - a formatter, a `git checkout` - and the look that
+    /// matters most is the one when you come back, which is `focus_gained`.
+    ///
+    /// Not while typing. A reload is an edit, an insert is one undo step, and
+    /// a reload that landed inside one would be taken back by the `u` meant
+    /// for what you typed.
+    pub fn watch_disk(&mut self) {
+        if self.mode == Mode::Insert {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.disk_checked.is_some_and(|at| now.duration_since(at) < DISK_LOOK) {
+            return;
+        }
+        self.disk_checked = Some(now);
+        self.reload_changed_files();
+    }
+
+    /// The terminal has the focus back, which is the likeliest moment for a
+    /// file to have changed: look now rather than when the second is up.
+    pub fn focus_gained(&mut self) {
+        self.disk_checked = None;
+        self.watch_disk();
     }
 
     /// `:fmt` - hand the buffer to whatever the language server formats with.
@@ -2881,15 +2922,8 @@ impl Editor {
             return;
         }
         let name = self.view().doc.display_name().to_string();
-        match self.view_mut().doc.reload() {
-            Ok(()) => {
-                let view = self.view_mut();
-                view.touch();
-                // The file on disk is a different file as far as its
-                // indentation is concerned.
-                view.indent = crate::indent::detect(&view.doc);
-                self.message = format!("reloaded {name}");
-            }
+        match self.view_mut().reload() {
+            Ok(()) => self.message = format!("reloaded {name}"),
             Err(err) => self.message = format!("{err:#}"),
         }
         self.clamp_cursor();
@@ -4580,6 +4614,78 @@ mod tests {
         assert_eq!(e.views()[1].doc.text.to_string(), "typed mine\n", "not overwritten");
         assert!(e.message.contains("one.txt reloaded"), "{}", e.message);
         assert!(e.message.contains("two.txt changed on disk"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_reload_is_an_edit_that_undo_takes_back() {
+        let dir = tempdir();
+        let path = write_file(&dir, "undo.txt", "one\ntwo\nthree\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.goto_line(2);
+
+        std::fs::write(&path, "one\nTWO, changed\nthree\n").unwrap();
+        e.reload_changed_files();
+        assert_eq!(e.view().doc.text.to_string(), "one\nTWO, changed\nthree\n");
+        assert!(!e.is_modified(), "it is what the disk says");
+        assert_eq!(e.cursor_coords().0, 2, "a change above does not move the cursor off its line");
+
+        // The history is about this text, reload and all: `u` takes the
+        // reload back rather than replaying old edits over a new file.
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "one\ntwo\nthree\n");
+        assert!(e.is_modified(), "and that is no longer what the disk says");
+    }
+
+    #[test]
+    fn a_conflict_on_disk_is_said_once_per_change() {
+        let dir = tempdir();
+        let path = write_file(&dir, "busy.txt", "mine\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_mode(Mode::Insert);
+        e.insert("x");
+        e.set_mode(Mode::Normal);
+
+        std::fs::write(&path, "theirs\n").unwrap();
+        e.reload_changed_files();
+        assert!(e.message.contains("changed on disk"), "{}", e.message);
+
+        // Looked at again a second later, with nothing new: quiet.
+        e.message.clear();
+        e.reload_changed_files();
+        assert_eq!(e.message, "");
+
+        // Changed again, and that is news.
+        std::fs::write(&path, "theirs, again\n").unwrap();
+        e.reload_changed_files();
+        assert!(e.message.contains("changed on disk"), "{}", e.message);
+        // And saving still refuses to overwrite it without being told.
+        e.save();
+        assert!(e.message.contains(":w! to overwrite"), "{}", e.message);
+    }
+
+    #[test]
+    fn the_disk_is_watched_but_not_while_typing_and_not_every_frame() {
+        let dir = tempdir();
+        let path = write_file(&dir, "watched.txt", "first\n");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+
+        std::fs::write(&path, "second\n").unwrap();
+        e.set_mode(Mode::Insert);
+        e.watch_disk();
+        assert_eq!(e.view().doc.text.to_string(), "first\n", "not in the middle of an insert");
+
+        e.set_mode(Mode::Normal);
+        e.watch_disk();
+        assert_eq!(e.view().doc.text.to_string(), "second\n");
+
+        // Within the second: not looked at.
+        std::fs::write(&path, "third one\n").unwrap();
+        e.watch_disk();
+        assert_eq!(e.view().doc.text.to_string(), "second\n");
+
+        // Coming back to the terminal is worth a look at once.
+        e.focus_gained();
+        assert_eq!(e.view().doc.text.to_string(), "third one\n");
     }
 
     #[test]
