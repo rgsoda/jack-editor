@@ -678,6 +678,13 @@ impl Client {
         true
     }
 
+    /// Whether the server takes changes as ranges rather than whole texts:
+    /// `textDocumentSync` is the kind, or an object with the kind as `change`.
+    pub fn incremental(&self) -> bool {
+        let sync = &self.capabilities["textDocumentSync"];
+        sync.as_u64().or_else(|| sync["change"].as_u64()) == Some(2)
+    }
+
     /// Whether the server's capabilities name `capability` as anything but
     /// absent or `false` - it may be `true` or an object of options.
     pub fn can(&self, capability: &str) -> bool {

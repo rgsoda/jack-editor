@@ -167,6 +167,12 @@ pub struct View {
     /// window's cursor through edits made here. Kept only while `watched`:
     /// a buffer in one window has nothing to carry and logs nothing.
     log: Vec<(usize, usize, usize)>,
+    /// Every change since the language server was last told, as it will be
+    /// told them - kept only while the buffer is open in one.
+    sync_log: Vec<SyncChange>,
+    /// The edit count `sync_log` starts from. Anything else means some edit
+    /// went unrecorded, and the server is sent the whole text instead.
+    sync_from: u64,
     /// The log position of `log[0]`, so marks survive the log being cleared.
     log_base: usize,
     watched: bool,
@@ -238,6 +244,8 @@ impl View {
         View {
             indent: crate::indent::detect(&doc),
             log: Vec::new(),
+            sync_log: Vec::new(),
+            sync_from: 0,
             log_base: 0,
             watched: false,
             diagnostics: Vec::new(),
@@ -1144,7 +1152,19 @@ impl View {
     /// Apply a transaction to the text and the syntax tree, and log it for any
     /// other window looking at this buffer. Every edit comes through here.
     fn apply_tx(&mut self, tx: &Transaction) {
-        let edits = tx.apply(&mut self.doc);
+        let edits = match self.lsp {
+            Lsp::Open { .. } => {
+                let log = &mut self.sync_log;
+                tx.apply_watched(&mut self.doc, |doc, pos, change| {
+                    log.push(SyncChange {
+                        start: Place::of(&doc.text, pos),
+                        end: Place::of(&doc.text, pos + change.removed_len()),
+                        text: change.inserted.clone(),
+                    });
+                })
+            }
+            _ => tx.apply(&mut self.doc),
+        };
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.edit(&edits, &self.doc.text);
         }
@@ -1170,6 +1190,13 @@ impl View {
             }
             shift += inserted as isize - removed as isize;
         }
+    }
+
+    /// The changes the server has not been told about, and the edit count
+    /// they start from, handed over and forgotten here.
+    pub fn take_sync_log(&mut self) -> (u64, Vec<SyncChange>) {
+        let from = std::mem::replace(&mut self.sync_from, self.edits);
+        (from, std::mem::take(&mut self.sync_log))
     }
 
     /// How many edits the text has had, for knowing a server is behind.
@@ -1330,6 +1357,37 @@ fn carry_one(pos: usize, at: usize, removed: usize, inserted: usize) -> usize {
         at
     } else {
         pos
+    }
+}
+
+/// One change as a language server is told it: the range it replaced, in
+/// the text as it was just before, and what went there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyncChange {
+    pub start: Place,
+    pub end: Place,
+    pub text: String,
+}
+
+/// A position as a server counts it, both ways a server might: the column in
+/// UTF-8 bytes and in UTF-16 units. Which one is wanted is not known until the
+/// change is sent, and by then the text it was counted in is gone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub line: u32,
+    pub utf8: u32,
+    pub utf16: u32,
+}
+
+impl Place {
+    fn of(rope: &ropey::Rope, at: usize) -> Place {
+        let line = rope.char_to_line(at);
+        let (mut utf8, mut utf16) = (0, 0);
+        for c in rope.slice(rope.line_to_char(line)..at).chars() {
+            utf8 += c.len_utf8() as u32;
+            utf16 += c.len_utf16() as u32;
+        }
+        Place { line: line as u32, utf8, utf16 }
     }
 }
 

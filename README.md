@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 58: inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 59: sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -1188,15 +1188,22 @@ about dunders.
 How it works: a server is a child process speaking JSON-RPC over its stdin and
 stdout. A thread reads it and hands each message to the run loop on the same
 channel as keys and git signs, and another writes to it, so a server busy
-indexing can never hold up a keystroke. The server gets the whole text of a
-buffer when it changes, once per frame rather than once per key - it can never
-drift out of step that way, which incremental edits would need a lot of care
-to promise. Positions go over in whichever of UTF-8 and UTF-16 the server
-takes, converted at the boundary. Saving tells the server, which is when
-rust-analyzer runs `cargo check`. Quitting stops it.
+indexing can never hold up a keystroke. Changes go over once per frame rather
+than once per key, and as the changes themselves - the range each one replaced
+and what went there - to every server that takes them that way, which is all
+the ones worth having. A key in a ten thousand line file is then a few bytes
+on the pipe, not the file.
 
-Not yet: rename, code actions, references. Each of these is one request and an
-answer to draw, on top of what is here.
+The ranges are the part that has to be exactly right, or the server's copy
+drifts from the buffer and every answer after it is about the wrong text. So
+each change is recorded as it is made, with its position counted in the text
+as it was at that moment - both as UTF-8 bytes and as UTF-16 units, since which
+one the server wants is only looked up when it is sent. The edits it records
+are the ones undo records, so an undo or a `:s` over the whole file goes over
+the same way as typing. If anything ever changes the text without passing
+through there, the edit count and the record disagree, and the server is sent
+the whole text instead. So is a server that asks for whole texts. Saving tells the server, which is when
+rust-analyzer runs `cargo check`. Quitting stops it.
 
 ## Mapping the leader
 

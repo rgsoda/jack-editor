@@ -45,12 +45,36 @@ impl Editor {
                 continue;
             };
             view.lsp = Lsp::Open { server, version: version + 1, synced: edits };
-            let text = view.doc.text.to_string();
+            // The changes themselves when the server takes them and every
+            // edit since it was last told is in the log; the whole text when
+            // not. A keystroke in a long file is then a few bytes rather than
+            // the file, and the server does not re-read what did not change.
+            let (from, changes) = view.take_sync_log();
+            let client = &self.servers[server];
+            let content = match from == synced && !changes.is_empty() && client.incremental() {
+                true => {
+                    let place = |place: &crate::view::Place| {
+                        let character = match client.encoding {
+                            Encoding::Utf8 => place.utf8,
+                            Encoding::Utf16 => place.utf16,
+                        };
+                        json!({ "line": place.line, "character": character })
+                    };
+                    changes
+                        .iter()
+                        .map(|change| json!({
+                            "range": { "start": place(&change.start), "end": place(&change.end) },
+                            "text": change.text,
+                        }))
+                        .collect()
+                }
+                false => vec![json!({ "text": view.doc.text.to_string() })],
+            };
             self.servers[server].notify(
                 "textDocument/didChange",
                 json!({
                     "textDocument": { "uri": lsp::uri(&path), "version": version + 1 },
-                    "contentChanges": [{ "text": text }],
+                    "contentChanges": content,
                 }),
             );
         }
@@ -100,6 +124,9 @@ impl Editor {
 
         let view = &mut self.views[index];
         view.lsp = Lsp::Open { server, version: 0, synced: view.edits() };
+        // What the server is about to be given is the whole text: nothing
+        // before it needs telling.
+        view.take_sync_log();
         let text = view.doc.text.to_string();
         self.servers[server].notify(
             "textDocument/didOpen",
@@ -1930,5 +1957,71 @@ let n = count();
 
         editor.run_command("set noinlayhints");
         assert!(editor.view().hints.is_empty());
+    }
+
+    /// What a server that takes ranges ends up with: the text it was opened
+    /// with, and every change it was sent applied in order.
+    fn replay(text: &str, sent: &[Value], encoding: Encoding) -> String {
+        let mut mirror = ropey::Rope::from_str(text);
+        for message in sent.iter().filter(|m| m["method"] == "textDocument/didChange") {
+            for change in message["params"]["contentChanges"].as_array().unwrap() {
+                let Some(range) = change.get("range") else {
+                    mirror = ropey::Rope::from_str(change["text"].as_str().unwrap());
+                    continue;
+                };
+                let at = |p: &Value| {
+                    lsp::from_position(&mirror, p["line"].as_u64().unwrap() as u32, p["character"].as_u64().unwrap() as u32, encoding)
+                };
+                let (start, end) = (at(&range["start"]), at(&range["end"]));
+                mirror.remove(start..end);
+                mirror.insert(start, change["text"].as_str().unwrap());
+            }
+        }
+        mirror.to_string()
+    }
+
+    #[test]
+    fn changes_are_sent_as_ranges_that_rebuild_the_text() {
+        for encoding in [Encoding::Utf16, Encoding::Utf8] {
+            let start = "fn main() {\n    let a = \"żółw 🐢\";\n    call(a, a);\n}\n";
+            let (mut editor, written) = editor_asking(start);
+            editor.servers[0].ready_with(json!({ "textDocumentSync": { "openClose": true, "change": 2 } }));
+            editor.servers[0].encoding = encoding;
+
+            let mut sent_all = Vec::new();
+            let mut sync = |editor: &mut Editor| {
+                editor.lsp_sync();
+                sent_all.extend(sent(&written));
+            };
+            // After the emoji, on a line with letters two bytes wide.
+            let at = editor.view().doc.text.to_string().find("🐢").unwrap();
+            let at = editor.view().doc.text.byte_to_char(at) + 1;
+            editor.view_mut().edit_at(at, 0, " and\nmore", Some(at));
+            sync(&mut editor);
+            // Several changes in one command, across lines.
+            editor.run_command("%s/a/ą/g");
+            // Across a line break, then back again.
+            editor.view_mut().edit_at(3, 12, "", Some(3));
+            editor.undo();
+            sync(&mut editor);
+            editor.undo();
+            editor.redo();
+            sync(&mut editor);
+
+            let changes: Vec<&Value> = sent_all.iter().filter(|m| m["method"] == "textDocument/didChange").collect();
+            assert!(changes.len() >= 3, "{encoding:?}");
+            assert!(changes.iter().all(|m| m["params"]["contentChanges"][0].get("range").is_some()), "ranges, not texts");
+            assert_eq!(replay(start, &sent_all, encoding), editor.view().doc.text.to_string(), "{encoding:?}");
+        }
+    }
+
+    #[test]
+    fn a_server_that_wants_whole_texts_gets_them() {
+        let (mut editor, written) = editor_asking("one\n");
+        editor.servers[0].ready_with(json!({ "textDocumentSync": 1 }));
+        editor.view_mut().edit_at(0, 0, "zero ", Some(0));
+        editor.lsp_sync();
+        let sent = sent(&written);
+        assert_eq!(sent[0]["params"]["contentChanges"], json!([{ "text": "zero one\n" }]));
     }
 }

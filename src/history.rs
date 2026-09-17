@@ -14,7 +14,7 @@ pub struct Change {
 }
 
 impl Change {
-    fn removed_len(&self) -> usize {
+    pub fn removed_len(&self) -> usize {
         self.removed.chars().count()
     }
 
@@ -48,12 +48,19 @@ impl Transaction {
 
     /// Returns the applied edits in document coordinates, for tree-sitter.
     pub fn apply(&self, doc: &mut Document) -> Vec<Edit> {
+        self.apply_watched(doc, |_, _, _| {})
+    }
+
+    /// The same, showing `before` each change as it is about to be made: the
+    /// document as it is at that moment, and where in it the change goes.
+    pub fn apply_watched(&self, doc: &mut Document, mut before: impl FnMut(&Document, usize, &Change)) -> Vec<Edit> {
         // Each change's pos is in pre-transaction coordinates, so walking
         // ascending means carrying the length shift from earlier changes.
         let mut shift: isize = 0;
         let mut edits = Vec::with_capacity(self.changes.len());
         for change in &self.changes {
             let pos = (change.pos as isize + shift) as usize;
+            before(doc, pos, change);
             edits.push(doc.replace(pos, change.removed_len(), &change.inserted));
             shift += change.inserted_len() as isize - change.removed_len() as isize;
         }
