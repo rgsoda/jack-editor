@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 54: git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 55: surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -110,6 +110,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `==` `={motion}` | re-indent: ask the grammar where the lines go |
 | `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
+| `ys{motion}{pair}` `yss` | put a pair around text: `ysiw)` makes `(word)`, `ysiw(` makes `( word )` |
+| `ds{pair}` `cs{pair}{pair}` | take away the pair around the cursor, or swap it: `ds"`, `cs"'`, `cs(]` |
 | `v` `V` | select characters / whole lines |
 | `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
@@ -194,7 +196,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `gc` | comment the lines out, or back in |
 | `p` `P` | replace it with a register |
 | `^c` `^x` `^v` | copy / cut / paste over the selection |
-| `D` `X` `Y` `C` `S` | the same, on whole lines |
+| `D` `X` `Y` `C` | the same, on whole lines |
+| `S(` `S"` … | put a pair around the selection |
 | `esc` | back to normal mode |
 
 ### Insert mode
@@ -849,6 +852,22 @@ visual mode without repeating anything. None of it is syntax-aware: brackets are
 counted, not parsed, so a brace inside a string or a comment still counts. That
 matters for `%` too, and the fix for both is the same one — ask the tree-sitter
 tree instead of the rope.
+
+## Surround
+
+`ys` is an operator like `d` or `gc`, and what it does with its motion is put a
+pair around it: `ysiw"` quotes a word, `ys$)` brackets to the end of the line,
+`yss]` brackets the line without its indentation. `S` in visual mode does the
+same to the selection. `ds(` takes the pair around the cursor away, and `cs"'`
+swaps one for another.
+
+Pairs are named the way text objects name them - either bracket, or `b` `B` `r`
+`a` for `()` `{}` `[]` `<>` - and any other punctuation stands for itself on
+both sides, so `ysiw*` and `ds|` work. The opening bracket means a space inside:
+`ysiw(` makes `( word )`, and `ds(` takes those spaces with the brackets. The
+pair to remove is found by the same code `da(` uses, so the two can never
+disagree about which one the cursor is in. Each is one undo step, and `.` does
+it again somewhere else. There are no tags: `<` is only the angle brackets.
 
 ## Indentation, from the grammar
 

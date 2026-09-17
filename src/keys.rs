@@ -112,7 +112,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "=", what: "re-indent the lines", mode: "visual" },
     Binding { keys: "gc", what: "comment the lines out, or back in", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
-    Binding { keys: "D X Y C S", what: "the same, on whole lines", mode: "visual" },
+    Binding { keys: "D X Y C", what: "the same, on whole lines", mode: "visual" },
+    Binding { keys: "S", what: "surround the selection with a pair: S( S\" S]", mode: "visual" },
     Binding { keys: "esc", what: "back to normal mode", mode: "visual" },
 
     Binding { keys: "esc", what: "back to normal mode", mode: "insert" },
@@ -215,6 +216,15 @@ enum Pending {
     /// is the key of the operator the object will be handed to, or `None` in
     /// visual mode, where selecting it is the whole command.
     Object { operator: Option<char>, around: bool },
+    /// `ys`, an operator like the rest: waiting for the motion or object to
+    /// put a pair around.
+    Surround,
+    /// `ys` once it knows the text - `[start, end)` - waiting for the pair.
+    SurroundWith { start: usize, end: usize },
+    /// `ds`, waiting for the pair to take away.
+    SurroundDelete,
+    /// `cs`, waiting for the pair to take away, and then for its replacement.
+    SurroundChange { old: Option<char> },
 }
 
 /// Input state that outlives a single keypress: a count being typed, and any
@@ -441,6 +451,11 @@ impl Keys {
             });
             return text;
         }
+        if let Some(Pending::SurroundChange { old: Some(old) }) = self.pending {
+            text.push_str("cs");
+            text.push(old);
+            return text;
+        }
         text.push_str(match self.pending {
             Some(Pending::Delete) => "d",
             Some(Pending::Change) => "c",
@@ -457,6 +472,9 @@ impl Keys {
             Some(Pending::Bracket { forward: true }) => "]",
             Some(Pending::Bracket { forward: false }) => "[",
             Some(Pending::Register) => "\"",
+            Some(Pending::Surround) | Some(Pending::SurroundWith { .. }) => "ys",
+            Some(Pending::SurroundDelete) => "ds",
+            Some(Pending::SurroundChange { .. }) => "cs",
             // Both are handled above, and neither is worth a panic in the
             // middle of a redraw if a later one ever isn't.
             Some(Pending::Find { .. }) | Some(Pending::Object { .. }) => {
@@ -614,6 +632,48 @@ impl Keys {
             Some(Pending::Object { operator, around }) => {
                 self.apply_object(editor, operator, around, key);
                 self.finish();
+            }
+            // The last key of a surround is a character, whatever it would
+            // mean as a command.
+            Some(Pending::SurroundWith { start, end }) => {
+                match key.code {
+                    KeyCode::Char(c) if !ctrl => editor.surround_range(start, end, c),
+                    _ => editor.clamp_cursor(),
+                }
+                self.finish();
+            }
+            Some(Pending::SurroundDelete) => {
+                if let KeyCode::Char(c) = key.code
+                    && !ctrl
+                {
+                    editor.delete_surround(c);
+                }
+                self.finish();
+            }
+            Some(Pending::SurroundChange { old }) => {
+                if let KeyCode::Char(c) = key.code
+                    && !ctrl
+                {
+                    match old {
+                        None => {
+                            self.pending = Some(Pending::SurroundChange { old: Some(c) });
+                            return;
+                        }
+                        Some(old) => editor.change_surround(old, c),
+                    }
+                }
+                self.finish();
+            }
+            // `s` after `y`, `d` or `c` is not a motion - there is no `s`
+            // motion - but surround: `ys`, `ds`, `cs`.
+            Some(operator @ (Pending::Yank | Pending::Delete | Pending::Change))
+                if key.code == KeyCode::Char('s') && !ctrl =>
+            {
+                self.pending = Some(match operator {
+                    Pending::Yank => Pending::Surround,
+                    Pending::Delete => Pending::SurroundDelete,
+                    _ => Pending::SurroundChange { old: None },
+                });
             }
             // `f` and friends after an operator are the same motion they are
             // on their own; the operator waits for the character too.
@@ -803,7 +863,17 @@ impl Keys {
                 editor.set_mode(Mode::VisualLine);
                 editor.yank_visual(self.register);
             }
-            KeyCode::Char('C') | KeyCode::Char('S') => {
+            // `S` is surround, as vim-surround makes it: the selection, and
+            // then the pair to put around it.
+            KeyCode::Char('S') => {
+                if let Some((start, end)) = editor.selection_range() {
+                    editor.set_mode(Mode::Normal);
+                    editor.view_mut().sel = Selection::point(start);
+                    self.pending = Some(Pending::SurroundWith { start, end });
+                    return;
+                }
+            }
+            KeyCode::Char('C') => {
                 editor.set_mode(Mode::VisualLine);
                 editor.delete_visual(self.register);
                 editor.open_line_above();
@@ -1061,6 +1131,13 @@ impl Keys {
             '<' => editor.shift_count(false, count),
             '=' => editor.reindent_lines(first, last),
             COMMENT => editor.comment_lines(first, last),
+            SURROUND => {
+                let view = editor.view();
+                let start = view.doc.line_to_char(first);
+                let end = view.doc.line_to_char(last) + view.doc.line_str(last).chars().count();
+                editor.view_mut().sel = Selection { anchor: start, head: end };
+                self.wait_for_pair(editor);
+            }
             _ => editor.delete_lines(self.register, count),
         }
     }
@@ -1073,6 +1150,7 @@ impl Keys {
             Some('<') => editor.shift_selection(false, 1),
             Some('=') => editor.reindent_selection(),
             Some(COMMENT) => editor.comment_selection(),
+            Some(SURROUND) => self.wait_for_pair(editor),
             Some('y') => editor.yank_selection(self.register),
             Some('c') => {
                 // An empty object - `ci(` on `()` - deletes nothing, but the
@@ -1084,6 +1162,15 @@ impl Keys {
             // Visual mode keeps the selection it just made.
             None => {}
         }
+    }
+
+    /// `ys` has its text - the selection a motion or object just made - and
+    /// now waits for the pair to put around it. The cursor goes back to where
+    /// the text starts, which is where it will be when the pair is in.
+    fn wait_for_pair(&mut self, editor: &mut Editor) {
+        let (start, end) = editor.view().sel.range();
+        editor.view_mut().sel = Selection::point(start);
+        self.pending = Some(Pending::SurroundWith { start, end });
     }
 
     fn operator(&mut self, editor: &mut Editor, operator: Pending, key: KeyEvent, ctrl: bool, count: usize) {
@@ -1102,6 +1189,7 @@ impl Keys {
                 | (Pending::Dedent, KeyCode::Char('<'))
                 | (Pending::Reindent, KeyCode::Char('='))
                 | (Pending::Comment, KeyCode::Char('c'))
+                | (Pending::Surround, KeyCode::Char('s'))
         );
         if doubled {
             match operator {
@@ -1118,6 +1206,12 @@ impl Keys {
                     let (line, _) = editor.view().cursor_coords();
                     editor.comment_lines(line, line + count - 1);
                 }
+                Pending::Surround => {
+                    let (start, end) = editor.line_to_surround();
+                    editor.view_mut().sel = Selection::point(start);
+                    self.pending = Some(Pending::SurroundWith { start, end });
+                }
+                Pending::SurroundWith { .. } | Pending::SurroundDelete | Pending::SurroundChange { .. } => {}
                 Pending::Go { .. }
                 | Pending::Replace
                 | Pending::Reveal
@@ -1171,6 +1265,7 @@ impl Keys {
             Pending::Dedent => editor.shift_motion(false),
             Pending::Reindent => editor.reindent_motion(),
             Pending::Comment => editor.comment_motion(),
+            Pending::Surround => self.wait_for_pair(editor),
             _ => editor.delete_selection(self.register),
         }
         if operator == Pending::Change {
@@ -1188,6 +1283,7 @@ fn operator_key(operator: Pending) -> char {
         Pending::Dedent => '<',
         Pending::Reindent => '=',
         Pending::Comment => COMMENT,
+        Pending::Surround => SURROUND,
         _ => 'd',
     }
 }
@@ -1197,10 +1293,14 @@ fn operator_key(operator: Pending) -> char {
 /// be mistaken for one.
 const COMMENT: char = '#';
 
+/// `ys`, travelling as one character the way `gc` does.
+const SURROUND: char = 's';
+
 /// An operator as it was typed, for the indicator.
 fn operator_text(operator: char) -> String {
     match operator {
         COMMENT => "gc".to_string(),
+        SURROUND => "ys".to_string(),
         other => other.to_string(),
     }
 }
@@ -4202,4 +4302,90 @@ plain
         assert!(elapsed.as_millis() < 2_000, "{elapsed:?}");
     }
 
+    #[test]
+    fn ys_puts_a_pair_around_a_motion_or_an_object() {
+        let mut vim = Vim::new("let x = value;\n");
+        vim.at(1, 9).press("ysiw)");
+        assert_eq!(vim.text(), "let x = (value);\n");
+        assert_eq!(vim.cursor(), (1, 9));
+
+        // The opening bracket pads.
+        let mut vim = Vim::new("let x = value;\n");
+        vim.at(1, 9).press("ysiw(");
+        assert_eq!(vim.text(), "let x = ( value );\n");
+
+        let mut vim = Vim::new("one two three\n");
+        vim.at(1, 5).press("ys2e\"");
+        assert_eq!(vim.text(), "one \"two three\"\n");
+    }
+
+    #[test]
+    fn yss_surrounds_the_line_without_its_indentation() {
+        let mut vim = Vim::new("    call(x)  \nnext\n");
+        vim.at(1, 7).press("yss]");
+        assert_eq!(vim.text(), "    [call(x)]  \nnext\n");
+    }
+
+    #[test]
+    fn a_paragraph_is_closed_before_its_last_line_break() {
+        let mut vim = Vim::new("a\nb\n\nc\n");
+        vim.press("ysip}");
+        assert_eq!(vim.text(), "{a\nb}\n\nc\n");
+    }
+
+    #[test]
+    fn ds_takes_a_pair_away_and_cs_swaps_it() {
+        let mut vim = Vim::new("f(\"hi\", [1, 2])\n");
+        vim.at(1, 5).press("cs\"'");
+        assert_eq!(vim.text(), "f('hi', [1, 2])\n");
+        vim.at(1, 11).press("ds]");
+        assert_eq!(vim.text(), "f('hi', 1, 2)\n");
+        vim.at(1, 4).press("dsb");
+        assert_eq!(vim.text(), "f'hi', 1, 2\n");
+        assert_eq!(vim.cursor(), (1, 2));
+    }
+
+    #[test]
+    fn the_opening_bracket_takes_the_spaces_inside_with_it() {
+        let mut vim = Vim::new("x = ( y )\n");
+        vim.at(1, 7).press("ds(");
+        assert_eq!(vim.text(), "x = y\n");
+
+        let mut vim = Vim::new("x = ( y )\n");
+        vim.at(1, 7).press("cs({");
+        assert_eq!(vim.text(), "x = { y }\n");
+        vim.at(1, 7).press("cs}]");
+        assert_eq!(vim.text(), "x = [ y ]\n");
+    }
+
+    #[test]
+    fn surround_is_one_undo_and_dot_repeats_it() {
+        let mut vim = Vim::new("a b\n");
+        vim.press("ysiw\"");
+        assert_eq!(vim.text(), "\"a\" b\n");
+        vim.at(1, 5).press(".");
+        assert_eq!(vim.text(), "\"a\" \"b\"\n");
+        vim.press("uu");
+        assert_eq!(vim.text(), "a b\n");
+    }
+
+    #[test]
+    fn visual_s_surrounds_the_selection() {
+        let mut vim = Vim::new("pick these words\n");
+        vim.at(1, 6).press("veS*");
+        assert_eq!(vim.text(), "pick *these* words\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_surround_given_up_on_changes_nothing() {
+        let mut vim = Vim::new("word\n");
+        vim.press("ysiw<esc>");
+        assert_eq!(vim.text(), "word\n");
+        vim.press("ds(");
+        assert_eq!(vim.text(), "word\n");
+        assert_eq!(vim.editor.message, "not inside (");
+        vim.press("ysiwx");
+        assert_eq!(vim.text(), "word\n");
+    }
 }

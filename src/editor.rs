@@ -26,6 +26,7 @@ use crate::window::{self, Direction, Layout, Rect, Window};
 
 mod git;
 mod lsp;
+mod surround;
 
 /// How many characters of a word bring the completion popup up on its own.
 /// Two, because one character narrows a buffer to hundreds of words and three
