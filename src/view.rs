@@ -56,7 +56,7 @@ const SCROLLOFF: usize = 3;
 ///
 /// Every command operates on a `Selection`, so growing this into a
 /// `Vec<Selection>` for multi-cursor later is mechanical rather than a rewrite.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub anchor: usize,
     pub head: usize,
@@ -585,6 +585,16 @@ impl View {
         self.goal_col = None;
         self.history.push(tx);
         count
+    }
+
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    /// A history read back from the undo file, in place of the empty one a
+    /// freshly opened buffer has.
+    pub fn restore_history(&mut self, history: History) {
+        self.history = history;
     }
 
     pub fn save(&mut self) -> Result<()> {

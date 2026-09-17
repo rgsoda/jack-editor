@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 55: surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 56: undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -164,6 +164,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set autopairs` | `noautopairs`: close brackets and quotes as they are opened |
+| `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
@@ -503,6 +504,25 @@ need to, and deleting it loses nothing but the convenience. It is read once at
 startup and written once on the way out, through a temporary file and a
 rename, so two jacks quitting together leave one whole list rather than half
 of each.
+
+## Undo after a restart
+
+Writing a file also writes its undo history, to
+`$XDG_STATE_HOME/jack/undo/` (`~/.local/state/jack/undo/`), and opening the file
+again reads it back: `u` after quitting and coming back still undoes. Only the
+last thousand steps are kept, and redo goes with them.
+
+A history is a list of edits to one particular text, and applied to another it
+would make a mess of it. So the undo file names the length and a hash of the
+text it ends at, and is only used when the file opens as exactly that text -
+changed by a checkout or another editor since, and the history is simply not
+there. The hash is FNV written out by hand rather than std's, which is allowed
+to change between Rust releases and would throw every history away on an
+upgrade.
+
+The history holds what you deleted as well as what you typed, so it is text
+from your files sitting in your state directory. `:set noundofile` stops it
+being written or read.
 
 ## Brackets and quotes in pairs
 

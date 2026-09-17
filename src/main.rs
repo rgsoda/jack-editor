@@ -15,6 +15,7 @@ mod indent;
 mod object;
 mod picker;
 mod positions;
+mod undofile;
 mod register;
 mod screen;
 mod search;
@@ -144,6 +145,7 @@ fn main() -> Result<()> {
     let mut editor = Editor::open(files)?;
     editor.load_config();
     editor.set_positions(positions::Positions::load(positions::store_path()));
+    editor.set_undo_dir(undofile::store_dir());
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
     // screen, with no echo and no visible prompt.

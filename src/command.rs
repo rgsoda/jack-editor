@@ -140,6 +140,13 @@ pub static SETTINGS: &[Setting] = &[
                 closer when it is typed, and take both back with backspace.",
     },
     Setting {
+        name: "undofile",
+        kind: Kind::Flag(true),
+        about: "Keep each file's undo history when it is written, in the state \
+                directory, so undo reaches back past a restart. Used only while \
+                the file is still the text the history ends at.",
+    },
+    Setting {
         name: "autocomplete",
         kind: Kind::Value(&["0", "2", "3"], "2"),
         about: "How many characters of a word bring the completion popup up on \

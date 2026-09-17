@@ -340,6 +340,11 @@ pub struct Editor {
     /// ones. Kept nowhere until the run loop says where to keep it, so a test
     /// editor never touches the real list.
     positions: crate::positions::Positions,
+    /// Where undo files go, or `None` for nowhere - which, like `positions`,
+    /// is what a test editor gets.
+    undo_dir: Option<PathBuf>,
+    /// `:set undofile`: whether history is written down at all.
+    pub undofile: bool,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -465,6 +470,8 @@ impl Editor {
             leader: BTreeMap::new(),
             disk_checked: None,
             positions: Default::default(),
+            undo_dir: None,
+            undofile: true,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -1408,6 +1415,8 @@ impl Editor {
             "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
             "noautoindent" | "noai" => self.autoindent = false,
+            "undofile" => self.undofile = true,
+            "noundofile" => self.undofile = false,
             "autopairs" => self.autopairs = true,
             "noautopairs" => self.autopairs = false,
             "emacs" => self.emacs = true,
@@ -1453,7 +1462,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1464,6 +1473,7 @@ impl Editor {
                     !indent.tabs,
                     self.autoindent,
                     self.autopairs,
+                    self.undofile,
                     self.emacs,
                     self.lsp_enabled,
                     self.tabline.name(),
@@ -2167,6 +2177,7 @@ impl Editor {
             self.views[0] = View::new(document);
             self.attach_syntax(0);
             self.restore_position(0);
+            self.read_undo(0);
             self.switch_to(0);
             return Ok(());
         }
@@ -2175,6 +2186,7 @@ impl Editor {
         let index = self.views.len() - 1;
         self.attach_syntax(index);
         self.restore_position(index);
+        self.read_undo(index);
         self.switch_to(index);
         Ok(())
     }
@@ -2347,6 +2359,50 @@ impl Editor {
             self.view_mut().reveal(Reveal::Middle, height);
         }
         self.view_mut().scroll_to_cursor(width, height);
+    }
+
+    // --- undo that outlives the editor ---------------------------------
+
+    /// Say where undo files are kept, and read back the history of the
+    /// buffers already open.
+    pub fn set_undo_dir(&mut self, dir: Option<PathBuf>) {
+        self.undo_dir = dir;
+        for index in 0..self.views.len() {
+            self.read_undo(index);
+        }
+    }
+
+    /// A buffer just opened takes the history written at its last save, if
+    /// that history is about the text it opened with.
+    fn read_undo(&mut self, index: usize) {
+        let (Some(dir), true) = (self.undo_dir.as_deref(), self.undofile) else {
+            return;
+        };
+        let view = &self.views[index];
+        let Some(path) = view.doc.path.as_deref() else {
+            return;
+        };
+        // Only over a buffer nothing has been done to yet.
+        if view.history().depth() > 0 {
+            return;
+        }
+        if let Some(history) = crate::undofile::read(dir, path, &view.doc.text) {
+            self.views[index].restore_history(history);
+        }
+    }
+
+    /// After a write: the history, next to the text it is now about.
+    fn write_undo(&mut self) {
+        let (Some(dir), true) = (self.undo_dir.as_deref(), self.undofile) else {
+            return;
+        };
+        let view = self.view();
+        let Some(path) = view.doc.path.as_deref() else {
+            return;
+        };
+        if let Err(err) = crate::undofile::write(dir, path, &view.doc.text, view.history()) {
+            self.message = format!("{}, but the undo history was not kept: {err}", self.message);
+        }
     }
 
     // --- where the cursor was left ------------------------------------
@@ -3128,6 +3184,7 @@ impl Editor {
                     n => format!("wrote {name}, trimmed {n} lines"),
                 };
                 self.lsp_saved();
+                self.write_undo();
             }
             Err(err) => self.message = format!("{err:#}"),
         }
@@ -4946,6 +5003,63 @@ mod tests {
         positions.set(&path, 0, 40);
         e.set_positions(positions);
         assert_eq!(e.cursor_coords(), (0, 8), "on the last character, not past it");
+    }
+
+    #[test]
+    fn undo_reaches_back_past_a_restart() {
+        let dir = tempdir();
+        let path = write_file(&dir, "kept.txt", "first\n");
+        let store = dir.join("undo");
+
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_undo_dir(Some(store.clone()));
+        e.view_mut().edit_at(5, 0, " second", Some(0));
+        e.view_mut().edit_at(0, 0, "> ", Some(0));
+        e.save();
+        assert_eq!(e.message, "wrote kept.txt");
+        drop(e);
+
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_undo_dir(Some(store.clone()));
+        assert!(!e.view().is_modified(), "the history ends where the file is");
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "first second\n");
+        assert!(e.view().is_modified());
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "first\n");
+        e.redo();
+        e.redo();
+        assert!(!e.view().is_modified(), "and redo comes back to the saved text");
+    }
+
+    #[test]
+    fn a_history_about_other_text_is_not_used() {
+        let dir = tempdir();
+        let path = write_file(&dir, "moved.txt", "one\n");
+        let store = dir.join("undo");
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_undo_dir(Some(store.clone()));
+        e.view_mut().edit_at(3, 0, " two", Some(0));
+        e.save();
+        drop(e);
+
+        // Something else wrote the file in between.
+        std::fs::write(&path, "one two!\n").unwrap();
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_undo_dir(Some(store.clone()));
+        assert_eq!(e.view().history().depth(), 0);
+
+        // And with the setting off, nothing is written or read.
+        let other = write_file(&dir, "off.txt", "x\n");
+        let mut e = Editor::open(std::slice::from_ref(&other)).unwrap();
+        e.undofile = false;
+        e.set_undo_dir(Some(store.clone()));
+        e.view_mut().edit_at(0, 0, "y", Some(0));
+        e.save();
+        e.undofile = true;
+        let mut e = Editor::open(std::slice::from_ref(&other)).unwrap();
+        e.set_undo_dir(Some(store));
+        assert_eq!(e.view().history().depth(), 0);
     }
 
     #[test]

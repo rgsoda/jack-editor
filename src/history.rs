@@ -6,7 +6,7 @@ use crate::view::Selection;
 /// `pos` is a char index in the document as it was *before* the containing
 /// transaction was applied, so a transaction is self-describing and can be
 /// inverted without consulting the document.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Change {
     pub pos: usize,
     pub removed: String,
@@ -33,7 +33,7 @@ impl Change {
 
 /// One undo step: the edits, plus where the cursor was before and after.
 /// Restoring the selection is what makes undo land somewhere useful.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Transaction {
     /// Sorted ascending by `pos`, all in pre-transaction coordinates.
     pub changes: Vec<Change>,
@@ -91,7 +91,7 @@ impl Transaction {
 /// why this is a list rather than one merged transaction. Merging them would
 /// mean rewriting each one's coordinates into the step's frame, and a step
 /// that backspaces does not run in one direction.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Step(Vec<Transaction>);
 
 impl Step {
@@ -217,6 +217,17 @@ impl History {
 
     pub fn mark_saved(&mut self) {
         self.saved_depth = Some(self.undo.len());
+    }
+
+    /// Both stacks, oldest first, for writing down.
+    pub fn steps(&self) -> (&[Step], &[Step]) {
+        (&self.undo, &self.redo)
+    }
+
+    /// A history that was written down at a save: the document is what was
+    /// saved, so that is where the save point is.
+    pub fn restored(undo: Vec<Step>, redo: Vec<Step>) -> History {
+        History { saved_depth: Some(undo.len()), undo, redo, ..History::default() }
     }
 }
 
