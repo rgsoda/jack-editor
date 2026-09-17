@@ -334,6 +334,10 @@ pub struct Editor {
     pub leader: BTreeMap<char, String>,
     /// When the disk was last looked at for files changed behind our back.
     disk_checked: Option<std::time::Instant>,
+    /// Where the cursor was left in files closed before, this run or earlier
+    /// ones. Kept nowhere until the run loop says where to keep it, so a test
+    /// editor never touches the real list.
+    positions: crate::positions::Positions,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -458,6 +462,7 @@ impl Editor {
             shell: None,
             leader: BTreeMap::new(),
             disk_checked: None,
+            positions: Default::default(),
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -2070,8 +2075,9 @@ impl Editor {
             self.message = format!("{name} has unsaved changes - :bd! to close it anyway");
             return;
         }
-        self.lsp_closed(closing);
         self.store_focus();
+        self.remember_position(closing);
+        self.lsp_closed(closing);
 
         let last = self.views.len() == 1;
         match last {
@@ -2154,6 +2160,7 @@ impl Editor {
         if self.views.len() == 1 && self.views[0].is_empty_scratch() {
             self.views[0] = View::new(document);
             self.attach_syntax(0);
+            self.restore_position(0);
             self.switch_to(0);
             return Ok(());
         }
@@ -2161,6 +2168,7 @@ impl Editor {
         self.views.push(View::new(document));
         let index = self.views.len() - 1;
         self.attach_syntax(index);
+        self.restore_position(index);
         self.switch_to(index);
         Ok(())
     }
@@ -2324,7 +2332,59 @@ impl Editor {
 
     pub fn scroll_to_cursor(&mut self) {
         let (width, height) = (self.text_width(), self.height);
+        if std::mem::take(&mut self.view_mut().centre) {
+            self.view_mut().reveal(Reveal::Middle, height);
+        }
         self.view_mut().scroll_to_cursor(width, height);
+    }
+
+    // --- where the cursor was left ------------------------------------
+
+    /// Take the list of where the cursor was left in files, and put the
+    /// buffers already open back where they were.
+    pub fn set_positions(&mut self, positions: crate::positions::Positions) {
+        self.positions = positions;
+        for index in 0..self.views.len() {
+            self.restore_position(index);
+        }
+    }
+
+    /// A file just opened goes back to where its cursor was left - the line
+    /// and column, clamped to what the file is now, since it may well have
+    /// changed since.
+    fn restore_position(&mut self, index: usize) {
+        let view = &self.views[index];
+        let Some(path) = view.doc.path.as_deref() else {
+            return;
+        };
+        let Some((line, column)) = self.positions.get(path) else {
+            return;
+        };
+        let line = line.min(view.doc.len_lines().saturating_sub(1));
+        // On a character, not past the last one: a file opens in normal mode.
+        let at = view.doc.line_to_char(line) + column.min(view.doc.line_len_chars(line).saturating_sub(1));
+        let view = &mut self.views[index];
+        view.sel = Selection::point(at);
+        view.centre = true;
+    }
+
+    /// Note where the cursor is in a buffer that is about to go.
+    fn remember_position(&mut self, index: usize) {
+        let view = &self.views[index];
+        if let Some(path) = view.doc.path.as_deref() {
+            let (line, column) = view.cursor_coords();
+            self.positions.set(path, line, column);
+        }
+    }
+
+    /// On the way out: every open buffer's cursor, written down.
+    pub fn save_positions(&mut self) {
+        for index in 0..self.views.len() {
+            self.remember_position(index);
+        }
+        if let Err(err) = self.positions.save() {
+            eprintln!("jack: could not remember cursor positions: {err}");
+        }
     }
 
     pub fn goto_line(&mut self, line: usize) {
@@ -4834,6 +4894,45 @@ mod tests {
         e.open_diagnostics_picker();
         assert!(e.picker.is_none());
         assert!(e.message.starts_with("no diagnostics"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_file_closed_and_opened_again_opens_where_it_was_left() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.txt", "a\nb\ncharlie\nd\n");
+        let two = write_file(&dir, "two.txt", "other\n");
+        let mut e = Editor::open(&[one.clone(), two.clone()]).unwrap();
+
+        e.goto_line(2);
+        e.move_cursor(Move::Right, false);
+        e.move_cursor(Move::Right, false);
+        assert_eq!(e.cursor_coords(), (2, 2));
+        e.close_buffer(false);
+        assert!(e.views().iter().all(|view| view.doc.path.as_deref() != Some(one.as_path())));
+
+        e.open_file(&one).unwrap();
+        assert_eq!(e.cursor_coords(), (2, 2));
+        assert!(e.view().centre, "and put in the middle of the screen");
+        e.scroll_to_cursor();
+        assert!(!e.view().centre, "once");
+    }
+
+    #[test]
+    fn a_remembered_place_past_the_end_of_a_shorter_file_is_its_end() {
+        let dir = tempdir();
+        let path = write_file(&dir, "shrunk.txt", "only line\n");
+        let mut positions = crate::positions::Positions::load(None);
+        positions.set(&path, 40, 12);
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.set_positions(positions);
+        // The last line is the empty one after the newline; the column
+        // can only be where that line has a place for it.
+        assert_eq!(e.cursor_coords(), (1, 0));
+
+        let mut positions = crate::positions::Positions::load(None);
+        positions.set(&path, 0, 40);
+        e.set_positions(positions);
+        assert_eq!(e.cursor_coords(), (0, 8), "on the last character, not past it");
     }
 
     #[test]

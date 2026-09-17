@@ -14,6 +14,7 @@ mod lsp;
 mod indent;
 mod object;
 mod picker;
+mod positions;
 mod register;
 mod screen;
 mod search;
@@ -142,6 +143,7 @@ fn main() -> Result<()> {
     };
     let mut editor = Editor::open(files)?;
     editor.load_config();
+    editor.set_positions(positions::Positions::load(positions::store_path()));
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
     // screen, with no echo and no visible prompt.
@@ -158,10 +160,15 @@ fn main() -> Result<()> {
         editor.open_file_picker();
     }
 
-    let _guard = TerminalGuard::enter()?;
+    let guard = TerminalGuard::enter()?;
     let input = stream::Input::new();
     stream::spawn_input(tx, input.clone());
-    run(&mut editor, rx, &input)
+    let result = run(&mut editor, rx, &input);
+    // The terminal back first, so that a complaint about the list is printed
+    // somewhere it can be read.
+    drop(guard);
+    editor.save_positions();
+    result
 }
 
 /// How long a pause in typing means the dog has stopped running. Long enough

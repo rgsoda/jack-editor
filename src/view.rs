@@ -140,6 +140,10 @@ pub enum Screen {
 pub struct View {
     pub doc: Document,
     pub sel: Selection,
+    /// Put the cursor's line in the middle of the screen at the next frame,
+    /// rather than scrolling only as far as it takes to see it. Set when a
+    /// file reopens where it was left, before there is a screen to measure.
+    pub centre: bool,
     /// Display column vertical movement tries to return to, so moving down
     /// through a short line and back out keeps the original column.
     goal_col: Option<usize>,
@@ -235,6 +239,7 @@ impl View {
             syntax: None,
             signs: HashMap::new(),
             signs_revision: None,
+            centre: false,
         }
     }
 
