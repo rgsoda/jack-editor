@@ -345,6 +345,9 @@ pub struct Editor {
     undo_dir: Option<PathBuf>,
     /// `:set undofile`: whether history is written down at all.
     pub undofile: bool,
+    /// `:set inlayhints`: types and parameter names from the language server,
+    /// written into the lines.
+    pub inlayhints: bool,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -472,6 +475,7 @@ impl Editor {
             positions: Default::default(),
             undo_dir: None,
             undofile: true,
+            inlayhints: true,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -1415,6 +1419,14 @@ impl Editor {
             "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
             "noautoindent" | "noai" => self.autoindent = false,
+            "inlayhints" => self.inlayhints = true,
+            "noinlayhints" => {
+                self.inlayhints = false;
+                for view in &mut self.views {
+                    view.hints.clear();
+                    view.hints_asked = None;
+                }
+            }
             "undofile" => self.undofile = true,
             "noundofile" => self.undofile = false,
             "autopairs" => self.autopairs = true,
@@ -1462,7 +1474,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1474,6 +1486,7 @@ impl Editor {
                     self.autoindent,
                     self.autopairs,
                     self.undofile,
+                    self.inlayhints,
                     self.emacs,
                     self.lsp_enabled,
                     self.tabline.name(),

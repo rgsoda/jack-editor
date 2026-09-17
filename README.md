@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 57: project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 58: inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -165,6 +165,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set autopairs` | `noautopairs`: close brackets and quotes as they are opened |
+| `:set inlayhints` | `noinlayhints`: types and parameter names from the language server, drawn into the line |
 | `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
@@ -1344,6 +1345,24 @@ undo step, nothing written until you write it.
 An action that reaches a file you do not have open opens it. That is the point
 of the ones that do - an import added at the top of a module, a symbol renamed
 where it is defined rather than where you are looking.
+
+## Inlay hints
+
+A language server knows things the code does not spell out - the type of a
+`let`, the name of the parameter an argument lands in - and will say where they
+would go. They are drawn there, dimmed, as though written in:
+
+    let sum: u32 = add(first: 1, second: 2);
+
+They are not in the buffer. The cursor moves over the characters as if the
+hints were not there, and only where it is drawn takes them into account, so
+`l` from `sum` goes to the space and not into `: u32`. They are asked for when
+the server has the buffer's latest text and you are not in insert mode. While
+you type, the ones already there move along with the text around them, and the
+real answer comes once you leave insert mode. A server still indexing turns the
+request away, and it is asked again a second later rather than waiting to be
+told. `:set noinlayhints` turns them off, and `ui.inlayhint` in a theme styles
+them.
 
 ## Symbols across the project
 

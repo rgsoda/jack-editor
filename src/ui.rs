@@ -138,6 +138,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         brackets,
         bracket_style: editor.theme.style("ui.bracket.match"),
         diagnostics: &underlines,
+        hint_style: editor.theme.style("ui.inlayhint"),
     };
 
     for row in rect.y..rect.y + height {
@@ -191,6 +192,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         }
 
         let text = view.doc.line_str(line);
+        let hints = view.hints_on(line);
         let line_start = view.doc.line_to_char(line);
         let line_end = line_start + view.doc.line_len_chars(line);
 
@@ -213,6 +215,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                 start: line_start,
                 selection: sel,
                 cursorline: here,
+                hints: &hints,
             },
             &styling,
         );
@@ -220,7 +223,7 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         // The worst diagnostic's message, after the text where there is room.
         // Its first line: the rest is for `]d`.
         if let Some(d) = diagnostic {
-            let end = char_col_width(&text);
+            let end = crate::view::hinted_col(&text, text.chars().count(), &hints);
             let x = styling.left + end.saturating_sub(scroll_left) + 2;
             let right = rect.x + rect.width;
             if x < right {
@@ -230,11 +233,6 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             }
         }
     }
-}
-
-/// How wide a line's text is on screen, tabs expanded.
-fn char_col_width(text: &str) -> usize {
-    crate::view::display_col(text, text.chars().count())
 }
 
 /// The picker panel, drawn over the bottom rows of the text area. It is opaque:
@@ -505,6 +503,7 @@ struct LineStyling<'a> {
     bracket_style: Style,
     /// Ranges a diagnostic covers, with the style to underline them in.
     diagnostics: &'a [(usize, usize, Style)],
+    hint_style: Style,
 }
 
 /// `style` over the cursor line's tint, when this row has one. The tint is a
@@ -529,17 +528,38 @@ struct Row<'a> {
     selection: Option<(usize, usize)>,
     /// The cursor line's tint, when this is the cursor's line.
     cursorline: Option<Style>,
+    /// Inlay hints, as columns in the line and their text.
+    hints: &'a [(usize, &'a str)],
 }
 
 fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
-    let Row { y: row, text, byte: line_byte, start: line_start, selection: sel, cursorline } = line;
+    let Row { y: row, text, byte: line_byte, start: line_start, selection: sel, cursorline, hints } = line;
     let scroll_left = styling.scroll_left;
     // Columns here are the text's own, with the gutter added only when a cell
     // is actually written.
     let right = scroll_left + styling.right.saturating_sub(styling.left);
     let mut col = 0usize;
+    let hint_style = under(cursorline, styling.hint_style);
+    // A hint's characters, drawn from `col` on and pushing the text after them
+    // along. Clipped at either edge a character at a time, like the text.
+    let draw_hints = |surface: &mut Surface, col: &mut usize, at: usize| {
+        for (_, label) in hints.iter().filter(|(column, _)| *column == at) {
+            for ch in label.chars() {
+                let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                let start = *col;
+                *col += width;
+                if width == 0 || start < scroll_left || *col > right {
+                    continue;
+                }
+                surface.put(start - scroll_left + styling.left, row, ch, width, hint_style);
+            }
+        }
+    };
 
     for (char_idx, (byte_in_line, ch)) in text.char_indices().enumerate() {
+        if !hints.is_empty() {
+            draw_hints(surface, &mut col, char_idx);
+        }
         let start = col;
         let end = start + char_width(ch, start);
         col = end;
@@ -585,6 +605,10 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         } else {
             surface.put(x, row, ch, visible_width, style);
         }
+    }
+    // The hints after the last character: a type at the end of a line.
+    if !hints.is_empty() && col < right {
+        draw_hints(surface, &mut col, text.chars().count());
     }
 }
 
@@ -1324,4 +1348,20 @@ mod tests {
         assert!(tabs.starts_with('<') || tabs.starts_with('\u{e0b3}'), "{tabs}");
     }
 
+    #[test]
+    fn hints_are_drawn_into_the_line_and_the_cursor_steps_past_them() {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str("let x = f(2);\n");
+        editor.set_viewport(40, 5);
+        editor.numbers = Numbers::Off;
+        editor.signs_enabled = false;
+        editor.view_mut().hints = vec![
+            crate::view::Hint { at: 5, label: ": i32".into() },
+            crate::view::Hint { at: 10, label: "n: ".into() },
+        ];
+        let keys = Keys::default();
+        assert_eq!(row_text(&editor, &keys, 0).trim_end(), "let x: i32 = f(n: 2);");
+        editor.view_mut().sel = crate::view::Selection::point(10);
+        assert_eq!(editor.cursor_screen(), (18, 0), "on the 2, past the hint before it");
+    }
 }

@@ -174,6 +174,15 @@ pub struct View {
     /// Carried through edits like any other position, so a squiggle stays on
     /// its word while you type above it and the server has not yet answered.
     pub diagnostics: Vec<Diagnostic>,
+    /// What the language server would write into the line - `: i32` after a
+    /// name, `count:` before an argument - sorted by where. Carried through
+    /// edits the way diagnostics are, until the server says again.
+    pub hints: Vec<Hint>,
+    /// How many edits the buffer had had when hints were last asked for.
+    pub hints_asked: Option<u64>,
+    /// When the last request for hints was refused. Asked again a moment
+    /// later, on whatever wakes the editor next.
+    pub hints_failed: Option<std::time::Instant>,
     /// Every edit ever applied, counted: how the server's copy is known to be
     /// behind. The history's depth cannot say, since undo takes it back down.
     edits: u64,
@@ -232,6 +241,9 @@ impl View {
             log_base: 0,
             watched: false,
             diagnostics: Vec::new(),
+            hints: Vec::new(),
+            hints_asked: None,
+            hints_failed: None,
             edits: 0,
             lsp: Lsp::Untried,
             doc,
@@ -812,7 +824,7 @@ impl View {
     /// context where the buffer allows it.
     pub fn scroll_to_cursor(&mut self, width: usize, height: usize) {
         let (line, _) = self.cursor_coords();
-        let col = self.cursor_display_col();
+        let col = self.cursor_screen_col();
 
         let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
         if line < self.scroll_top + pad {
@@ -840,10 +852,33 @@ impl View {
     pub fn cursor_screen(&self) -> (u16, u16) {
         let (line, _) = self.cursor_coords();
         (
-            self.cursor_display_col().saturating_sub(self.scroll_left) as u16,
+            self.cursor_screen_col().saturating_sub(self.scroll_left) as u16,
             line.saturating_sub(self.scroll_top) as u16,
         )
     }
+    /// The hints on `line`, as columns in it and what to write there.
+    pub fn hints_on(&self, line: usize) -> Vec<(usize, &str)> {
+        if self.hints.is_empty() {
+            return Vec::new();
+        }
+        let start = self.doc.line_to_char(line);
+        let end = start + self.doc.line_str(line).chars().count();
+        let first = self.hints.partition_point(|hint| hint.at < start);
+        self.hints[first..]
+            .iter()
+            .take_while(|hint| hint.at <= end)
+            .map(|hint| (hint.at - start, hint.label.as_str()))
+            .collect()
+    }
+
+    /// Where the cursor is drawn: its column with tabs expanded and the hints
+    /// before it - and the one at it, since the cursor is on the character
+    /// the hint comes before - taking their room.
+    pub fn cursor_screen_col(&self) -> usize {
+        let (line, col) = self.cursor_coords();
+        hinted_col(&self.doc.line_str(line), col, &self.hints_on(line))
+    }
+
     /// Screen column of the cursor, with tabs expanded.
     pub fn cursor_display_col(&self) -> usize {
         let (line, col) = self.cursor_coords();
@@ -1114,7 +1149,7 @@ impl View {
             syntax.edit(&edits, &self.doc.text);
         }
         self.edits += 1;
-        if !self.watched && self.diagnostics.is_empty() {
+        if !self.watched && self.diagnostics.is_empty() && self.hints.is_empty() {
             return;
         }
         // In the coordinates of the text as each change found it, which is how
@@ -1129,6 +1164,9 @@ impl View {
             for diagnostic in &mut self.diagnostics {
                 diagnostic.start = carry_one(diagnostic.start, pos, removed, inserted);
                 diagnostic.end = carry_one(diagnostic.end, pos, removed, inserted);
+            }
+            for hint in &mut self.hints {
+                hint.at = carry_one(hint.at, pos, removed, inserted);
             }
             shift += inserted as isize - removed as isize;
         }
@@ -1295,6 +1333,39 @@ fn carry_one(pos: usize, at: usize, removed: usize, inserted: usize) -> usize {
     }
 }
 
+/// A hint: text drawn into the line before the character at `at`, which is
+/// not part of the buffer and cannot be moved onto.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hint {
+    pub at: usize,
+    pub label: String,
+}
+
+/// The screen column of `char_col` in `line` with `hints` - columns in the
+/// line, and their text - drawn in: every hint at or before the column pushes
+/// it right. Tab stops are counted with the hints in, which is how the line
+/// is drawn.
+pub fn hinted_col(line: &str, char_col: usize, hints: &[(usize, &str)]) -> usize {
+    if hints.is_empty() {
+        return display_col(line, char_col);
+    }
+    let mut w = 0;
+    let mut chars = line.chars();
+    for column in 0..=char_col {
+        for (_, label) in hints.iter().filter(|(at, _)| *at == column) {
+            w += crate::ui::str_width(label);
+        }
+        if column == char_col {
+            break;
+        }
+        match chars.next() {
+            Some(ch) => w += char_width(ch, w),
+            None => break,
+        }
+    }
+    w
+}
+
 pub fn display_col(line: &str, char_col: usize) -> usize {
     let mut w = 0;
     for ch in line.chars().take(char_col) {
@@ -1355,7 +1426,7 @@ fn class_of(ch: char) -> CharClass {
 
 #[cfg(test)]
 mod tests {
-    use super::difference;
+    use super::{Document, Hint, Selection, View, difference, hinted_col};
 
     #[test]
     fn a_difference_leaves_out_what_both_ends_share() {
@@ -1369,5 +1440,31 @@ mod tests {
         assert_eq!(difference("same", "same"), (4, 0, String::new()));
         // Counted in chars, which is what the rope is addressed in.
         assert_eq!(difference("zażółć", "zażółw"), (5, 1, "w".to_string()));
+    }
+
+    #[test]
+    fn a_hint_pushes_the_columns_at_and_after_it() {
+        let hints = [(1, ": i32"), (3, "n: ")];
+        assert_eq!(hinted_col("x = f(1)", 0, &hints), 0);
+        // On the character the hint comes before: after the hint.
+        assert_eq!(hinted_col("x = f(1)", 1, &hints), 6);
+        assert_eq!(hinted_col("x = f(1)", 3, &hints), 11);
+        // A hint at the end of the line counts for a cursor past the end.
+        assert_eq!(hinted_col("ab", 2, &[(2, " // x")]), 7);
+        assert_eq!(hinted_col("\tx", 1, &[]), 4);
+    }
+
+    #[test]
+    fn hints_ride_along_with_the_text() {
+        let mut document = Document::scratch();
+        document.text = ropey::Rope::from_str("let x = 1;\nlet y = 2;\n");
+        let mut view = View::new(document);
+        view.hints = vec![Hint { at: 5, label: ": i32".into() }, Hint { at: 16, label: ": i32".into() }];
+        view.edit_at(4, 0, "long_", Some(9));
+        assert_eq!(view.hints.iter().map(|h| h.at).collect::<Vec<_>>(), [10, 21]);
+        assert_eq!(view.hints_on(1), [(5, ": i32")]);
+        assert_eq!(view.cursor_screen_col(), 9, "before the hint, the cursor is where it was");
+        view.sel = Selection::point(10);
+        assert_eq!(view.cursor_screen_col(), 15);
     }
 }

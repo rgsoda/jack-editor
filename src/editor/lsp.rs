@@ -9,15 +9,18 @@ use crate::complete::{self, Completion};
 use crate::info::{self, Info};
 use crate::lsp::{
     self, Client, CodeAction, Encoding, Event, Location, RawDiagnostic, Request, Signature, State,
-    Suggestion, Symbol, TextEdit, WorkspaceEdit,
+    RawHint, Suggestion, Symbol, TextEdit, WorkspaceEdit,
 };
 
 /// The most project symbols put in the picker at once. A server asked about
 /// one letter can answer with thousands, and the one wanted is near the top.
 const SYMBOLS_SHOWN: usize = 200;
+
+/// How long to wait before asking again for hints a server refused.
+const HINTS_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 use crate::picker::{Item, Picker, Source};
 use crate::syntax::language_for_path;
-use crate::view::{Diagnostic, Lsp, Selection};
+use crate::view::{Diagnostic, Hint, Lsp, Selection};
 
 impl Editor {
     /// Once a frame: open any buffer not yet shown to a server, and send the
@@ -164,6 +167,18 @@ impl Editor {
             Event::Rename { request, edit } => self.rename_answer(request, edit, encoding),
             Event::CodeActions { request, actions } => self.code_actions_answer(request, actions),
             Event::ResolvedAction { request, action } => self.resolved_action(request, action),
+            Event::InlayHints { request, hints } => self.hints_answer(request, hints, encoding),
+            Event::HintsFailed { request: Request::InlayHint { view, .. } } => {
+                if let Some(view) = self.views.get_mut(view) {
+                    view.hints_failed = Some(std::time::Instant::now());
+                }
+            }
+            Event::HintsFailed { .. } => {}
+            Event::HintsStale => {
+                for view in &mut self.views {
+                    view.hints_asked = None;
+                }
+            }
             Event::WorkspaceSymbols { request, symbols } => self.workspace_symbols_answer(request, symbols),
             Event::ApplyEdit { id, edit } => self.apply_edit_request(server, id, edit, encoding),
         }
@@ -679,6 +694,72 @@ impl Editor {
         if let Some(client) = self.servers.get(server) {
             client.respond(id, result);
         }
+    }
+
+    /// Ask for inlay hints for every buffer whose server has its latest text
+    /// and has not been asked about it yet. Not while typing: hints about a
+    /// line half typed are about to be wrong, and the ones there already are
+    /// carried along with the text until they can be asked for again.
+    pub fn lsp_hints(&mut self) {
+        if !self.lsp_enabled || !self.inlayhints || self.mode == Mode::Insert {
+            return;
+        }
+        for index in 0..self.views.len() {
+            let view = &self.views[index];
+            let Lsp::Open { server, synced, .. } = view.lsp else {
+                continue;
+            };
+            let edits = view.edits();
+            // Turned away - still indexing - a moment ago: that long again
+            // before asking, or the asking is all the server hears.
+            let retry = view.hints_failed.is_some_and(|when| when.elapsed() >= HINTS_RETRY);
+            if retry {
+                self.views[index].hints_failed = None;
+                self.views[index].hints_asked = None;
+            }
+            let view = &self.views[index];
+            let Some(path) = view.doc.path.as_deref() else {
+                continue;
+            };
+            if synced != edits || view.hints_asked == Some(edits) {
+                continue;
+            }
+            let encoding = self.servers[server].encoding;
+            let (line, character) = lsp::to_position(&view.doc.text, view.doc.len_chars(), encoding);
+            let params = json!({
+                "textDocument": { "uri": lsp::uri(path) },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": line, "character": character },
+                },
+            });
+            let request = Request::InlayHint { view: index, edits };
+            if self.servers[server].request("textDocument/inlayHint", "inlayHintProvider", params, request) {
+                self.views[index].hints_asked = Some(edits);
+            }
+        }
+    }
+
+    /// Hints for a buffer, kept if the text is still what they were asked
+    /// about. When it is not, the text has moved on and a new request is on
+    /// its way or will be once typing stops.
+    fn hints_answer(&mut self, request: Request, hints: Vec<RawHint>, encoding: Encoding) {
+        let Request::InlayHint { view, edits } = request else {
+            return;
+        };
+        if !self.inlayhints {
+            return;
+        }
+        let Some(view) = self.views.get_mut(view).filter(|view| view.edits() == edits) else {
+            return;
+        };
+        let rope = &view.doc.text;
+        let mut hints: Vec<Hint> = hints
+            .into_iter()
+            .map(|hint| Hint { at: lsp::from_position(rope, hint.position.0, hint.position.1, encoding), label: hint.label })
+            .collect();
+        hints.sort_by_key(|hint| hint.at);
+        view.hints = hints;
     }
 
     /// Ask for the names across the project that match `query`, for the
@@ -1809,5 +1890,45 @@ let n = count();
         // And `gd` goes back to the tree rather than asking a dead server.
         editor.goto_definition(true);
         assert_ne!(editor.message, "asking fake");
+    }
+
+    #[test]
+    fn hints_are_asked_for_once_per_text_and_kept_only_for_that_text() {
+        let (mut editor, written) = editor_asking("x = f(1)\n");
+        editor.servers[0].ready_with(json!({ "inlayHintProvider": true }));
+        editor.lsp_hints();
+        let id = asked_for(&written, "textDocument/inlayHint");
+        editor.lsp_hints();
+        assert!(sent(&written).is_empty(), "not again for the same text");
+
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [
+            { "position": { "line": 0, "character": 6 }, "label": "n:", "paddingRight": true },
+        ]})));
+        assert_eq!(editor.view().hints, [Hint { at: 6, label: "n: ".into() }]);
+
+        // An answer about text that has changed since is not used.
+        editor.view_mut().edit_at(0, 0, "y", Some(0));
+        editor.view_mut().lsp = Lsp::Open { server: 0, version: 1, synced: editor.view().edits() };
+        editor.lsp_hints();
+        let id = asked_for(&written, "textDocument/inlayHint");
+        editor.view_mut().edit_at(0, 0, "z", Some(0));
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "result": [] })));
+        assert_eq!(editor.view().hints, [Hint { at: 8, label: "n: ".into() }], "the old ones, carried along");
+
+        // Refused while the server indexes: asked again, but not at once.
+        let id = {
+            editor.view_mut().lsp = Lsp::Open { server: 0, version: 2, synced: editor.view().edits() };
+            editor.lsp_hints();
+            asked_for(&written, "textDocument/inlayHint")
+        };
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32801, "message": "content modified" } })));
+        editor.lsp_hints();
+        assert!(sent(&written).is_empty(), "not straight away");
+        editor.view_mut().hints_failed = Some(std::time::Instant::now() - HINTS_RETRY);
+        editor.lsp_hints();
+        asked_for(&written, "textDocument/inlayHint");
+
+        editor.run_command("set noinlayhints");
+        assert!(editor.view().hints.is_empty());
     }
 }

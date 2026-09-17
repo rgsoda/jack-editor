@@ -246,6 +246,14 @@ pub struct Location {
     pub position: (u32, u32),
 }
 
+/// An inlay hint as the server sends it: a position in its own encoding, and
+/// the text, padding included.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawHint {
+    pub position: (u32, u32),
+    pub label: String,
+}
+
 /// A name a server knows of somewhere in the project.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Symbol {
@@ -370,6 +378,8 @@ pub enum Request {
     /// typed. `token` is the picker's search it answers; a search typed since
     /// has retired it.
     WorkspaceSymbol { token: u64 },
+    /// The hints for a whole buffer, as it was after `edits` edits.
+    InlayHint { view: usize, edits: u64 },
 }
 
 /// What a message from a server comes to.
@@ -394,6 +404,11 @@ pub enum Event {
     ApplyEdit { id: Value, edit: WorkspaceEdit },
     Rename { request: Request, edit: WorkspaceEdit },
     WorkspaceSymbols { request: Request, symbols: Vec<Symbol> },
+    InlayHints { request: Request, hints: Vec<RawHint> },
+    /// The server's hints have changed without the text changing - it has
+    /// finished indexing, most often - and every buffer should ask again.
+    HintsStale,
+    HintsFailed { request: Request },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -523,6 +538,7 @@ impl Client {
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
                     "formatting": { "dynamicRegistration": false },
                     "references": { "dynamicRegistration": false },
+                    "inlayHint": { "dynamicRegistration": false },
                     "codeAction": {
                         "dynamicRegistration": false,
                         // Without this a server may answer only with bare
@@ -582,7 +598,7 @@ impl Client {
                     },
                 },
                 "window": { "workDoneProgress": true },
-                "workspace": { "configuration": true, "workspaceFolders": true, "symbol": { "dynamicRegistration": false } },
+                "workspace": { "configuration": true, "workspaceFolders": true, "symbol": { "dynamicRegistration": false }, "inlayHint": { "refreshSupport": true } },
             },
         });
         let id = self.take_id(Request::Initialize);
@@ -691,6 +707,10 @@ impl Client {
                 if method == "workspace/applyEdit" {
                     return Event::ApplyEdit { id, edit: workspace_edit(&message["params"]["edit"]) };
                 }
+                if method == "workspace/inlayHint/refresh" {
+                    self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": null }));
+                    return Event::HintsStale;
+                }
                 let result = match method.as_str() {
                     "workspace/configuration" => {
                         let items = message["params"]["items"].as_array().map_or(0, Vec::len);
@@ -743,6 +763,10 @@ impl Client {
             // arrives as a `workspace/applyEdit` of its own.
             Request::Execute => Event::Nothing,
             Request::WorkspaceSymbol { .. } => Event::WorkspaceSymbols { request, symbols: symbols(&result) },
+            // Busy indexing, most often, which a server says as "content
+            // modified": worth asking again once it has something to say.
+            Request::InlayHint { .. } if message.get("error").is_some() => Event::HintsFailed { request },
+            Request::InlayHint { .. } => Event::InlayHints { request, hints: inlay_hints(&result) },
         }
     }
 
@@ -1061,6 +1085,33 @@ fn units_to_chars(text: &str, units: usize) -> usize {
     text.chars().count()
 }
 
+/// The answer to `textDocument/inlayHint`. A label is a string or a list of
+/// parts to be joined; padding is a space on the side the server asks for,
+/// so `x: i32` reads as that and not `x:i32`.
+fn inlay_hints(result: &Value) -> Vec<RawHint> {
+    let Some(list) = result.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|value| {
+            let position = position(&value["position"])?;
+            let text = match &value["label"] {
+                Value::String(text) => text.clone(),
+                Value::Array(parts) => parts.iter().filter_map(|part| part["value"].as_str()).collect(),
+                _ => return None,
+            };
+            // One line of it: a hint is drawn inside a line.
+            let text = text.lines().next().unwrap_or_default().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let left = if value["paddingLeft"].as_bool() == Some(true) { " " } else { "" };
+            let right = if value["paddingRight"].as_bool() == Some(true) { " " } else { "" };
+            Some(RawHint { position, label: format!("{left}{text}{right}") })
+        })
+        .collect()
+}
+
 /// The answer to `workspace/symbol`, in either shape: `SymbolInformation`,
 /// which always has a range, or `WorkspaceSymbol`, whose location may be only
 /// a file. A file alone is taken to mean its top.
@@ -1340,5 +1391,26 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&bare).unwrap();
         assert_eq!(root_for(spec, &bare.join("x.rs")), bare);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inlay_hints_join_their_parts_and_pad_where_asked() {
+        let hints = inlay_hints(&json!([
+            { "position": { "line": 0, "character": 5 }, "label": ": i32", "kind": 1 },
+            { "position": { "line": 1, "character": 2 }, "label": [{ "value": "count" }, { "value": ":" }], "paddingRight": true },
+            { "position": { "line": 2, "character": 0 }, "label": "" },
+        ]));
+        assert_eq!(hints, [
+            RawHint { position: (0, 5), label: ": i32".into() },
+            RawHint { position: (1, 2), label: "count: ".into() },
+        ]);
+    }
+
+    #[test]
+    fn a_server_asking_for_hints_again_is_answered_and_heard() {
+        let (mut client, written) = Client::detached("fake");
+        let asked = json!({ "jsonrpc": "2.0", "id": 3, "method": "workspace/inlayHint/refresh" });
+        assert_eq!(client.handle(asked), Event::HintsStale);
+        assert_eq!(sent(&written)[0]["id"], 3);
     }
 }

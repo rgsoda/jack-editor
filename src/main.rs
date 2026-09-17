@@ -214,6 +214,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         editor.refresh_signs();
         // Cheap too: an edit count per buffer.
         editor.lsp_sync();
+        // And hints for whatever was just synced, outside insert mode.
+        editor.lsp_hints();
 
         ui::draw(editor, &keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;

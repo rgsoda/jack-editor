@@ -140,6 +140,13 @@ pub static SETTINGS: &[Setting] = &[
                 closer when it is typed, and take both back with backspace.",
     },
     Setting {
+        name: "inlayhints",
+        kind: Kind::Flag(true),
+        about: "Show the types and parameter names a language server would \
+                write into the code, dimmed, between the characters they are \
+                about. They are drawn, not typed: the cursor steps over them.",
+    },
+    Setting {
         name: "undofile",
         kind: Kind::Flag(true),
         about: "Keep each file's undo history when it is written, in the state \
