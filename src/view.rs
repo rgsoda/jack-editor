@@ -154,6 +154,10 @@ pub struct View {
     /// Per-line git signs, and the revision they were computed for.
     pub signs: HashMap<usize, Sign>,
     pub signs_revision: Option<(usize, usize)>,
+    /// The runs of lines that differ from what git has, from the same diff as
+    /// the signs, and the revision of the text that diff was taken of.
+    pub hunks: Vec<crate::stream::Hunk>,
+    pub hunks_revision: Option<(usize, usize)>,
     /// What this file indents with, read from the file itself when it was
     /// opened. `None` when it had nothing to say, and the configured default
     /// is what to use.
@@ -238,6 +242,8 @@ impl View {
             history: History::new(),
             syntax: None,
             signs: HashMap::new(),
+            hunks: Vec::new(),
+            hunks_revision: None,
             signs_revision: None,
             centre: false,
         }

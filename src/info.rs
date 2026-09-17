@@ -67,6 +67,21 @@ impl Info {
         }
     }
 
+    /// Lines to show as they are - a diff, not markdown, so nothing in them is
+    /// punctuation to be formatted away.
+    pub fn text(lines: &[String], anchor: usize) -> Option<Info> {
+        let lines: Vec<Line> = lines
+            .iter()
+            .flat_map(|line| wrap(line, MAX_WIDTH))
+            .map(|(_, text)| Line::plain(text))
+            .take(MAX_HEIGHT)
+            .collect();
+        match lines.is_empty() {
+            true => None,
+            false => Some(Info { lines, kind: Kind::Hover, anchor }),
+        }
+    }
+
     /// The signature of the call being typed, with the parameter the cursor is
     /// in marked. `active` is a range of chars in `label`.
     ///

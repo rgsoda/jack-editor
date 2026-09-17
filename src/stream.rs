@@ -20,7 +20,7 @@ pub enum Message {
     Focus,
     /// How the current buffer differs from what git has, as one sign per
     /// changed line. `token` identifies the view that asked.
-    Signs { token: u64, signs: Vec<(usize, Sign)> },
+    Signs { token: u64, signs: Vec<(usize, Sign)>, hunks: Vec<Hunk> },
     /// A background job could not run - a search pattern that is not a valid
     /// regex, most often.
     Failed { token: u64, error: String },
@@ -37,6 +37,19 @@ pub enum Message {
     },
     /// A message from language server `server`, or `None` when it has gone.
     Lsp { server: usize, message: Option<serde_json::Value> },
+}
+
+/// A run of lines that differ from what git has, and what git has there
+/// instead: enough to show what changed, to put it back, and to stage it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hunk {
+    /// The buffer's lines, counted from zero, end excluded. Empty for lines
+    /// that were only deleted, and then `start` is the line they came before.
+    pub lines: std::ops::Range<usize>,
+    /// Where git's version of this starts, counted from zero.
+    pub old_start: usize,
+    /// Git's lines, each with its line break where it had one.
+    pub old: Vec<String>,
 }
 
 /// What happened to one line since the last commit.
@@ -276,17 +289,23 @@ fn brief(text: &str) -> String {
 /// worth of bytes, and `git show` is the whole of the API for that.
 pub fn spawn_git_diff(path: PathBuf, text: String, token: u64, tx: Sender<Message>) {
     thread::spawn(move || {
-        let Some(head) = git_show_head(&path) else {
+        let Some(staged) = git_show_index(&path) else {
             // Not a repository, not tracked, or no commits yet: no signs, and
             // nothing worth complaining about.
-            let _ = tx.send(Message::Signs { token, signs: Vec::new() });
+            let _ = tx.send(Message::Signs { token, signs: Vec::new(), hunks: Vec::new() });
             return;
         };
-        let _ = tx.send(Message::Signs { token, signs: diff_lines(&head, &text) });
+        let signs = diff_lines(&staged, &text);
+        let hunks = diff_hunks(&staged, &text);
+        let _ = tx.send(Message::Signs { token, signs, hunks });
     });
 }
 
-fn git_show_head(path: &Path) -> Option<String> {
+/// The file as the index has it - what is staged, which is the last commit's
+/// version until something is staged. Against the index rather than `HEAD`
+/// so that staging a hunk is something the gutter can see: the lines it
+/// staged stop being marked.
+fn git_show_index(path: &Path) -> Option<String> {
     // A bare file name has an empty parent, which is not a directory git can
     // be run in. `HEAD:./name` is then resolved relative to that directory,
     // so this works from a subdirectory of the repository too.
@@ -298,12 +317,113 @@ fn git_show_head(path: &Path) -> Option<String> {
     let output = Command::new("git")
         .current_dir(directory)
         .arg("show")
-        .arg(format!("HEAD:./{}", name.to_string_lossy()))
+        .arg(format!(":./{}", name.to_string_lossy()))
         .output()
         .ok()?;
     match output.status.success() {
         true => String::from_utf8(output.stdout).ok(),
         false => None,
+    }
+}
+
+/// The hunks of a diff of `before` against `after`: every run of lines that is
+/// not the same in both, whether it was added, removed or replaced.
+pub fn diff_hunks(before: &str, after: &str) -> Vec<Hunk> {
+    use similar::{DiffOp, TextDiff};
+
+    let diff = TextDiff::from_lines(before, after);
+    // Split the way the diff splits: each line keeps its line break.
+    let old: Vec<&str> = before.split_inclusive('\n').collect();
+    let mut hunks: Vec<Hunk> = Vec::new();
+    for op in diff.ops() {
+        if matches!(op, DiffOp::Equal { .. }) {
+            continue;
+        }
+        let (old_range, new_range) = (op.old_range(), op.new_range());
+        // A deletion straight after an insertion is one change, not two: the
+        // diff reports them as neighbours, and they are one hunk to look at.
+        match hunks.last_mut() {
+            Some(last) if last.lines.end == new_range.start && last.old_start + last.old.len() == old_range.start => {
+                last.lines.end = new_range.end;
+                last.old.extend(old[old_range].iter().map(|line| line.to_string()));
+            }
+            _ => hunks.push(Hunk {
+                lines: new_range,
+                old_start: old_range.start,
+                old: old[old_range].iter().map(|line| line.to_string()).collect(),
+            }),
+        }
+    }
+    hunks
+}
+
+/// A patch that stages exactly `hunk` and nothing else: no context lines, so
+/// it applies whatever the rest of the file is doing, which is what
+/// `git apply --unidiff-zero` is for. `new` is the buffer's lines for the
+/// hunk, and `path` the file as the repository names it.
+pub fn hunk_patch(path: &str, hunk: &Hunk, new: &[String]) -> String {
+    // In a unified diff an empty range is written as the line *before* it,
+    // and a non-empty one by its first line - both counted from one.
+    let start = |at: usize, len: usize| match len {
+        0 => at,
+        _ => at + 1,
+    };
+    let mut patch = format!(
+        "--- a/{path}\n+++ b/{path}\n@@ -{},{} +{},{} @@\n",
+        start(hunk.old_start, hunk.old.len()),
+        hunk.old.len(),
+        start(hunk.lines.start, new.len()),
+        new.len(),
+    );
+    let mut push = |sign: char, line: &str| {
+        patch.push(sign);
+        patch.push_str(line);
+        if !line.ends_with('\n') {
+            patch.push_str("\n\\ No newline at end of file\n");
+        }
+    };
+    for line in &hunk.old {
+        push('-', line);
+    }
+    for line in new {
+        push('+', line);
+    }
+    patch
+}
+
+/// Stage one hunk of `file`. Run from the top of the repository, where the
+/// path in the patch is rooted.
+pub fn git_stage(file: &Path, hunk: &Hunk, new: &[String]) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let file = file.canonicalize().map_err(|err| err.to_string())?;
+    let directory = file.parent().ok_or("no directory")?;
+    let top = Command::new("git")
+        .current_dir(directory)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !top.status.success() {
+        return Err("not in a git repository".into());
+    }
+    let top = PathBuf::from(String::from_utf8_lossy(&top.stdout).trim());
+    let top = top.canonicalize().unwrap_or(top);
+    let relative = file.strip_prefix(&top).map_err(|_| "outside the repository")?;
+    let patch = hunk_patch(&relative.to_string_lossy(), hunk, new);
+
+    let mut child = Command::new("git")
+        .current_dir(&top)
+        .args(["apply", "--cached", "--unidiff-zero", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    child.stdin.take().ok_or("no stdin")?.write_all(patch.as_bytes()).map_err(|err| err.to_string())?;
+    let output = child.wait_with_output().map_err(|err| err.to_string())?;
+    match output.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("git apply failed").to_string()),
     }
 }
 
@@ -544,6 +664,31 @@ mod tests {
             diff_lines(before, "one\nTWO\nEXTRA\nthree\n"),
             [(1, Sign::Modified), (2, Sign::Added)]
         );
+    }
+
+    #[test]
+    fn hunks_are_the_runs_that_differ_with_what_git_had() {
+        let hunks = diff_hunks("a\nb\nc\nd\n", "a\nB\nnew\nc\n");
+        assert_eq!(
+            hunks,
+            [
+                // A replacement and an addition beside it are one hunk.
+                Hunk { lines: 1..3, old_start: 1, old: vec!["b\n".into()] },
+                // A deletion has no lines of its own; it sits before line 4.
+                Hunk { lines: 4..4, old_start: 3, old: vec!["d\n".into()] },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hunk_patch_counts_an_empty_side_from_the_line_before() {
+        let added = Hunk { lines: 3..4, old_start: 3, old: vec![] };
+        let patch = hunk_patch("sub/f.txt", &added, &["d\n".into()]);
+        assert_eq!(patch, "--- a/sub/f.txt\n+++ b/sub/f.txt\n@@ -3,0 +4,1 @@\n+d\n");
+
+        let unterminated = Hunk { lines: 0..1, old_start: 0, old: vec!["x\n".into()] };
+        let patch = hunk_patch("f", &unterminated, &["y".into()]);
+        assert!(patch.ends_with("+y\n\\ No newline at end of file\n"), "{patch}");
     }
 
     #[test]

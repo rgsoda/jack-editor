@@ -38,6 +38,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "gr gR", what: "every use of this name; rename it everywhere", mode: "normal" },
     Binding { keys: "ga", what: "what the language server can do here: fixes, imports", mode: "normal" },
     Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
+    Binding { keys: "]c [c", what: "next, previous changed hunk (against git)", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
@@ -91,6 +92,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste the line (the system clipboard)", mode: "normal" },
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>e", what: "pick a diagnostic, in any open buffer", mode: "normal" },
+    Binding { keys: "<space>h", what: "what this change was: git's lines and yours", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
     Binding { keys: "<space>x", what: "close this buffer", mode: "normal" },
@@ -566,8 +568,10 @@ impl Keys {
                 self.finish();
             }
             Some(Pending::Bracket { forward }) => {
-                if key.code == KeyCode::Char('d') {
-                    editor.goto_diagnostic(forward);
+                match key.code {
+                    KeyCode::Char('d') => editor.goto_diagnostic(forward),
+                    KeyCode::Char('c') => editor.goto_hunk(forward),
+                    _ => {}
                 }
                 self.finish();
             }
@@ -585,6 +589,7 @@ impl Keys {
                     KeyCode::Char('s') => editor.open_grep_picker(),
                     KeyCode::Char('d') => editor.open_symbol_picker(),
                     KeyCode::Char('e') => editor.open_diagnostics_picker(),
+                    KeyCode::Char('h') => editor.preview_hunk(),
                     KeyCode::Char('?') => editor.open_help_picker(),
                     KeyCode::Char('n') => editor.cycle_numbers(),
                     KeyCode::Char('x') => editor.close_buffer(false),

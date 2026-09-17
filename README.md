@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 52: reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 53: git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -73,6 +73,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `ga` | what the server can do here: fixes, imports, refactors |
 | `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
+| `]c` `[c` | next / previous changed hunk, against what git has staged |
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
@@ -83,6 +84,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
 | `<space>e` | pick a diagnostic, in any open buffer |
+| `<space>h` | what the hunk under the cursor was, and is |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `<space>x` | close this buffer |
@@ -139,6 +141,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:bd` `:bd!` | close this buffer; `!` throws away unsaved changes. Its windows move to the buffer before it, and closing the last leaves an empty one |
 | `:lsp` | which language servers are running, and this buffer's |
 | `:fmt` `:'<,'>fmt` | format the buffer with what the server formats with — rustfmt, gofmt — or just the lines a range names |
+| `:revert` `:stage` | put back git's lines for the hunk under the cursor, or stage just that hunk |
 | `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
 | `:sh` | a shell; `exit` comes back |
 | `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
@@ -529,9 +532,9 @@ last character that is left rather than off the end of the line.
 
 ## Git signs
 
-The first gutter column marks lines that differ from the last commit: `+` added,
-`~` modified, `_` where something was deleted. It shells out to `git show
-HEAD:./file` on a background thread and diffs with `similar` - one file's worth
+The first gutter column marks lines that differ from what git has staged: `+`
+added, `~` modified, `_` where something was deleted. It shells out to `git show
+:./file` - the index, which is the last commit until something is staged - on a background thread and diffs with `similar` - one file's worth
 of bytes is the whole of the API this needs, which is not worth a git library.
 
 The diff re-runs when the buffer has actually changed and never while you are
@@ -542,6 +545,23 @@ matches. Leaving insert mode is what triggers the refresh after typing.
 Deletions and insertions that meet are paired one for one, so two lines changed
 in a row are two modifications rather than a modification and an addition. Three
 lines replacing one is one modification and two additions.
+
+### Hunks
+
+The same diff, taken a run at a time, is a hunk: lines next to each other that
+changed together. `]c` and `[c` walk them, wrapping at the ends of the file,
+and say which of how many you are on. `<space>h` shows the one under the cursor
+in a box - what git had, prefixed `-`, and what the buffer has, prefixed `+`.
+
+`:revert` puts git's lines back in place of the hunk, as one undoable edit.
+`:stage` hands git a patch of just that hunk (`git apply --cached
+--unidiff-zero`), so a file can be committed a piece at a time without leaving
+the editor; the signs then diff against the newly staged text, and the staged
+hunk's marks go away.
+
+Both refuse while the diff is older than the buffer - it runs on a thread, and
+acting on a hunk that no longer lines up with the text would revert or stage the
+wrong lines. It catches up the moment the thread answers.
 
 ## Matching brackets
 

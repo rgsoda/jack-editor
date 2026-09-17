@@ -24,6 +24,7 @@ use crate::theme::Theme;
 use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH, View};
 use crate::window::{self, Direction, Layout, Rect, Window};
 
+mod git;
 mod lsp;
 
 /// How many characters of a word bring the completion popup up on its own.
@@ -1033,6 +1034,9 @@ impl Editor {
             ("on" | "only", _) => self.only_window(),
             ("bd" | "bdelete", _) => self.close_buffer(force),
             ("lsp", _) => self.lsp_report(),
+            ("stage", _) => self.stage_hunk(),
+            ("revert", _) => self.revert_hunk(),
+            ("hunk", _) => self.preview_hunk(),
             ("sh" | "shell", _) => self.run_shell(""),
             ("map", argument) => self.map_leader(argument),
             ("unmap", argument) => self.unmap_leader(argument),
@@ -2221,9 +2225,14 @@ impl Editor {
         stream::spawn_git_diff(path, text, self.signs_token, jobs);
     }
 
-    pub fn set_signs(&mut self, token: u64, signs: Vec<(usize, Sign)>) {
+    pub fn set_signs(&mut self, token: u64, signs: Vec<(usize, Sign)>, hunks: Vec<stream::Hunk>) {
         if token == self.signs_token {
-            self.views[self.signs_for].signs = signs.into_iter().collect();
+            let view = &mut self.views[self.signs_for];
+            view.signs = signs.into_iter().collect();
+            view.hunks = hunks;
+            // What the diff was taken of - which is what the hunks' line
+            // numbers are about, whatever has been typed since.
+            view.hunks_revision = view.signs_revision;
         }
     }
 
@@ -3642,6 +3651,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'f' => "the file picker",
         's' => "the search picker",
         'd' => "the symbol picker",
+        'h' => "what this change was",
         'e' => "the diagnostics picker",
         '?' => "the help picker",
         'n' => "line numbers",

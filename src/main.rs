@@ -298,8 +298,8 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
                 streamed_done = done;
             } else if let Message::Failed { token, error } = message {
                 editor.job_failed(token, error);
-            } else if let Message::Signs { token, signs } = message {
-                editor.set_signs(token, signs);
+            } else if let Message::Signs { token, signs, hunks } = message {
+                editor.set_signs(token, signs, hunks);
             } else if let Message::Lsp { server, message } = message {
                 editor.lsp_message(server, message);
             }
