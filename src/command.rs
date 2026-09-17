@@ -39,6 +39,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "lsp", argument: Argument::None },
     Command { name: "format", argument: Argument::None },
     Command { name: "hunk", argument: Argument::None },
+    Command { name: "blame", argument: Argument::None },
     Command { name: "stage", argument: Argument::None },
     Command { name: "revert", argument: Argument::None },
     Command { name: "shell", argument: Argument::None },

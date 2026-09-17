@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 53: git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 54: git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -85,6 +85,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>d` | pick a definition in this buffer |
 | `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>h` | what the hunk under the cursor was, and is |
+| `<space>B` `:blame` | who last changed this line, when, and the commit's first line |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `<space>x` | close this buffer |
@@ -562,6 +563,16 @@ hunk's marks go away.
 Both refuse while the diff is older than the buffer - it runs on a thread, and
 acting on a hunk that no longer lines up with the text would revert or stage the
 wrong lines. It catches up the moment the thread answers.
+
+### Blame
+
+`<space>B` asks `git blame` about the cursor's line and shows the commit, its
+author, how long ago, and the first line of its message in a box. Git is handed
+the buffer rather than the file, so line numbers are the ones on screen and a
+line changed since the last save says `not committed yet` instead of blaming
+whoever wrote what used to be there. It is one line, asked for when wanted:
+blame for a whole file down a gutter is a job for `:!tig` or lazygit, with the
+terminal handed over.
 
 ## Matching brackets
 

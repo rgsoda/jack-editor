@@ -101,6 +101,36 @@ impl Editor {
         };
     }
 
+    /// `<space>B`: who last changed the cursor's line, when, and why - the
+    /// commit's first line - in a box by the cursor.
+    pub fn blame_line(&mut self) {
+        let Some(path) = self.view().doc.path.clone() else {
+            self.message = "no file to blame".into();
+            return;
+        };
+        let line = self.view().cursor_coords().0;
+        let contents = self.view().doc.text.to_string();
+        let blame = match stream::git_blame(&path, line, &contents) {
+            Ok(blame) => blame,
+            Err(err) => {
+                self.message = err;
+                return;
+            }
+        };
+        let lines = match blame.committed() {
+            false => vec!["not committed yet".to_string()],
+            true => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs());
+                let short: String = blame.commit.chars().take(8).collect();
+                vec![format!("{short} {}, {}", blame.author, stream::ago(blame.time, now)), blame.summary]
+            }
+        };
+        let anchor = self.view().sel.head;
+        self.info = Info::text(&lines, anchor);
+    }
+
     /// `:stage`: the hunk under the cursor, into the index - the buffer's
     /// version of it, saved or not, since that is what is on screen.
     pub fn stage_hunk(&mut self) {
@@ -238,6 +268,44 @@ mod tests {
         // on disk was never written.
         assert_eq!(git(&["show", ":sub/f.txt"]), "a\nb\nc\nd\nE\n");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "a\nb\nc\nd\ne\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blame_names_the_commit_or_says_nobody_committed_it() {
+        let dir = std::env::temp_dir().join(format!("jack_blame_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(["-c", "user.email=t@t", "-c", "user.name=Ann Author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        };
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "The first lines"]);
+
+        let mut e = Editor::open(std::slice::from_ref(&file)).unwrap();
+        e.blame_line();
+        let lines = |e: &Editor| -> Vec<String> {
+            e.info.as_ref().expect("a box").lines.iter().map(|line| line.text.clone()).collect()
+        };
+        let shown = lines(&e);
+        assert!(shown[0].ends_with(" Ann Author, just now"), "{shown:?}");
+        assert_eq!(shown[1], "The first lines");
+
+        // An edit nobody has saved, let alone committed.
+        e.goto_line(1);
+        let start = e.view().doc.line_to_char(1);
+        e.view_mut().edit_at(start, 0, "new\n", Some(start));
+        e.blame_line();
+        assert_eq!(lines(&e), ["not committed yet"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

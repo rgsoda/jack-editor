@@ -469,12 +469,123 @@ fn diff_lines(before: &str, after: &str) -> Vec<(usize, Sign)> {
     signs
 }
 
+/// Who last touched one line, and in which commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blame {
+    /// The commit's hash, all zeros for a line nobody has committed.
+    pub commit: String,
+    pub author: String,
+    /// Seconds since the epoch.
+    pub time: u64,
+    pub summary: String,
+}
+
+impl Blame {
+    pub fn committed(&self) -> bool {
+        self.commit.chars().any(|c| c != '0')
+    }
+}
+
+/// `git blame` for line `line` (from zero) of `contents`, the buffer as it is
+/// now: git is given the text on stdin, so a line edited but not saved is
+/// "not committed" rather than blamed on whoever wrote what used to be there.
+pub fn git_blame(file: &Path, line: usize, contents: &str) -> Result<Blame, String> {
+    use std::io::Write as _;
+
+    let directory = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let name = file.file_name().ok_or("no file name")?;
+    let range = format!("{},{}", line + 1, line + 1);
+    let mut child = Command::new("git")
+        .current_dir(directory)
+        .args(["blame", "--porcelain", "-L", &range, "--contents", "-", "--"])
+        .arg(name)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let text = contents.to_string();
+    // Written from a thread: git may answer before it has read everything,
+    // and a pipe that fills both ways would leave the two waiting on each other.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(text.as_bytes());
+    });
+    let output = child.wait_with_output().map_err(|err| err.to_string())?;
+    let _ = writer.join();
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(err.lines().next().unwrap_or("git blame failed").trim_start_matches("fatal: ").to_string());
+    }
+    parse_blame(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| "git blame said nothing".into())
+}
+
+/// The first entry of `git blame --porcelain`: a header line whose first word
+/// is the commit, then `key value` lines up to the line's own text.
+fn parse_blame(porcelain: &str) -> Option<Blame> {
+    let mut lines = porcelain.lines();
+    let commit = lines.next()?.split_whitespace().next()?.to_string();
+    let mut blame = Blame { commit, author: String::new(), time: 0, summary: String::new() };
+    for line in lines {
+        if line.starts_with('\t') {
+            break;
+        }
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "author" => blame.author = value.to_string(),
+            "author-time" => blame.time = value.parse().unwrap_or(0),
+            "summary" => blame.summary = value.to_string(),
+            _ => {}
+        }
+    }
+    Some(blame)
+}
+
+/// How long ago `then` was, the way a person says it: "3 days ago".
+pub fn ago(then: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(then);
+    let (n, unit) = match seconds {
+        0..60 => return "just now".into(),
+        60..3_600 => (seconds / 60, "minute"),
+        3_600..86_400 => (seconds / 3_600, "hour"),
+        86_400..2_592_000 => (seconds / 86_400, "day"),
+        2_592_000..31_536_000 => (seconds / 2_592_000, "month"),
+        _ => (seconds / 31_536_000, "year"),
+    };
+    match n {
+        1 => format!("1 {unit} ago"),
+        n => format!("{n} {unit}s ago"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
+
+    #[test]
+    fn blame_reads_the_first_entry_of_the_porcelain() {
+        let porcelain = "abc123 3 3 1\nauthor Ann\nauthor-mail <a@b>\nauthor-time 1000\nsummary Fix it\nfilename f\n\tthe line\n";
+        let blame = parse_blame(porcelain).unwrap();
+        assert_eq!(blame, Blame { commit: "abc123".into(), author: "Ann".into(), time: 1000, summary: "Fix it".into() });
+        assert!(blame.committed());
+        assert!(!Blame { commit: "0000000".into(), ..blame }.committed());
+    }
+
+    #[test]
+    fn ago_says_it_the_way_a_person_would() {
+        assert_eq!(ago(100, 110), "just now");
+        assert_eq!(ago(0, 60), "1 minute ago");
+        assert_eq!(ago(0, 7_300), "2 hours ago");
+        assert_eq!(ago(0, 3 * 86_400), "3 days ago");
+        assert_eq!(ago(0, 800 * 86_400), "2 years ago");
+        assert_eq!(ago(200, 100), "just now");
+    }
 
     #[test]
     fn a_walk_finds_files_and_honours_gitignore() {
