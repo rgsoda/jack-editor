@@ -77,7 +77,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "number",
         kind: Kind::Word(&["number", "nonumber", "relativenumber", "hybrid"]),
-        about: "Line numbers: absolute, off, relative, or hybrid (relative but                 the cursor's own line absolute).",
+        about: "Line numbers: absolute, off, relative, or hybrid (relative but \
+                the cursor's own line absolute).",
     },
     Setting {
         name: "cursorline",
@@ -92,7 +93,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "glyphs",
         kind: Kind::Flag(true),
-        about: "Draw the status line with Nerd Font glyphs. Off is plain ASCII,                 for a terminal whose font has not been patched.",
+        about: "Draw the status line with Nerd Font glyphs. Off is plain ASCII, \
+                for a terminal whose font has not been patched.",
     },
     Setting {
         name: "dog",
@@ -103,7 +105,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "tabline",
         kind: Kind::Value(&["off", "auto", "always"], "auto"),
-        about: "The buffer list along the top: auto shows it once a second file                 is open.",
+        about: "The buffer list along the top: auto shows it once a second file \
+                is open.",
     },
     Setting {
         name: "shiftwidth",
@@ -123,7 +126,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "autoindent",
         kind: Kind::Flag(true),
-        about: "Keep the indent on enter, and take it from the grammar where                 there is one.",
+        about: "Keep the indent on enter, and take it from the grammar where \
+                there is one.",
     },
     Setting {
         name: "autopairs",
@@ -134,7 +138,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "autocomplete",
         kind: Kind::Value(&["0", "2", "3"], "2"),
-        about: "How many characters of a word bring the completion popup up on                 their own. 0 turns it off; ^n still works.",
+        about: "How many characters of a word bring the completion popup up on \
+                their own. 0 turns it off; ^n still works.",
     },
     Setting {
         name: "trim",
@@ -144,7 +149,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "emacs",
         kind: Kind::Flag(false),
-        about: "Emacs chords in insert mode: ^a ^e ^k ^y and the rest. They                 win over the insert-mode keys they share.",
+        about: "Emacs chords in insert mode: ^a ^e ^k ^y and the rest. They \
+                win over the insert-mode keys they share.",
     },
     Setting {
         name: "lsp",
@@ -154,7 +160,8 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "semicolon",
         kind: Kind::Value(&["find", "command"], "find"),
-        about: "What ; does: repeat the last f/t, or open the command line the                 way : does.",
+        about: "What ; does: repeat the last f/t, or open the command line the \
+                way : does.",
     },
 ];
 
@@ -422,6 +429,16 @@ mod tests {
         assert_eq!(names("q"), ["quit"]);
         assert!(names("").len() == COMMANDS.len());
         assert!(names("zz").is_empty());
+    }
+
+    #[test]
+    fn what_a_setting_says_about_itself_has_no_gaps_in_it() {
+        // A string broken across lines without its `\\` keeps the next
+        // line's indentation, and that run of spaces ends up in the config
+        // file written for you and in the help.
+        for setting in SETTINGS {
+            assert!(!setting.about.contains("  "), "{}: {:?}", setting.name, setting.about);
+        }
     }
 
     #[test]
