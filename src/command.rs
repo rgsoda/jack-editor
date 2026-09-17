@@ -126,6 +126,12 @@ pub static SETTINGS: &[Setting] = &[
         about: "Keep the indent on enter, and take it from the grammar where                 there is one.",
     },
     Setting {
+        name: "autopairs",
+        kind: Kind::Flag(true),
+        about: "Close brackets and quotes as they are opened, step over the \
+                closer when it is typed, and take both back with backspace.",
+    },
+    Setting {
         name: "autocomplete",
         kind: Kind::Value(&["0", "2", "3"], "2"),
         about: "How many characters of a word bring the completion popup up on                 their own. 0 turns it off; ^n still works.",
@@ -420,7 +426,7 @@ mod tests {
 
     #[test]
     fn set_offers_options_and_then_their_values() {
-        assert_eq!(names("set auto"), ["autocomplete=", "autoindent"]);
+        assert_eq!(names("set auto"), ["autocomplete=", "autoindent", "autopairs"]);
         assert_eq!(names("set tabline="), ["tabline=off", "tabline=auto", "tabline=always"]);
         assert_eq!(names("set semicolon=c"), ["semicolon=command"]);
         // An option that takes no value has none to offer.

@@ -302,6 +302,9 @@ pub struct Editor {
     /// Indent a new line the way the grammar says, rather than copying the
     /// line above. Only does anything where there is an indent query.
     pub autoindent: bool,
+    /// Type `(` and get `()`, with the cursor between; type the `)` and step
+    /// over the one already there.
+    pub autopairs: bool,
     /// Emacs chords in insert mode. Off by default: this is a vim-flavoured
     /// editor and half of these keys already mean something else.
     pub emacs: bool,
@@ -434,6 +437,7 @@ impl Editor {
             semicolon: Semicolon::default(),
             tabline: Tabline::Auto,
             autoindent: true,
+            autopairs: true,
             emacs: false,
             autocomplete: DEFAULT_AUTOCOMPLETE,
             dismissed: None,
@@ -1393,6 +1397,8 @@ impl Editor {
             "notabline" => self.tabline = Tabline::Off,
             "autoindent" | "ai" => self.autoindent = true,
             "noautoindent" | "noai" => self.autoindent = false,
+            "autopairs" => self.autopairs = true,
+            "noautopairs" => self.autopairs = false,
             "emacs" => self.emacs = true,
             "noemacs" => self.emacs = false,
             "lsp" => {
@@ -1436,7 +1442,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1446,6 +1452,7 @@ impl Editor {
                     indent.width,
                     !indent.tabs,
                     self.autoindent,
+                    self.autopairs,
                     self.emacs,
                     self.lsp_enabled,
                     self.tabline.name(),
@@ -2739,6 +2746,104 @@ impl Editor {
                 .all(|c| c == ' ' || c == '\t')
     }
 
+    /// A character typed in insert mode, with the brackets and quotes it
+    /// comes in pairs with looked after.
+    ///
+    /// Three things, and each of them only where it cannot get in the way:
+    ///
+    /// - An opening bracket gets its closer, when what follows is the end of
+    ///   the line, a space or another closer. Before a word it does not: `(`
+    ///   typed to wrap something already there would otherwise leave a `)`
+    ///   stranded in front of it.
+    /// - A closer steps over the same closer under the cursor, rather than
+    ///   typing a second one - which is what makes typing both halves by habit
+    ///   come out right.
+    /// - A quote is both at once: over the same quote it steps, and otherwise
+    ///   it pairs under the same rule as a bracket, and not straight after a
+    ///   word character, which is an apostrophe (`don't`) or a string prefix
+    ///   (`b"`, `f"`) rather than the start of a string.
+    pub fn type_char(&mut self, c: char) {
+        if !self.autopairs || !self.view().sel.is_empty() {
+            return self.insert(&c.to_string());
+        }
+        let (before, after) = self.around_cursor();
+
+        if after == Some(c) && (is_closer(c) || is_quote(c)) {
+            self.move_cursor(Move::Right, false);
+            return;
+        }
+        let pairs = match closer_of(c) {
+            Some(_) if is_quote(c) => {
+                !before.is_some_and(crate::complete::is_word) && self.quote_pairs(c)
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let room = after.is_none_or(|next| next.is_whitespace() || is_closer(next));
+        if !(pairs && room) {
+            return self.insert(&c.to_string());
+        }
+        let close = closer_of(c).expect("checked above");
+        let head = self.view().sel.head;
+        self.view_mut().edit_at(head, 0, &format!("{c}{close}"), Some(head + 1));
+    }
+
+    /// Whether `'` opens a string in this language. In Rust it is a lifetime
+    /// far more often than a character, and `<'a>` coming out as `<'a'>`
+    /// is worse than typing one quote by hand.
+    fn quote_pairs(&self, c: char) -> bool {
+        let language = crate::syntax::language_for_path(self.view().doc.path.as_deref()).map(|l| l.name);
+        !(c == '\'' && language == Some("rust"))
+    }
+
+    /// The characters either side of the cursor, on its line.
+    fn around_cursor(&self) -> (Option<char>, Option<char>) {
+        let view = self.view();
+        let (line, column) = view.cursor_coords();
+        let text = view.doc.line_str(line);
+        let before = column.checked_sub(1).and_then(|at| text.chars().nth(at));
+        (before, text.chars().nth(column))
+    }
+
+    /// `backspace` in insert mode: between a pair with nothing inside, both
+    /// halves go - the closer was put there for you, and leaving it behind
+    /// after taking back the opener is a mess to tidy by hand.
+    pub fn backspace(&mut self) {
+        if self.autopairs && self.view().sel.is_empty() {
+            let (before, after) = self.around_cursor();
+            if let (Some(open), Some(close)) = (before, after)
+                && closer_of(open) == Some(close)
+            {
+                let head = self.view().sel.head;
+                self.view_mut().edit_at(head - 1, 2, "", Some(head - 1));
+                return;
+            }
+        }
+        self.delete_backward();
+    }
+
+    /// `enter` in insert mode: between `{` and `}` the closer goes down a line
+    /// of its own and the cursor sits on an indented line between them, which
+    /// is the only thing anyone ever wants to do next.
+    pub fn enter(&mut self) {
+        let (before, after) = self.around_cursor();
+        let between = self.autopairs
+            && matches!((before, after), (Some(open), Some(close)) if is_bracket(open) && closer_of(open) == Some(close));
+        self.insert_newline();
+        if !between {
+            return;
+        }
+        // The closer is at the cursor, on the new line: push it down another,
+        // then come back up to the end of the line in the middle.
+        self.insert_newline();
+        let line = self.view().cursor_coords().0 - 1;
+        let end = self.view().doc.line_to_char(line) + self.view().doc.line_len_chars(line);
+        self.view_mut().sel = Selection::point(end);
+        self.reindent_current_line(true);
+        let end = self.view().doc.line_to_char(line) + self.view().doc.line_len_chars(line);
+        self.view_mut().sel = Selection::point(end);
+    }
+
     pub fn insert_newline(&mut self) {
         self.view_mut().insert_newline();
         // The copied indent is the fallback; where the grammar has an opinion
@@ -3401,6 +3506,29 @@ impl Editor {
     }
 }
 
+
+/// The closing half of a pair: a bracket's closer, or a quote itself.
+fn closer_of(c: char) -> Option<char> {
+    Some(match c {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '"' | '\'' | '`' => c,
+        _ => return None,
+    })
+}
+
+fn is_bracket(c: char) -> bool {
+    matches!(c, '(' | '[' | '{')
+}
+
+fn is_closer(c: char) -> bool {
+    matches!(c, ')' | ']' | '}')
+}
+
+fn is_quote(c: char) -> bool {
+    matches!(c, '"' | '\'' | '`')
+}
 
 /// What a leader key already does, for the ones that are not yours to map.
 /// The leader is the space left for you, and these are the few corners of it

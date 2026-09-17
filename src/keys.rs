@@ -1390,10 +1390,10 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
         KeyCode::Char('t') if ctrl => editor.shift_current_line(true),
         KeyCode::Char('d') if ctrl => editor.shift_current_line(false),
         KeyCode::Esc => editor.set_mode(Mode::Normal),
-        KeyCode::Char(c) if !ctrl && !alt => editor.insert(&c.to_string()),
-        KeyCode::Enter => editor.insert_newline(),
+        KeyCode::Char(c) if !ctrl && !alt => editor.type_char(c),
+        KeyCode::Enter => editor.enter(),
         KeyCode::Tab => editor.insert_tab(),
-        KeyCode::Backspace => editor.delete_backward(),
+        KeyCode::Backspace => editor.backspace(),
         KeyCode::Delete => editor.delete_forward(),
         KeyCode::Left => editor.move_cursor(Move::Left, extend),
         KeyCode::Right => editor.move_cursor(Move::Right, extend),
@@ -3826,6 +3826,83 @@ plain
         let picker = vim.editor.picker.as_ref().expect("a picker");
         assert_eq!(picker.matches().len(), line);
         assert!(elapsed < budget(500), "listing took {elapsed:?}");
+    }
+
+    #[test]
+    fn a_bracket_comes_with_its_closer_and_the_closer_steps_over() {
+        let mut vim = Vim::new("\n");
+        vim.press("ifoo(");
+        assert_eq!(vim.text(), "foo()\n");
+        assert_eq!(vim.cursor(), (1, 5), "between the two");
+        // Typing the closer by habit steps over the one already there.
+        vim.press("x)");
+        assert_eq!(vim.text(), "foo(x)\n");
+        assert_eq!(vim.cursor(), (1, 7));
+    }
+
+    #[test]
+    fn a_bracket_before_a_word_is_left_alone() {
+        // Wrapping something already there: a `)` put in now would land in
+        // front of what it was meant to go after.
+        let mut vim = Vim::new("value\n");
+        vim.press("i(");
+        assert_eq!(vim.text(), "(value\n");
+    }
+
+    #[test]
+    fn backspace_between_an_empty_pair_takes_both() {
+        let mut vim = Vim::new("\n");
+        vim.press("i[<bs>");
+        assert_eq!(vim.text(), "\n");
+        // With something inside, it is an ordinary backspace.
+        let mut vim = Vim::new("\n");
+        vim.press("i[a<bs><bs>");
+        assert_eq!(vim.text(), "\n");
+        let mut vim = Vim::new("\n");
+        vim.press("i[ab<left><bs>");
+        assert_eq!(vim.text(), "[b]\n");
+    }
+
+    #[test]
+    fn quotes_pair_but_not_as_an_apostrophe() {
+        let mut vim = Vim::new("\n");
+        vim.press("ix = \"hi\"");
+        assert_eq!(vim.text(), "x = \"hi\"\n", "the second quote steps over");
+
+        let mut vim = Vim::new("\n");
+        vim.press("idon't");
+        assert_eq!(vim.text(), "don't\n");
+
+        // A lifetime in Rust is not a character literal.
+        let mut vim = Vim::rust("\n");
+        vim.press("ix: &'a");
+        assert_eq!(vim.text(), "x: &'a\n");
+    }
+
+    #[test]
+    fn enter_between_braces_opens_the_block() {
+        let mut vim = Vim::rust("\n");
+        vim.press("ifn main() {<cr>x");
+        // Indented one step, with whatever this buffer steps with.
+        assert_eq!(vim.text(), "fn main() {\n\tx\n}\n");
+        // All of it one step.
+        vim.press("<esc>u");
+        assert_eq!(vim.text(), "\n");
+    }
+
+    #[test]
+    fn a_change_typed_with_pairs_repeats_the_same() {
+        let mut vim = Vim::new("a\nb\n");
+        vim.press("A(1)<esc>j.");
+        assert_eq!(vim.text(), "a(1)\nb(1)\n");
+    }
+
+    #[test]
+    fn nopairs_types_what_is_typed() {
+        let mut vim = Vim::new("\n");
+        vim.editor.run_command("set noautopairs");
+        vim.press("i(\"");
+        assert_eq!(vim.text(), "(\"\n");
     }
 
     #[test]

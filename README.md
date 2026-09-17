@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 49: reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 50: brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -156,6 +156,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
 | `:set emacs` | `noemacs`: emacs chords in insert mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
+| `:set autopairs` | `noautopairs`: close brackets and quotes as they are opened |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
@@ -479,6 +480,29 @@ changes to the text you had, so `u` after a reload takes the reload back,
 rather than replaying old edits over a file they were never about. And only the
 part that differs is replaced, so a change at the bottom of the file leaves the
 cursor, the diagnostics and the syntax tree at the top of it where they were.
+
+## Brackets and quotes in pairs
+
+Type `(` and you get `()`, with the cursor between them. Type the `)` anyway,
+out of habit, and it steps over the one already there rather than making two -
+which is why this can be on by default without retraining your fingers. The
+same for `[`, `{`, and the quotes. `backspace` between an empty pair takes both
+halves, and `enter` between `{` and `}` puts the closer on a line of its own
+with an indented line between, which is the only thing anyone ever wants next.
+
+Each of those is held back wherever it would get in the way:
+
+- **Before a word**, a bracket does not pair. `(` typed in front of `value` is
+  wrapping it, and a `)` put in now would land in front of what it was meant
+  to go after.
+- **After a word character**, a quote does not pair: `don't`, and the prefix of
+  `b"bytes"` or `f"{x}"`, are not the start of a string.
+- **In Rust**, `'` does not pair at all. It is a lifetime far more often than a
+  character, and `&'a` coming out as `&'a'` is worse than typing a quote twice.
+- **Over a selection**, typing replaces it, as it always has.
+
+It is typing, so `.` repeats it and one insert is still one undo step.
+`:set noautopairs` turns it off.
 
 ## Trailing whitespace
 
