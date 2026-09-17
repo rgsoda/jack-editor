@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 50: brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 51: a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -82,6 +82,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^w c` `^w q` `^w o` | close this window / close it, quitting if it is the last / close all the others |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
+| `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>?` | every key, searchable |
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `<space>x` | close this buffer |
@@ -1045,7 +1046,10 @@ What it gives you, so far:
   in the status line. `]d` and `[d` go to the next and previous one, round the
   ends of the buffer, and say the whole first line of it. They stay on their
   text while you type: an edit above moves them with it, until the server says
-  something newer.
+  something newer. `<space>e` lists them all, from every open buffer, in a
+  picker: the one you are in first, the severity part of each row's text so
+  that typing `error` leaves the warnings out, and choosing one lands on the
+  character it is about.
 - **`gd` across files.** Asked of the server first, which knows types and the
   whole project; `^o` comes back as usual. If the server has no answer - still
   indexing, or a name it cannot resolve - the tree-sitter lookup below has a

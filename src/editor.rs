@@ -1564,6 +1564,40 @@ impl Editor {
         self.open_picker(Picker::new(Source::Symbols, items));
     }
 
+    /// `<space>e`: everything the language servers say is wrong, in every open
+    /// buffer - this one's first, in the order they come in the file, then the
+    /// rest. The severity is part of the text, so typing `error` is a way to
+    /// leave the warnings out.
+    pub fn open_diagnostics_picker(&mut self) {
+        let order = std::iter::once(self.current).chain((0..self.views.len()).filter(|&i| i != self.current));
+        let mut items = Vec::new();
+        for index in order {
+            let view = &self.views[index];
+            let Some(path) = view.doc.path.as_deref() else {
+                continue;
+            };
+            let shown = view.doc.display_name();
+            for diagnostic in &view.diagnostics {
+                let first = diagnostic.message.lines().next().unwrap_or_default();
+                let line = view.doc.char_to_line(diagnostic.start.min(view.doc.len_chars()));
+                items.push(Item {
+                    text: format!("{}: {first}", diagnostic.severity.name()),
+                    detail: format!("{shown}:{}", line + 1),
+                    id: diagnostic.start,
+                    target: path.display().to_string(),
+                });
+            }
+        }
+        if items.is_empty() {
+            self.message = match self.servers.is_empty() {
+                true => "no diagnostics - and no language server running".into(),
+                false => "no diagnostics".into(),
+            };
+            return;
+        }
+        self.open_picker(Picker::new(Source::Diagnostics, items));
+    }
+
     /// Every key, searchable by the key or by what it does.
     pub fn open_help_picker(&mut self) {
         let width = BINDINGS.iter().map(|b| b.keys.chars().count()).max().unwrap_or(0);
@@ -1706,6 +1740,15 @@ impl Editor {
                         self.jumps.push(origin);
                         self.switch_to(choice.id);
                     }
+                    Source::Diagnostics => match self.open_file(&choice.target) {
+                        Ok(()) => {
+                            self.jumps.push(origin);
+                            let at = choice.id.min(self.view().doc.len_chars());
+                            self.view_mut().sel = Selection::point(at);
+                            self.clamp_cursor();
+                        }
+                        Err(err) => self.message = format!("{err:#}"),
+                    },
                     Source::Symbols => {
                         self.jumps.push(origin);
                         self.goto_line(choice.id);
@@ -3539,6 +3582,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'f' => "the file picker",
         's' => "the search picker",
         'd' => "the symbol picker",
+        'e' => "the diagnostics picker",
         '?' => "the help picker",
         'n' => "line numbers",
         'x' => "close this buffer",
@@ -4742,6 +4786,54 @@ mod tests {
         assert_eq!(e.views()[1].doc.text.to_string(), "typed mine\n", "not overwritten");
         assert!(e.message.contains("one.txt reloaded"), "{}", e.message);
         assert!(e.message.contains("two.txt changed on disk"), "{}", e.message);
+    }
+
+    #[test]
+    fn the_diagnostics_picker_lists_this_buffer_first_and_goes_to_the_place() {
+        let dir = tempdir();
+        let one = write_file(&dir, "one.rs", "let a = 1;\nlet b = 2;\n");
+        let two = write_file(&dir, "two.rs", "fn f() {}\n");
+        let mut e = Editor::open(&[one.clone(), two.clone()]).unwrap();
+        let problem = |start: usize, severity: crate::lsp::Severity, message: &str| view::Diagnostic {
+            start,
+            end: start + 1,
+            severity,
+            message: message.into(),
+            raw: serde_json::Value::Null,
+        };
+        e.views[0].diagnostics = vec![problem(15, crate::lsp::Severity::Warning, "unused b\nhelp: remove it")];
+        e.views[1].diagnostics = vec![problem(3, crate::lsp::Severity::Error, "f is never called")];
+        e.switch_to(1);
+
+        e.open_diagnostics_picker();
+        let picker = e.picker.as_ref().expect("a picker");
+        let rows: Vec<(String, String)> = picker
+            .matches()
+            .iter()
+            .map(|m| (picker.item(m).text.clone(), picker.item(m).detail.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                // The buffer you are in first, the first line of each message.
+                ("error: f is never called".to_string(), "two.rs:1".to_string()),
+                ("warning: unused b".to_string(), "one.rs:2".to_string()),
+            ]
+        );
+
+        // Typing narrows by severity as well as by what it says.
+        e.paste("warn");
+        e.picker_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.current_index(), 0, "over to the other buffer");
+        assert_eq!(e.view().sel.head, 15, "on the character it is about");
+    }
+
+    #[test]
+    fn no_diagnostics_is_said_rather_than_an_empty_list() {
+        let mut e = Editor::scratch();
+        e.open_diagnostics_picker();
+        assert!(e.picker.is_none());
+        assert!(e.message.starts_with("no diagnostics"), "{}", e.message);
     }
 
     #[test]

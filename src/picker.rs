@@ -15,6 +15,10 @@ pub enum Source {
     Grep,
     /// What this buffer defines - functions, types, methods. `id` is the line.
     Symbols,
+    /// What the language servers say is wrong, in every open buffer. `target`
+    /// is the file and `id` the char offset the problem starts at: the file is
+    /// open, so the exact place is known and nothing has to be looked up.
+    Diagnostics,
     /// What a language server offers to do about the place the cursor is in.
     /// `id` is which of them, as an index into what the editor kept.
     Actions,
@@ -34,6 +38,7 @@ impl Source {
             Source::Symbols => "symbol",
             Source::References => "reference",
             Source::Actions => "action",
+            Source::Diagnostics => "diagnostic",
         }
     }
 
