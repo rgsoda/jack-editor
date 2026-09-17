@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 56: undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 57: project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
@@ -83,6 +83,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^w c` `^w q` `^w o` | close this window / close it, quitting if it is the last / close all the others |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
+| `<space>S` | pick a symbol anywhere in the project, as the language server finds them |
 | `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>h` | what the hunk under the cursor was, and is |
 | `<space>B` `:blame` | who last changed this line, when, and the commit's first line |
@@ -1343,6 +1344,22 @@ undo step, nothing written until you write it.
 An action that reaches a file you do not have open opens it. That is the point
 of the ones that do - an import added at the top of a module, a symbol renamed
 where it is defined rather than where you are looking.
+
+## Symbols across the project
+
+`<space>d` lists what this buffer defines, from the grammar. `<space>S` is the
+same question asked of the whole project, and only a language server can answer
+it: every keystroke sends `workspace/symbol` with what has been typed, and the
+list is whatever came back - the server's matching and the server's order, the
+way grep's list is grep's. Each row says what kind of thing the name is, what
+it is inside when the server says, and where. `enter` opens it at that line;
+`^v` and `^s` open it in a split.
+
+An answer to a query that has since been typed past is dropped rather than
+flashed up and replaced, and only the first two hundred of a long answer are
+shown. The buffer's own server is asked first, and any other running server
+if it has none - so from a README in a Rust project, rust-analyzer still
+answers.
 
 ## Every use of a name, and renaming it
 

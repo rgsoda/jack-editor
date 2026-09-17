@@ -26,6 +26,10 @@ pub enum Source {
     /// item is - `target` the path, `id` the line - but a list already in
     /// hand, so typing filters it rather than asking the server again.
     References,
+    /// Names anywhere in the project, as a language server finds them for
+    /// the query. Live, like grep: every keystroke asks again. `target` is the
+    /// path and `id` the line.
+    Workspace,
 }
 
 impl Source {
@@ -39,6 +43,7 @@ impl Source {
             Source::References => "reference",
             Source::Actions => "action",
             Source::Diagnostics => "diagnostic",
+            Source::Workspace => "project symbol",
         }
     }
 
@@ -46,7 +51,7 @@ impl Source {
     /// items already in hand. A live source replaces its whole list on every
     /// keystroke, and nothing here scores or reorders it.
     pub fn is_live(self) -> bool {
-        matches!(self, Source::Grep)
+        matches!(self, Source::Grep | Source::Workspace)
     }
 }
 

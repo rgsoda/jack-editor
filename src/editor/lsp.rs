@@ -9,8 +9,12 @@ use crate::complete::{self, Completion};
 use crate::info::{self, Info};
 use crate::lsp::{
     self, Client, CodeAction, Encoding, Event, Location, RawDiagnostic, Request, Signature, State,
-    Suggestion, TextEdit, WorkspaceEdit,
+    Suggestion, Symbol, TextEdit, WorkspaceEdit,
 };
+
+/// The most project symbols put in the picker at once. A server asked about
+/// one letter can answer with thousands, and the one wanted is near the top.
+const SYMBOLS_SHOWN: usize = 200;
 use crate::picker::{Item, Picker, Source};
 use crate::syntax::language_for_path;
 use crate::view::{Diagnostic, Lsp, Selection};
@@ -160,6 +164,7 @@ impl Editor {
             Event::Rename { request, edit } => self.rename_answer(request, edit, encoding),
             Event::CodeActions { request, actions } => self.code_actions_answer(request, actions),
             Event::ResolvedAction { request, action } => self.resolved_action(request, action),
+            Event::WorkspaceSymbols { request, symbols } => self.workspace_symbols_answer(request, symbols),
             Event::ApplyEdit { id, edit } => self.apply_edit_request(server, id, edit, encoding),
         }
     }
@@ -673,6 +678,60 @@ impl Editor {
         };
         if let Some(client) = self.servers.get(server) {
             client.respond(id, result);
+        }
+    }
+
+    /// Ask for the names across the project that match `query`, for the
+    /// workspace symbol picker. The buffer's own server first; any other that
+    /// can answer if this buffer has none, since a Rust project's names are
+    /// worth finding from its README too.
+    pub(super) fn lsp_workspace_symbols(&mut self, query: String, token: u64) -> bool {
+        if !self.lsp_enabled {
+            return false;
+        }
+        self.lsp_sync();
+        let own = match self.view().lsp {
+            Lsp::Open { server, .. } => Some(server),
+            _ => None,
+        };
+        let others = 0..self.servers.len();
+        let request = Request::WorkspaceSymbol { token };
+        let params = json!({ "query": query });
+        own.into_iter().chain(others).any(|server| {
+            self.servers[server].request("workspace/symbol", "workspaceSymbolProvider", params.clone(), request)
+        })
+    }
+
+    /// What matched, into the picker - as long as it is still the picker that
+    /// asked, and nothing has been typed into it since.
+    fn workspace_symbols_answer(&mut self, request: Request, symbols: Vec<Symbol>) {
+        let Request::WorkspaceSymbol { token } = request else {
+            return;
+        };
+        if token != self.token() || !self.picker.as_ref().is_some_and(|picker| picker.source == Source::Workspace) {
+            return;
+        }
+        let root = std::env::current_dir().ok();
+        let items: Vec<Item> = symbols
+            .into_iter()
+            .take(SYMBOLS_SHOWN)
+            .map(|symbol| {
+                let shown = root
+                    .as_deref()
+                    .and_then(|root| symbol.location.path.strip_prefix(root).ok())
+                    .unwrap_or(symbol.location.path.as_path());
+                let line = symbol.location.position.0 as usize;
+                let container = symbol.container.map(|name| format!("{name} ")).unwrap_or_default();
+                Item {
+                    text: symbol.name,
+                    detail: format!("{} {container}{}:{}", symbol.kind, shown.display(), line + 1).trim_start().to_string(),
+                    id: line + 1,
+                    target: symbol.location.path.display().to_string(),
+                }
+            })
+            .collect();
+        if let Some(picker) = self.picker.as_mut() {
+            picker.extend(items, true);
         }
     }
 
@@ -1398,6 +1457,45 @@ let n = count();
         assert_eq!(shown, ["fn count() {}", "let n = count();", "use crate::count;"]);
         let lines: Vec<usize> = rows.iter().map(|item| item.id).collect();
         assert_eq!(lines, [1, 2, 1], "line numbers, counted from one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn space_capital_s_asks_the_server_as_you_type() {
+        let (mut editor, dir, _) = editor_in_a_project("symbols", &[("a.rs", "fn main() {}\n"), ("b.rs", "struct Counter;\n")]);
+        let (mut client, written) = Client::detached("fake");
+        client.ready_with(json!({ "workspaceSymbolProvider": true }));
+        editor.servers[0] = client;
+
+        let key = |c| crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char(c), crossterm::event::KeyModifiers::NONE);
+        editor.open_workspace_symbol_picker();
+        editor.picker_input(key('C'));
+        let first = asked_for(&written, "workspace/symbol");
+        editor.picker_input(key('o'));
+        let second = asked_for(&written, "workspace/symbol");
+
+        let found = json!([{
+            "name": "Counter", "kind": 23, "containerName": "b",
+            "location": { "uri": lsp::uri(&dir.join("b.rs")), "range": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 14 } } },
+        }]);
+        // The answer to "C" arrives after "Co" was typed: it is about a query
+        // nobody is looking at any more.
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": first, "result": [{
+            "name": "Stale", "kind": 12,
+            "location": { "uri": lsp::uri(&dir.join("a.rs")), "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } },
+        }]})));
+        assert!(editor.picker.as_ref().expect("a picker").matches().is_empty());
+        editor.lsp_message(0, Some(json!({ "jsonrpc": "2.0", "id": second, "result": found })));
+
+        let picker = editor.picker.as_ref().expect("a picker");
+        let rows: Vec<&Item> = picker.matches().iter().map(|m| picker.item(m)).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "Counter");
+        assert!(rows[0].detail.starts_with("struct b "), "{}", rows[0].detail);
+        assert!(rows[0].detail.ends_with("b.rs:1"), "{}", rows[0].detail);
+
+        editor.picker_input(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE));
+        assert_eq!(editor.view().doc.path.as_deref(), Some(dir.join("b.rs").as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

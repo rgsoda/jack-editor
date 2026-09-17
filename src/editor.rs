@@ -1561,6 +1561,12 @@ impl Editor {
         self.open_picker(Picker::new(Source::Buffers, items));
     }
 
+    /// `<space>S`: names across the whole project, found by the language
+    /// server as you type.
+    pub fn open_workspace_symbol_picker(&mut self) {
+        self.open_picker(Picker::live(Source::Workspace));
+    }
+
     /// `<space>d`: what this buffer defines, to jump to. The same tags query
     /// `gd` reads, asked for the whole file - so a language we can highlight is
     /// a language we can list.
@@ -1675,6 +1681,15 @@ impl Editor {
         if pattern.is_empty() {
             return;
         }
+        if self.picker.as_ref().is_some_and(|picker| picker.source == Source::Workspace) {
+            if !self.lsp_workspace_symbols(pattern, token) {
+                self.message = "no language server that knows the project's symbols".into();
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.mark_complete();
+                }
+            }
+            return;
+        }
         let Some(jobs) = self.jobs.clone() else {
             return;
         };
@@ -1779,7 +1794,7 @@ impl Editor {
                         Ok(()) => self.jumps.push(origin),
                         Err(err) => self.message = format!("{err:#}"),
                     },
-                    Source::Grep | Source::References => match self.open_file(&choice.target) {
+                    Source::Grep | Source::References | Source::Workspace => match self.open_file(&choice.target) {
                         // Line numbers count from one; lines here count from zero.
                         Ok(()) => {
                             self.jumps.push(origin);
@@ -3710,6 +3725,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'f' => "the file picker",
         's' => "the search picker",
         'd' => "the symbol picker",
+        'S' => "the project symbol picker",
         'h' => "what this change was",
         'B' => "who changed this line",
         'e' => "the diagnostics picker",

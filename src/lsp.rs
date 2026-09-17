@@ -246,6 +246,17 @@ pub struct Location {
     pub position: (u32, u32),
 }
 
+/// A name a server knows of somewhere in the project.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: &'static str,
+    /// What it is inside - the type of a method, the module of a function -
+    /// when the server says.
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 /// One thing a server offers to finish a word with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Suggestion {
@@ -355,6 +366,10 @@ pub enum Request {
     /// about the same word - typing more of it since is fine and expected,
     /// since a longer prefix only filters what came back.
     Completion { view: usize, start: usize },
+    /// `<space>S`: names across the whole project matching what has been
+    /// typed. `token` is the picker's search it answers; a search typed since
+    /// has retired it.
+    WorkspaceSymbol { token: u64 },
 }
 
 /// What a message from a server comes to.
@@ -378,6 +393,7 @@ pub enum Event {
     /// request, so it wants an answer - `id` is what to answer.
     ApplyEdit { id: Value, edit: WorkspaceEdit },
     Rename { request: Request, edit: WorkspaceEdit },
+    WorkspaceSymbols { request: Request, symbols: Vec<Symbol> },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
 }
@@ -566,7 +582,7 @@ impl Client {
                     },
                 },
                 "window": { "workDoneProgress": true },
-                "workspace": { "configuration": true, "workspaceFolders": true },
+                "workspace": { "configuration": true, "workspaceFolders": true, "symbol": { "dynamicRegistration": false } },
             },
         });
         let id = self.take_id(Request::Initialize);
@@ -726,6 +742,7 @@ impl Client {
             // Nothing comes back from a command worth acting on: what it does
             // arrives as a `workspace/applyEdit` of its own.
             Request::Execute => Event::Nothing,
+            Request::WorkspaceSymbol { .. } => Event::WorkspaceSymbols { request, symbols: symbols(&result) },
         }
     }
 
@@ -1042,6 +1059,49 @@ fn units_to_chars(text: &str, units: usize) -> usize {
         seen += c.len_utf16();
     }
     text.chars().count()
+}
+
+/// The answer to `workspace/symbol`, in either shape: `SymbolInformation`,
+/// which always has a range, or `WorkspaceSymbol`, whose location may be only
+/// a file. A file alone is taken to mean its top.
+fn symbols(result: &Value) -> Vec<Symbol> {
+    let Some(list) = result.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|value| {
+            let location = &value["location"];
+            let path = path_of(location["uri"].as_str()?)?;
+            let position = position(&location["range"]["start"]).unwrap_or((0, 0));
+            Some(Symbol {
+                name: value["name"].as_str()?.to_string(),
+                kind: symbol_kind(value["kind"].as_u64()),
+                container: value["containerName"].as_str().filter(|name| !name.is_empty()).map(str::to_string),
+                location: Location { path, position },
+            })
+        })
+        .collect()
+}
+
+/// `SymbolKind`, in a word.
+fn symbol_kind(number: Option<u64>) -> &'static str {
+    match number.unwrap_or(0) {
+        1 => "file",
+        2..=4 => "mod",
+        5 => "class",
+        6 => "method",
+        7 | 8 => "field",
+        9 => "new",
+        10 => "enum",
+        11 => "trait",
+        12 => "fn",
+        13 => "var",
+        14 => "const",
+        22 => "variant",
+        23 => "struct",
+        26 => "type",
+        _ => "",
+    }
 }
 
 /// `CompletionItemKind`, in the words the popup already uses for what the
