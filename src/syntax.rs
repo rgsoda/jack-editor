@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use ropey::Rope;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -376,11 +376,11 @@ fn align_column(rope: &Rope, node: Node) -> Option<usize> {
     Some(crate::view::display_col(&line, after))
 }
 
-/// An injected region, parsed: the language it is in and the tree for it.
-/// Built on demand and dropped after - see `Syntax::layers_at`.
+/// An injected region, parsed: the language it is in and the tree for it. The
+/// tree is shared with the cache it came from - see `Syntax::parse_injected`.
 struct Layer {
     compiled: Rc<Compiled>,
-    tree: Tree,
+    tree: Rc<Tree>,
 }
 
 /// The parts of a highlight pass that do not change as injections recurse.
@@ -399,7 +399,24 @@ pub struct Syntax {
     compiled: RefCell<HashMap<String, Option<Rc<Compiled>>>>,
     /// Reused for injected regions, which are parsed on demand.
     scratch: RefCell<Parser>,
+    /// Injected trees, keyed by the language and the exact ranges they cover.
+    /// Scrolling asks for the same regions frame after frame, and an untouched
+    /// `<script>` or macro body should be parsed once for the whole scroll.
+    /// Emptied on every edit: a tree is only good for the text it came from.
+    injected: RefCell<HashMap<LayerKey, Option<Rc<Tree>>>>,
+    /// How many injected parses have actually run. Only the tests read it, and
+    /// what they read it for is that the number stops going up.
+    parses: Cell<usize>,
 }
+
+/// What an injected tree is remembered by: the language, and the ranges it
+/// covers. That pair names the text it was parsed from.
+type LayerKey = (String, Vec<(usize, usize)>);
+
+/// How many injected trees to keep before starting over. A screenful is a
+/// handful; it is walking the whole file for the definition list that can turn
+/// up hundreds, and those are worth dropping rather than holding.
+const CACHED_LAYERS: usize = 512;
 
 impl Syntax {
     pub fn new(config: &'static LanguageConfig, rope: &Rope, theme: &Theme) -> Result<Self> {
@@ -419,6 +436,8 @@ impl Syntax {
             tree,
             compiled: RefCell::new(compiled),
             scratch: RefCell::new(Parser::new()),
+            injected: RefCell::new(HashMap::new()),
+            parses: Cell::new(0),
         })
     }
 
@@ -440,6 +459,8 @@ impl Syntax {
         if let Some(tree) = parse(&mut self.parser, rope, Some(&self.tree)) {
             self.tree = tree;
         }
+        // Every injected tree was parsed from text that has just moved.
+        self.injected.borrow_mut().clear();
     }
 
     /// Styles for one byte range, normally just the visible rows.
@@ -855,7 +876,7 @@ impl Syntax {
 
             // An injected layer paints over its host, so the inner language's
             // idea of a token wins inside the injected region.
-            if let Some(tree) = self.parse_injected(&child, rope, &ranges) {
+            if let Some(tree) = self.parse_injected(&language, &child, rope, &ranges) {
                 self.paint(frame, &child, tree.root_node(), styles, depth + 1);
             }
         }
@@ -956,24 +977,56 @@ impl Syntax {
         found
     }
 
-    /// Parse `ranges` with an injected language, using the scratch parser.
-    fn parse_injected(&self, child: &Compiled, rope: &Rope, ranges: &[tree_sitter::Range]) -> Option<Tree> {
-        let mut parser = self.scratch.borrow_mut();
-        if parser.set_language(&child.language).is_err() || parser.set_included_ranges(ranges).is_err() {
-            return None;
+    /// Parse `ranges` with an injected language, using the scratch parser -
+    /// or hand back the tree from last time, since the ranges name their own
+    /// text and nothing has edited it since the cache was emptied.
+    ///
+    /// A failed parse is cached too, as `None`: a language whose grammar
+    /// cannot make sense of the region will fail again on the next frame.
+    fn parse_injected(
+        &self,
+        language: &str,
+        child: &Compiled,
+        rope: &Rope,
+        ranges: &[tree_sitter::Range],
+    ) -> Option<Rc<Tree>> {
+        let key = (
+            language.to_string(),
+            ranges.iter().map(|r| (r.start_byte, r.end_byte)).collect::<Vec<_>>(),
+        );
+        if let Some(tree) = self.injected.borrow().get(&key) {
+            return tree.clone();
         }
-        let tree = parse(&mut parser, rope, None);
-        // Leave the scratch parser unrestricted for the next caller.
-        let _ = parser.set_included_ranges(&[]);
+
+        let tree = {
+            let mut parser = self.scratch.borrow_mut();
+            if parser.set_language(&child.language).is_err()
+                || parser.set_included_ranges(ranges).is_err()
+            {
+                None
+            } else {
+                let tree = parse(&mut parser, rope, None).map(Rc::new);
+                // Leave the scratch parser unrestricted for the next caller.
+                let _ = parser.set_included_ranges(&[]);
+                tree
+            }
+        };
+        self.parses.set(self.parses.get() + 1);
+
+        let mut cache = self.injected.borrow_mut();
+        if cache.len() >= CACHED_LAYERS {
+            cache.clear();
+        }
+        cache.insert(key, tree.clone());
         tree
     }
 
     /// The injected layers covering `at`, outermost first: JavaScript inside a
     /// `<script>`, and whatever that JavaScript injects in turn.
     ///
-    /// Parsed here and thrown away after, the same way highlighting does it.
-    /// Injected regions are small, and a layer set kept across edits is a
-    /// layer set that can go stale.
+    /// Parsed through the same cache highlighting uses, and the layer set
+    /// itself is thrown away after: what is worth keeping is the tree, which
+    /// the next caller will look up by the ranges it covers.
     fn layers_at(&self, rope: &Rope, at: usize, theme: &Theme) -> Vec<Layer> {
         let range = at..(at + 1).min(rope.len_bytes()).max(at);
         let mut layers: Vec<Layer> = Vec::new();
@@ -988,7 +1041,7 @@ impl Syntax {
                     .filter(|(_, ranges)| ranges.iter().any(|r| r.start_byte <= at && at < r.end_byte))
                     .find_map(|(language, ranges)| {
                         let child = self.compiled_for(&language, theme)?;
-                        let tree = self.parse_injected(&child, rope, &ranges)?;
+                        let tree = self.parse_injected(&language, &child, rope, &ranges)?;
                         Some(Layer { compiled: child, tree })
                     })
             };
@@ -1025,7 +1078,7 @@ impl Syntax {
             .into_iter()
             .filter_map(|(language, ranges)| {
                 let child = self.compiled_for(&language, theme)?;
-                let tree = self.parse_injected(&child, rope, &ranges)?;
+                let tree = self.parse_injected(&language, &child, rope, &ranges)?;
                 Some(Layer { compiled: child, tree })
             })
             .collect()
@@ -1484,6 +1537,66 @@ mod tests {
         let at = f.doc.text.line_to_byte(3);
         let found = f.syntax.definition(&f.doc.text, at, "alpha", true, &f.theme);
         assert_eq!(found.map(|b| f.doc.text.byte_to_line(b)), Some(2));
+    }
+
+    #[test]
+    fn an_injected_region_is_parsed_once_and_then_remembered() {
+        // Scrolling repaints the same rows, and the macro bodies in them do
+        // not change between frames. The second pass should cost no parses.
+        let f = Fixture::new("fn main() { outer!(inner!(Foo::new(1))); }\n");
+        let whole = 0..f.doc.text.len_bytes();
+        f.syntax.highlights(&f.doc.text, whole.clone(), &f.theme);
+        let first = f.syntax.parses.get();
+        assert!(first > 0, "the macro bodies were parsed at all");
+
+        f.syntax.highlights(&f.doc.text, whole.clone(), &f.theme);
+        assert_eq!(f.syntax.parses.get(), first, "the second pass parsed nothing");
+
+        // And the indent walk asks for the same regions the painting did.
+        f.syntax.indent_level(&f.doc.text, 20, 0..whole.end, &f.theme);
+        assert_eq!(f.syntax.parses.get(), first, "nor did the indent walk");
+    }
+
+    #[test]
+    fn an_edit_throws_the_injected_trees_away() {
+        // The ranges are byte offsets into text that has just moved, so a
+        // remembered tree after an edit is a tree that lies.
+        let mut f = Fixture::new("fn main() { outer!(Foo::new(1)); }\n");
+        let whole = 0..f.doc.text.len_bytes();
+        f.syntax.highlights(&f.doc.text, whole, &f.theme);
+        let first = f.syntax.parses.get();
+
+        f.insert(0, "// a line about it\n");
+        let whole = 0..f.doc.text.len_bytes();
+        f.syntax.highlights(&f.doc.text, whole, &f.theme);
+        assert!(f.syntax.parses.get() > first, "parsed again after the edit");
+        assert_eq!(f.color_of("new"), Some(Color::Blue), "and still right");
+    }
+
+    #[test]
+    fn repainting_a_macro_heavy_file_is_worth_measuring() {
+        // A screenful of macro calls, painted the way scrolling paints it.
+        let mut text = String::from("fn main() {\n");
+        for i in 0..50 {
+            text.push_str(&format!("    assert_eq!(left!({i}), right!(Foo::new({i})));\n"));
+        }
+        text.push_str("}\n");
+        let f = Fixture::new(&text);
+        let whole = 0..f.doc.text.len_bytes();
+
+        let cold = std::time::Instant::now();
+        f.syntax.highlights(&f.doc.text, whole.clone(), &f.theme);
+        let cold = cold.elapsed();
+        let parsed = f.syntax.parses.get();
+
+        let warm = std::time::Instant::now();
+        for _ in 0..10 {
+            f.syntax.highlights(&f.doc.text, whole.clone(), &f.theme);
+        }
+        let warm = warm.elapsed() / 10;
+        assert_eq!(f.syntax.parses.get(), parsed, "no reparsing while scrolling");
+        println!("{parsed} layers: cold {cold:?}, warm {warm:?}");
+        assert!(warm < cold, "the remembered frame is the cheaper one");
     }
 
     #[test]
