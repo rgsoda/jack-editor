@@ -45,3 +45,16 @@
   ")"
   "}"
 ] @outdent
+
+; The hanging indent Python's own style guide contrasts with the aligned one:
+; an argument list that starts on the line of its open paren lines the rest up
+; under the first argument. Left empty, the paren is a step instead.
+[
+  (argument_list)
+  (parameters)
+  (list)
+  (set)
+  (tuple)
+  (dictionary)
+  (parenthesized_expression)
+] @align

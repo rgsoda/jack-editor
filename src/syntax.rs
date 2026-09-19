@@ -201,9 +201,10 @@ struct Compiled {
     /// Indices of the `@injection.content` and `@injection.language` captures.
     content_capture: Option<u32>,
     language_capture: Option<u32>,
-    /// Indices of the `@indent` and `@outdent` captures.
+    /// Indices of the `@indent`, `@outdent` and `@align` captures.
     indent_capture: Option<u32>,
     outdent_capture: Option<u32>,
+    align_capture: Option<u32>,
     /// Indices of the `@local.scope` and `@local.definition` captures, and of
     /// the tags query's `@name`.
     scope_capture: Option<u32>,
@@ -245,9 +246,13 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
                 .with_context(|| format!("compiling {} indent query", config.name))?,
         ),
     };
-    let (indent_capture, outdent_capture) = match &indents {
-        Some(query) => (capture(query, "indent"), capture(query, "outdent")),
-        None => (None, None),
+    let (indent_capture, outdent_capture, align_capture) = match &indents {
+        Some(query) => (
+            capture(query, "indent"),
+            capture(query, "outdent"),
+            capture(query, "align"),
+        ),
+        None => (None, None, None),
     };
 
     let compile_query = |source: &'static str, what: &str| -> Result<Option<Query>> {
@@ -279,6 +284,7 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
         language_capture,
         indent_capture,
         outdent_capture,
+        align_capture,
         scope_capture,
         definition_capture,
         name_capture,
@@ -334,6 +340,40 @@ fn kind_for(capture: &str) -> Option<&'static str> {
         _ => return None,
     };
     Some(kind)
+}
+
+/// What the grammar makes of a line's indentation: so many steps of the file's
+/// indent width, counted from a base column when an `@align` node gives one.
+///
+/// The steps are signed because a base can be overshot: the `)` that closes an
+/// aligned call sits a step back from the column its arguments line up on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Indentation {
+    pub steps: isize,
+    pub base: Option<usize>,
+}
+
+impl Indentation {
+    /// The column this lands on, for an indent of `width` per step.
+    pub fn column(&self, width: usize) -> usize {
+        let base = self.base.unwrap_or(0) as isize;
+        (base + self.steps * width as isize).max(0) as usize
+    }
+}
+
+/// The column an `@align` node lines its continuation lines up on: just past
+/// its opening delimiter. `None` when nothing follows that delimiter on its
+/// line, because then there is nothing to line up under and the node is only
+/// worth a step.
+fn align_column(rope: &Rope, node: Node) -> Option<usize> {
+    let row = node.start_position().row;
+    let open = rope.byte_to_char(node.start_byte());
+    let after = open + 1 - rope.line_to_char(row);
+    let line = rope.line(row).to_string();
+    if line.chars().skip(after).all(char::is_whitespace) {
+        return None;
+    }
+    Some(crate::view::display_col(&line, after))
 }
 
 /// An injected region, parsed: the language it is in and the tree for it.
@@ -675,36 +715,64 @@ impl Syntax {
         self.root.indents.is_some()
     }
 
-    /// How many steps of indentation the line covering `line` (a byte range)
-    /// deserves, reading the tree at `at`. `None` when the grammar has nothing
-    /// to say: no indent query, or a tree too broken here to trust.
+    /// What the line covering `line` (a byte range) should be indented to,
+    /// reading the tree at `at`. `None` when the grammar has nothing to say:
+    /// no indent query, or a tree too broken here to trust.
     ///
     /// Every `@indent` ancestor that started on an earlier line is a step; an
     /// `@outdent` node starting on this line takes one back, which is what
-    /// puts a closing brace under the thing it closes.
-    pub fn indent_level(&self, rope: &Rope, at: usize, line: Range<usize>, theme: &Theme) -> Option<usize> {
+    /// puts a closing brace under the thing it closes. An `@align` ancestor
+    /// with something after its opening delimiter gives a column instead.
+    pub fn indent_level(
+        &self,
+        rope: &Rope,
+        at: usize,
+        line: Range<usize>,
+        theme: &Theme,
+    ) -> Option<Indentation> {
         // The host language indents its way to the injected region - a
         // `<script>` body starts one step in - and the injected language
         // indents inside it. Both count, so both are asked.
-        let mut steps = self.steps(&self.root, self.tree.root_node(), rope, at, line.clone())?;
+        let mut total = self.steps(&self.root, self.tree.root_node(), rope, at, line.clone())?;
         for layer in self.layers_at(rope, at, theme) {
-            steps += self.steps(&layer.compiled, layer.tree.root_node(), rope, at, line.clone()).unwrap_or(0);
+            let Some(layer) =
+                self.steps(&layer.compiled, layer.tree.root_node(), rope, at, line.clone())
+            else {
+                continue;
+            };
+            // A base is a column in the file, not a depth: everything outside
+            // the aligning node is already in it, so it replaces what the
+            // outer layers counted rather than adding to it.
+            match layer.base {
+                Some(_) => total = layer,
+                None => total.steps += layer.steps,
+            }
         }
-        Some(steps)
+        Some(total)
     }
 
     /// One layer's contribution: the `@indent` ancestors of `at` in this tree
     /// that started on an earlier line, less the `@outdent` nodes that start
-    /// on this one.
-    fn steps(&self, compiled: &Compiled, root: Node, rope: &Rope, at: usize, line: Range<usize>) -> Option<usize> {
+    /// on this one, and the column of the innermost `@align` ancestor that has
+    /// one.
+    fn steps(
+        &self,
+        compiled: &Compiled,
+        root: Node,
+        rope: &Rope,
+        at: usize,
+        line: Range<usize>,
+    ) -> Option<Indentation> {
         let query = compiled.indents.as_ref()?;
         let (indent, outdent) = (compiled.indent_capture?, compiled.outdent_capture);
+        let align = compiled.align_capture;
 
         // One query run, restricted to the line: tree-sitter returns every
         // match that *overlaps* that range, which is exactly the enclosing
         // blocks plus whatever starts on the line itself.
         let mut indents: Vec<usize> = Vec::new();
         let mut outdents: Vec<usize> = Vec::new();
+        let mut aligns: Vec<usize> = Vec::new();
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(line);
         let mut matches = cursor.captures(query, root, RopeProvider(rope));
@@ -714,6 +782,8 @@ impl Syntax {
                 indents.push(capture.node.id());
             } else if Some(capture.index) == outdent {
                 outdents.push(capture.node.id());
+            } else if Some(capture.index) == align {
+                aligns.push(capture.node.id());
             }
         }
 
@@ -739,9 +809,17 @@ impl Syntax {
         // Counted separately and subtracted at the end: the walk meets the
         // closing brace before the blocks that put it there, so taking one off
         // as we go would take it off nothing.
-        let (mut steps, mut back) = (0usize, 0usize);
+        let (mut steps, mut back, mut base) = (0isize, 0isize, None);
         loop {
             let starts_here = node.start_position().row == row;
+            if !starts_here && aligns.contains(&node.id()) {
+                // An aligning node only aligns when there is something to line
+                // up under. An open paren with nothing after it is a step.
+                if let Some(column) = align_column(rope, node) {
+                    base = Some(column);
+                    break;
+                }
+            }
             if !starts_here && indents.contains(&node.id()) {
                 steps += 1;
             }
@@ -753,7 +831,7 @@ impl Syntax {
                 None => break,
             }
         }
-        Some(steps.saturating_sub(back))
+        Some(Indentation { steps: steps - back, base })
     }
 
     fn paint(
@@ -1089,6 +1167,11 @@ mod tests {
     use crate::buffer::Document;
     use crossterm::style::Color;
 
+    /// A plain step count, with no column to align to.
+    fn steps(n: isize) -> Option<Indentation> {
+        Some(Indentation { steps: n, base: None })
+    }
+
     struct Fixture {
         doc: Document,
         syntax: Syntax,
@@ -1174,7 +1257,7 @@ mod tests {
             let start = f.doc.text.line_to_byte(1);
             let end = f.doc.text.line_to_byte(2);
             let level = f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme);
-            assert_eq!(level, Some(1), "{language}: one step on line two");
+            assert_eq!(level, steps(1), "{language}: one step on line two");
         }
     }
 
@@ -1304,13 +1387,78 @@ mod tests {
             f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme)
         };
         // Line 1 is `<script>`, inside `<html>` alone.
-        assert_eq!(level(1), Some(1), "the script tag, one step in");
+        assert_eq!(level(1), steps(1), "the script tag, one step in");
         // Line 2 is the function header: inside html and the script element.
-        assert_eq!(level(2), Some(2), "javascript inside the script element");
+        assert_eq!(level(2), steps(2), "javascript inside the script element");
         // Line 3 is the body: those two, and JavaScript's own block.
-        assert_eq!(level(3), Some(3), "and one more for the block");
+        assert_eq!(level(3), steps(3), "and one more for the block");
         // Line 4 is the closing brace, which JavaScript pulls back out.
-        assert_eq!(level(4), Some(2), "the closing brace comes back out");
+        assert_eq!(level(4), steps(2), "the closing brace comes back out");
+    }
+
+    #[test]
+    fn a_continuation_line_lines_up_under_the_first_argument() {
+        // `foo(bar,` puts something after the paren, so the next line wants
+        // the column of `bar` - a tab would land it under `foo` instead.
+        let text = "fn main() {\n    foo(bar,\nbaz);\n}\n";
+        let f = Fixture::with_language("rust", text);
+        let level = |line: usize| {
+            let start = f.doc.text.line_to_byte(line);
+            let end = f.doc.text.line_to_byte(line + 1);
+            f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme)
+        };
+        let aligned = level(2).expect("the tree has something to say");
+        assert_eq!(aligned.base, Some(8), "the column just past the paren");
+        assert_eq!(aligned.column(4), 8, "which is where the line goes");
+    }
+
+    #[test]
+    fn an_empty_paren_is_a_step_and_not_a_column() {
+        // Nothing after the paren, so there is nothing to line up under and
+        // the old rule stands: one step in from the line that opened it.
+        let text = "fn main() {\n    foo(\nbar,\n);\n}\n";
+        let f = Fixture::with_language("rust", text);
+        let level = |line: usize| {
+            let start = f.doc.text.line_to_byte(line);
+            let end = f.doc.text.line_to_byte(line + 1);
+            f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme)
+        };
+        assert_eq!(level(2), steps(2), "the block and the argument list");
+        assert_eq!(level(3), steps(1), "the closing paren comes back out");
+    }
+
+    #[test]
+    fn the_paren_that_closes_an_aligned_call_sits_a_step_back() {
+        // The `)` is an @outdent, and against a column that means a step back
+        // from it: under `foo`, not under `bar`.
+        let text = "fn main() {\n    foo(bar,\n        baz\n);\n}\n";
+        let f = Fixture::with_language("rust", text);
+        let start = f.doc.text.line_to_byte(3);
+        let end = f.doc.text.line_to_byte(4);
+        let closing = f
+            .syntax
+            .indent_level(&f.doc.text, start, start..end, &f.theme)
+            .expect("the tree has something to say");
+        assert_eq!(closing.base, Some(8), "counted from the aligned column");
+        assert_eq!(closing.steps, -1, "and one step back out of it");
+        assert_eq!(closing.column(4), 4, "which is where `foo` starts");
+    }
+
+    #[test]
+    fn a_block_inside_an_aligned_call_steps_from_the_column() {
+        // The alignment is a column in the file, so what nests inside it
+        // counts its steps from there rather than from the left margin.
+        let text = "fn main() {\n    foo(bar, || {\nbaz\n});\n}\n";
+        let f = Fixture::with_language("rust", text);
+        let start = f.doc.text.line_to_byte(2);
+        let end = f.doc.text.line_to_byte(3);
+        let inner = f
+            .syntax
+            .indent_level(&f.doc.text, start, start..end, &f.theme)
+            .expect("the tree has something to say");
+        assert_eq!(inner.base, Some(8), "the argument list still aligns");
+        assert_eq!(inner.steps, 1, "and the closure block is a step in it");
+        assert_eq!(inner.column(4), 12);
     }
 
     #[test]

@@ -2803,7 +2803,7 @@ impl Editor {
         let mut targets = Vec::new();
         for line in first..=last {
             if let Some(level) = self.view().indent_level(line, &self.theme) {
-                targets.push((line, level * indent.width));
+                targets.push((line, level.column(indent.width)));
             }
         }
         if !self.view().has_indent_rules() {
@@ -2864,7 +2864,7 @@ impl Editor {
         let indent = self.indent();
         let (line, _) = self.view().cursor_coords();
         let column = match self.view().indent_level(line, &self.theme) {
-            Some(level) => level * indent.width,
+            Some(level) => level.column(indent.width),
             None => match self.guessed_indent_column(line) {
                 Some(column) => column,
                 None => return,

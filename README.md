@@ -286,8 +286,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   it can be inverted without the document and undo lands the cursor where you
   left it. A `Step` is one command's worth of them, and a step is what `u`
   takes back.
-- `queries/<language>/indents.scm` — which nodes indent what they contain and
-  which tokens come back out. Ours, not the grammar's.
+- `queries/<language>/indents.scm` — which nodes indent what they contain,
+  which tokens come back out, and which line their contents up on a column.
+  Ours, not the grammar's.
 - `syntax.rs` — tree-sitter. Holds the parser and tree, patches the tree with
   each applied edit and reparses incrementally, and runs the highlight query
   over the visible byte range only. Injected regions (a macro body, code in a
@@ -1021,6 +1022,40 @@ The rule is one walk up the tree. The grammar's `indents.scm` marks nodes
 rather than under the body. The two are counted separately and subtracted at the
 end — the walk meets the brace before the blocks that put it there, so taking
 one off as you go takes it off nothing. That was a bug for about ten minutes.
+
+### Aligning, not stepping
+
+A step is the wrong answer when the line before put something after its opening
+paren. Then the continuation wants a *column*:
+
+```rust
+render(first,
+       second,      // under `first`, not one tab in from `render`
+       third);
+```
+
+so `indents.scm` has a third capture. `@align` marks the node whose delimiter
+you line up past — an argument list, a parameter list, a tuple, a Python
+`dictionary`. An `@align` ancestor that began on an earlier line hands back the
+column just after its first character, and the walk stops there: that column is
+a place in the file, so everything outside it is already baked in and only the
+steps *inside* it still count.
+
+The condition is what makes it liveable. `@align` only aligns when something
+follows the delimiter on its own line. Left empty, the node falls through and is
+an ordinary `@indent`, which is the hanging-indent style:
+
+```rust
+tally(
+    counted,        // a step, because there was nothing after `(`
+);
+```
+
+Both are in every style guide and neither is wrong, so the file decides and
+jack follows. `@outdent` still works against a column, as a step back out of it:
+the `)` closing an aligned call lands under `render`, one step left of `first`.
+An indent of tabs writes the column as tabs then spaces, which is the only way
+to hit column 11 on a tab stop of 4.
 
 The queries are in `queries/<language>/indents.scm` and are ours: the grammar
 crates ship highlights, injections and tags, but indent queries are an editor's
@@ -1926,9 +1961,6 @@ was at first:
 
 ## Next
 
-- Indent queries that can *align* rather than step: a continuation line under
-  an open paren wants the column, not a tab. That needs `@align`, which needs
-  columns, which the walk does not track yet.
 - `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
   kind. `:sh` is the same thing from the other end and needs nothing.
 - More languages. Cross-language injection works for every query kind now, so

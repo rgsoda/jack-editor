@@ -28,3 +28,18 @@
   "]"
   ")"
 ] @outdent
+
+; Aligning, rather than stepping: when a call or a list puts something after
+; its opening delimiter, what follows on the next line lines up under that
+; first item instead of taking a tab. An open paren with nothing after it is
+; still a step, so both styles get what they write.
+[
+  (arguments)
+  (parameters)
+  (closure_parameters)
+  (tuple_expression)
+  (tuple_pattern)
+  (array_expression)
+  (type_arguments)
+  (type_parameters)
+] @align

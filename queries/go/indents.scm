@@ -23,3 +23,12 @@
   ")"
   "]"
 ] @outdent
+
+; A continuation line under an open paren takes the column, not a tab - but
+; only when the paren has something after it to line up under. Go's own
+; formatter never leaves one open, so this is for the code gofmt has not seen.
+[
+  (argument_list)
+  (parameter_list)
+  (type_parameter_list)
+] @align

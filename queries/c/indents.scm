@@ -16,3 +16,11 @@
   ")"
   "]"
 ] @outdent
+
+; A continuation line under an open paren takes the column, not a tab - but
+; only when the paren has something after it to line up under.
+[
+  (argument_list)
+  (parameter_list)
+  (initializer_list)
+] @align

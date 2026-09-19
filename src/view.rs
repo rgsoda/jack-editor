@@ -10,7 +10,7 @@ use crate::history::{Change, History, Transaction};
 use crate::lsp::Severity;
 use crate::search::Search;
 use crate::stream::Sign;
-use crate::syntax::{Highlights, Syntax, language_for_path};
+use crate::syntax::{Highlights, Indentation, Syntax, language_for_path};
 use crate::theme::Theme;
 
 pub const TAB_WIDTH: usize = 4;
@@ -422,9 +422,9 @@ impl View {
         self.syntax.as_ref().is_some_and(|syntax| syntax.has_indent_rules())
     }
 
-    /// What the grammar says this line's indentation should be, in steps.
-    /// `None` when there is no indent query for the language.
-    pub fn indent_level(&self, line: usize, theme: &Theme) -> Option<usize> {
+    /// What the grammar says this line's indentation should be. `None` when
+    /// there is no indent query for the language.
+    pub fn indent_level(&self, line: usize, theme: &Theme) -> Option<Indentation> {
         let syntax = self.syntax.as_ref()?;
         let blank = self.doc.line_indent_len(line);
         let base = self.doc.line_to_char(line);

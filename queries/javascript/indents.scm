@@ -20,3 +20,12 @@
   ")"
   (jsx_closing_element)
 ] @outdent
+
+; A continuation line under an open paren takes the column, not a tab - but
+; only when the paren has something after it to line up under.
+[
+  (arguments)
+  (formal_parameters)
+  (array)
+  (parenthesized_expression)
+] @align
