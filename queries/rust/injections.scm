@@ -1,3 +1,18 @@
+; Where the code says so, it is not a guess. `sqlx::query!("...")` names the
+; language in the macro around the string, and so do its relatives: the whole
+; point of those macros is that the string is SQL and is checked as SQL at
+; compile time. Reading none of the string means `SELECT id` on its own, or
+; `VACUUM`, or anything else the heuristic below will not risk on two tokens,
+; is highlighted here anyway.
+; `query_file!` is not here: its string is a path, not a query.
+((macro_invocation
+   macro: [(identifier) @_name
+           (scoped_identifier name: (identifier) @_name)]
+   (token_tree [(string_literal (string_content) @injection.content)
+                (raw_string_literal (string_content) @injection.content)]))
+ (#match? @_name "^query(_as|_scalar)?(_unchecked)?$")
+ (#set! injection.language "sql"))
+
 ; SQL in a string, which no grammar will tell you about: what a string holds is
 ; not a fact the language knows, so this is ours and it is a guess.
 ;

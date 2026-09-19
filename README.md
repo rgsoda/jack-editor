@@ -398,6 +398,15 @@ with a FROM after it, INSERT with INTO, UPDATE with SET, CREATE with what is
 being created. `SELECT 1` is let through by a digit, because that is the other
 query anyone actually writes.
 
+Where the code already says so, none of that guessing is needed. `sqlx` names
+the language in the macro around the string — `query!`, `query_as!`,
+`query_scalar!` and their `_unchecked` twins all exist to say "this is SQL",
+and sqlx checks it as SQL at compile time. A pattern matching the macro sits
+*above* the heuristic and reads none of the string, so `sqlx::query!("SELECT
+id")` is highlighted although one token is all it has. `query_file!` is
+deliberately left out: its string is a path, not a query. Most queries are not
+in a macro, so the guess stays for the rest.
+
 The predicate runs because tree-sitter runs it. `#match?`, `#eq?` and the rest
 are evaluated inside `QueryCursor` when the query is given text to read, and
 giving it text without copying the document is the entire job of `RopeProvider`
@@ -2125,9 +2134,5 @@ was at first:
 
 ## Next
 
-- The SQL guess could be a fact where the code says so. `sqlx::query!("...")`
-  names the language in the macro around the string, and a pattern matching
-  that would not have to read the string at all. It would sit above the
-  heuristic rather than replace it, since most queries are not in a macro.
 - LaTeX, which markdown's *inline* query asks for by name and nothing answers —
   the last injection in the tree with no grammar behind it.

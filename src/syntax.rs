@@ -1616,6 +1616,30 @@ mod tests {
     }
 
     #[test]
+    fn a_macro_that_names_sql_does_not_have_to_be_guessed_at() {
+        // `sqlx::query!` says what the string is, so nothing reads the string:
+        // one word is a query here, where the heuristic would want two.
+        let f = Fixture::new("fn f() { sqlx::query!(\"SELECT id\"); }\n");
+        assert_eq!(f.color_of("SELECT"), Some(Color::Magenta));
+
+        // The type comes first in `query_as!`, and the string is still found.
+        let f = Fixture::new("fn f() { query_as!(User, \"SELECT id\"); }\n");
+        assert_eq!(f.color_of("SELECT"), Some(Color::Magenta));
+
+        // A raw string is the one a real query is written in.
+        let f = Fixture::new("fn f() { sqlx::query_scalar!(r#\"VACUUM\"#); }\n");
+        assert_eq!(f.color_of("VACUUM"), Some(Color::Magenta));
+
+        // `query_file!` takes a path, which is not SQL and must stay a string.
+        let f = Fixture::new("fn f() { sqlx::query_file!(\"q/get.sql\"); }\n");
+        assert_eq!(f.color_of("q/get.sql"), Some(Color::Green));
+
+        // And a macro that is not one of these says nothing about its string.
+        let f = Fixture::new("fn f() { println!(\"Update the settings\"); }\n");
+        assert_eq!(f.color_of("Update"), Some(Color::Green));
+    }
+
+    #[test]
     fn a_string_that_is_english_is_left_alone() {
         // The reason the guess wants two tokens: one leading verb is a word
         // that sentences start with. These are the strings that made the rule.
@@ -1937,5 +1961,3 @@ mod tests {
         );
     }
 }
-
-
