@@ -94,6 +94,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>l", what: "pick a line in this buffer", mode: "normal" },
     Binding { keys: "^b", what: "select a rectangle: the same columns of several lines", mode: "normal" },
     Binding { keys: "I A", what: "in a block: type down its left / right side", mode: "visual" },
+    Binding { keys: "$", what: "in a block: run it to the end of every line", mode: "visual" },
+    Binding { keys: "r{c} ~", what: "replace every character selected / swap its case", mode: "visual" },
     Binding { keys: "<space>S", what: "pick a symbol anywhere in the project (language server)", mode: "normal" },
     Binding { keys: "<space>e", what: "pick a diagnostic, in any open buffer", mode: "normal" },
     Binding { keys: "<space>h", what: "what this change was: git's lines and yours", mode: "normal" },
@@ -541,9 +543,14 @@ impl Keys {
             Some(Pending::Replace) => {
                 if let KeyCode::Char(c) = key.code
                     && !ctrl
-                    && !editor.replace_char(c, count.unwrap_or(1))
                 {
-                    editor.message = "not that many characters on the line".into();
+                    match editor.mode.is_visual() {
+                        true => editor.replace_selection(c),
+                        false if !editor.replace_char(c, count.unwrap_or(1)) => {
+                            editor.message = "not that many characters on the line".into();
+                        }
+                        false => {}
+                    }
                 }
                 self.finish();
             }
@@ -770,6 +777,18 @@ impl Keys {
             return;
         }
 
+        // `r{c}` over a selection: the character it is waiting for.
+        if self.pending == Some(Pending::Replace) {
+            self.pending = None;
+            if let KeyCode::Char(c) = key.code
+                && !ctrl
+            {
+                editor.replace_selection(c);
+            }
+            self.finish();
+            return;
+        }
+
         if let Some(Pending::Go { .. }) = self.pending.take() {
             match key.code {
                 KeyCode::Char('g') => editor.goto_line_extending(count.unwrap_or(1) - 1),
@@ -782,6 +801,14 @@ impl Keys {
                 KeyCode::Char('a') => editor.code_actions(),
                 _ => {}
             }
+            self.finish();
+            return;
+        }
+
+        // `$` in a block runs it to the end of every line, however ragged
+        // they are - so it is not the plain motion it is everywhere else.
+        if key.code == KeyCode::Char('$') && editor.mode == Mode::VisualBlock && !ctrl {
+            editor.block_to_end_of_line();
             self.finish();
             return;
         }
@@ -819,6 +846,12 @@ impl Keys {
                 _ => Mode::VisualBlock,
             }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
+            // `~` and `r` over the selection rather than over one character.
+            KeyCode::Char('~') => editor.toggle_case_selection(),
+            KeyCode::Char('r') if !ctrl => {
+                self.pending = Some(Pending::Replace);
+                return;
+            }
             KeyCode::Char(';') | KeyCode::Char(',') => {
                 let reverse = key.code == KeyCode::Char(',') && !editor.semicolon_is_command();
                 editor.repeat_to_char(reverse, repeat, true);
@@ -3340,6 +3373,48 @@ plain
         assert!(vim.editor.registers.get(None).is_block());
         vim.press("jj$p");
         assert_eq!(vim.editor.view().doc.text.to_string(), "ab\ncd\nxxa\n  c\n");
+    }
+
+    #[test]
+    fn r_and_tilde_work_over_a_selection_and_over_a_block() {
+        // Charwise: the three characters selected, and no further.
+        let mut vim = Vim::new("abcdef\nghijkl\n");
+        vim.press("vllrx");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "xxxdef\nghijkl\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+
+        // Linewise `~`, which leaves the line break alone.
+        let mut vim = Vim::new("abc\ndef\n");
+        vim.press("Vj~");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "ABC\nDEF\n");
+
+        // And a rectangle, which is a row on each line rather than a range.
+        let mut vim = Vim::new("abcdef\nghijkl\nmnopqr\n");
+        vim.press("l<C-b>jjlr-");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "a--def\ng--jkl\nm--pqr\n");
+        vim.press("u");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "abcdef\nghijkl\nmnopqr\n", "one undo");
+    }
+
+    #[test]
+    fn a_dollar_block_runs_to_the_end_of_every_line() {
+        // Ragged lines: `$` takes each to wherever it stops, not to a column.
+        let mut vim = Vim::new("one\ntwelve\nxy\n");
+        vim.press("l<C-b>jj$");
+        let block = vim.editor.block().expect("a block");
+        assert!(block.to_eol);
+        vim.press("d");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "o\nt\nx\n");
+
+        // And `A` on one appends at each line's own end.
+        let mut vim = Vim::new("one\ntwelve\nxy\n");
+        vim.press("<C-b>jj$A;<esc>");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "one;\ntwelve;\nxy;\n");
+
+        // A sideways move drops it again: there is a right edge once more.
+        let mut vim = Vim::new("one\ntwelve\n");
+        vim.press("<C-b>j$h");
+        assert!(!vim.editor.block().expect("a block").to_eol);
     }
 
     #[test]

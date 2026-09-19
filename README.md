@@ -206,6 +206,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `D` `X` `Y` `C` | the same, on whole lines |
 | `S(` `S"` … | put a pair around the selection |
 | `I` `A` (in `^b`) | type down the left / right side of the block |
+| `$` (in `^b`) | run the block to the end of every line |
+| `r{c}` `~` | replace every character with `{c}` / swap its case |
 | `esc` | back to normal mode |
 
 ### Insert mode
@@ -760,8 +762,16 @@ is edited from the bottom up inside one undo group, because a row's position in
 the rope is only still right while nothing before it has moved — so `u` takes
 the whole rectangle back in one step, not a line at a time.
 
-What a block does not do yet: `r` and `~` over a rectangle, and vim's `$` block
-that runs to the end of every line however ragged they are.
+`$` runs the block to the end of every line rather than to a column, which is
+how you reach ragged lines: `^b`, down, `$`, `A` puts a trailing comment on
+every one of them at its own end, wherever that is. Any sideways move drops it
+again, since a sideways move is a new right-hand side and there is nothing left
+of `$` to keep.
+
+`r{c}` and `~` work over a selection too, and over a rectangle — they were
+normal-mode commands that took a count and nothing else. Line breaks are left
+alone by both: replacing them would glue the selected lines into one, which is
+not what `r` looks like it does.
 
 ## Comments
 

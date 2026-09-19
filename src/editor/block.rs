@@ -27,6 +27,9 @@ pub struct Block {
     /// inclusive, as visual mode's cursor is on the last character it takes.
     pub left: usize,
     pub right: usize,
+    /// `$`: the block runs to the end of every line, however ragged they are,
+    /// and the right side is wherever each line happens to stop.
+    pub to_eol: bool,
     /// The characters inside the block on each line, as a range in the rope.
     /// A line too short to reach the block has an empty one.
     pub rows: Vec<(usize, usize)>,
@@ -57,21 +60,28 @@ impl Editor {
         let head_at = display_col(&view.doc.line_str(head_line), head_col);
         let (left, right) = (anchor_at.min(head_at), anchor_at.max(head_at));
         let (first, last) = (anchor_line.min(head_line), anchor_line.max(head_line));
-        Some(Block { first, left, right, rows: (first..=last).map(|line| self.row_at(line, left, right)).collect() })
+        let to_eol = self.block_to_eol;
+        let rows = (first..=last).map(|line| self.row_at(line, left, right, to_eol)).collect();
+        Some(Block { first, left, right, to_eol, rows })
     }
 
     /// The characters of `line` between two screen columns. A line that stops
     /// short of the left side contributes nothing, which is what makes a block
     /// over ragged lines take only what is there.
-    fn row_at(&self, line: usize, left: usize, right: usize) -> (usize, usize) {
+    fn row_at(&self, line: usize, left: usize, right: usize, to_eol: bool) -> (usize, usize) {
         let view = self.view();
         let text = view.doc.line_str(line);
         let len = view.doc.line_len_chars(line);
         let base = view.doc.line_to_char(line);
         let start = char_col_at_display(&text, left).min(len);
-        // One past the right side, so the character the cursor is on is in.
-        let end = char_col_at_display(&text, right + 1).min(len).max(start);
-        (base + start, base + end)
+        let end = match to_eol {
+            // `$`: every line to wherever it stops, which is the whole point
+            // of it - the lines are ragged and the block follows them.
+            true => len,
+            // One past the right side, so the character the cursor is on is in.
+            false => char_col_at_display(&text, right + 1).min(len),
+        };
+        (base + start, base + end.max(start))
     }
 
     /// `d` and `x` over a block: every row goes, and the register remembers
@@ -131,6 +141,12 @@ impl Editor {
             return;
         };
         let lines: Vec<usize> = block.lines().collect();
+        // A `$` block has no right side to append at: `A` on one puts the text
+        // at the end of each line, wherever that is, which is what makes it
+        // the way to add a trailing column to ragged lines.
+        if append && block.to_eol {
+            return self.append_at_line_ends(&lines, change, &block);
+        }
         let column = match append {
             true => block.right + 1,
             false => block.left,
@@ -150,6 +166,32 @@ impl Editor {
         self.view_mut().sel = Selection::point(at);
         self.pending_block = Some(PendingBlock { lines, column, at });
         self.set_mode(Mode::Insert);
+    }
+
+    /// `A` on a `$` block: typing goes at the end of each line, and the lines
+    /// are where they are rather than being padded out to a column.
+    fn append_at_line_ends(&mut self, lines: &[usize], change: bool, block: &Block) {
+        self.begin_undo_group();
+        if change {
+            for &(start, end) in block.rows.iter().rev() {
+                if end > start {
+                    self.view_mut().edit_at(start, end - start, "", None);
+                }
+            }
+        }
+        let at = self.line_end(lines[0]);
+        self.view_mut().sel = Selection::point(at);
+        self.pending_block = Some(PendingBlock { lines: lines.to_vec(), column: usize::MAX, at });
+        self.set_mode(Mode::Insert);
+    }
+
+    /// The end of a line's text, before its newline.
+    fn line_end(&self, line: usize) -> usize {
+        let view = self.view();
+        match line > view.last_line() {
+            true => view.doc.len_chars(),
+            false => view.doc.line_to_char(line) + view.doc.line_len_chars(line),
+        }
     }
 
     /// The position of screen column `column` on `line`, padding the line out
@@ -190,7 +232,12 @@ impl Editor {
         }
         let typed = view.doc.slice_str(pending.at, head);
         for &line in pending.lines.iter().skip(1).rev() {
-            let at = self.pad_to(line, pending.column);
+            // `usize::MAX` is the end of the line, which is where a `$` block
+            // appends: there is no column to pad out to.
+            let at = match pending.column {
+                usize::MAX => self.line_end(line),
+                column => self.pad_to(line, column),
+            };
             self.view_mut().edit_at(at, 0, &typed, None);
         }
         // The edits above are all below the cursor in the rope on their own
@@ -237,7 +284,8 @@ impl Editor {
 pub struct PendingBlock {
     /// Every line of the block, the one being typed on first.
     pub lines: Vec<usize>,
-    /// The screen column the text goes at on each of them.
+    /// The screen column the text goes at on each of them, or `usize::MAX`
+    /// for the end of each line, which is where a `$` block appends.
     pub column: usize,
     /// Where typing started, so what was typed can be read back off.
     pub at: usize,

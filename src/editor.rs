@@ -367,6 +367,10 @@ pub struct Editor {
     /// A block `I`, `A` or `c` waiting for insert mode to end, so what was
     /// typed on one line can be put on the rest of them.
     pending_block: Option<block::PendingBlock>,
+    /// `$` in block mode: the block runs to the end of every line rather than
+    /// to a column. Dropped by any move that is not up or down, the way vim
+    /// drops it, since a sideways move is a new right-hand side.
+    block_to_eol: bool,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -498,6 +502,7 @@ impl Editor {
             wrap: false,
             replacing: String::new(),
             pending_block: None,
+            block_to_eol: false,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -2439,6 +2444,11 @@ impl Editor {
     }
 
     pub fn move_cursor(&mut self, m: Move, extend: bool) {
+        // Only up and down keep a `$` block: anything sideways is a new right
+        // edge, and there is nothing left of `$` to keep.
+        if self.block_to_eol && !matches!(m, Move::Up | Move::Down | Move::PageUp | Move::PageDown | Move::HalfPageUp | Move::HalfPageDown) {
+            self.block_to_eol = false;
+        }
         let (height, wrap) = (self.height, self.wrap_width());
         self.view_mut().move_cursor(m, extend, height, wrap);
     }
@@ -3181,6 +3191,9 @@ impl Editor {
         // Entering visual starts a selection here, and leaving it drops
         // whatever was selected - either way the selection collapses onto the
         // cursor. Switching between `v` and `V` keeps it.
+        if mode != Mode::VisualBlock {
+            self.block_to_eol = false;
+        }
         if self.mode.is_visual() != mode.is_visual() {
             // On the way out it is worth keeping: `gv` is the only way back to
             // a selection, and whatever happens next usually destroys it.
@@ -3483,6 +3496,79 @@ impl Editor {
         // The cursor ends on the last character replaced, not past it.
         view.edit_at(at, count, &text, Some(at + count - 1));
         true
+    }
+
+    /// `$` in block mode: the block runs to the end of every line it covers.
+    /// The cursor still goes to the end of the line it is on, so the block is
+    /// where it looks like it is on the line being moved.
+    pub fn block_to_end_of_line(&mut self) {
+        self.move_cursor(Move::LineEnd, true);
+        self.block_to_eol = true;
+        self.clamp_cursor();
+    }
+
+    /// `r{c}` over a selection: every character in it becomes `c`. Line breaks
+    /// are left alone - vim leaves them, and replacing them would glue the
+    /// selected lines into one.
+    pub fn replace_selection(&mut self, c: char) {
+        let Some(rows) = self.selection_rows() else {
+            return;
+        };
+        self.edit_rows(rows, |text| {
+            text.chars().map(|ch| match ch == '\n' || ch == '\r' {
+                true => ch,
+                false => c,
+            })
+            .collect()
+        });
+    }
+
+    /// `~` over a selection: every character's case swapped. A character whose
+    /// case is more than one character long - `ß` upper-cases to `SS` - is
+    /// left alone, as it is for the `~` that takes a count.
+    pub fn toggle_case_selection(&mut self) {
+        let Some(rows) = self.selection_rows() else {
+            return;
+        };
+        self.edit_rows(rows, |text| {
+            text.chars()
+                .map(|c| match (c.is_lowercase(), c.is_uppercase()) {
+                    (true, _) => one(c.to_uppercase()).unwrap_or(c),
+                    (_, true) => one(c.to_lowercase()).unwrap_or(c),
+                    _ => c,
+                })
+                .collect()
+        });
+    }
+
+    /// What a command over a selection acts on: one range for `v` and `V`, and
+    /// one per line for a block, which is not a range at all.
+    fn selection_rows(&self) -> Option<Vec<(usize, usize)>> {
+        match self.block() {
+            Some(block) => Some(block.rows),
+            None => self.selection_range().map(|range| vec![range]),
+        }
+    }
+
+    /// Rewrite each row through `f`, bottom up and in one undo step, and leave
+    /// visual mode with the cursor on the first thing changed.
+    fn edit_rows(&mut self, rows: Vec<(usize, usize)>, f: impl Fn(&str) -> String) {
+        let Some(&(at, _)) = rows.first() else {
+            return;
+        };
+        self.begin_undo_group();
+        for &(start, end) in rows.iter().rev() {
+            if end <= start {
+                continue;
+            }
+            let text = self.view().doc.slice_str(start, end);
+            let new = f(&text);
+            self.view_mut().edit_at(start, end - start, &new, None);
+        }
+        self.end_undo_group();
+        self.view_mut().sel = Selection::point(at);
+        self.set_mode(Mode::Normal);
+        self.clamp_cursor();
     }
 
     /// `~`: the case of the character under the cursor swapped, and on to the
