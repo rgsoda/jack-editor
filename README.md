@@ -712,7 +712,12 @@ you can still tell one line of the file from the next.
 `j` and `k` still move by lines of the file, as vim's do. Everything that has
 to do with the screen counts rows instead. The cursor is kept on screen by the
 rows above it, `zz` centres its row, and `H`, `M` and `L` reach the lines that
-actually start on screen. Inlay hints take their room in the wrapping like the
+actually start on screen. `^d`, `^u`, `^f` and `^b` are half a screen and a
+screen of *rows*, so a page of wrapped prose is a page and not a chapter, and
+they keep the cursor's column within its row rather than within its line.
+`^e` and `^y` scroll whole lines still - the top of the screen is a line, drawn
+from its first row down - but they take as many as cover the rows asked for, so
+one `^e` on a line three rows tall scrolls that line away and no more. Inlay hints take their room in the wrapping like the
 text does, so a row never runs past the edge because of one.
 
 ## Moving the view

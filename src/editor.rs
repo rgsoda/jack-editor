@@ -2379,8 +2379,8 @@ impl Editor {
     }
 
     pub fn move_cursor(&mut self, m: Move, extend: bool) {
-        let height = self.height;
-        self.view_mut().move_cursor(m, extend, height);
+        let (height, wrap) = (self.height, self.wrap_width());
+        self.view_mut().move_cursor(m, extend, height, wrap);
     }
 
     /// `zt`, `zz`, `zb`: the cursor's line put at the top, middle or bottom of
@@ -2394,8 +2394,9 @@ impl Editor {
     /// `^e` and `^y`: scroll without moving the cursor, until the cursor would
     /// be scrolled off and has to come along.
     pub fn scroll_lines(&mut self, down: bool, count: usize) {
-        let height = self.view().lines_on_screen(self.height, self.wrap_width());
-        self.view_mut().scroll_lines(down, count, height);
+        let wrap = self.wrap_width();
+        let height = self.view().lines_on_screen(self.height, wrap);
+        self.view_mut().scroll_lines(down, count, height, wrap);
     }
 
     /// `H`, `M`, `L`: the line at the top, middle or bottom of what is on

@@ -676,7 +676,10 @@ impl View {
         text
     }
 
-    pub fn move_cursor(&mut self, m: Move, extend: bool, height: usize) {
+    /// `height` is in screen rows, and `wrap` says how wide a row is when
+    /// lines wrap: the paging moves are about the screen, so wrapped they
+    /// count rows, while `j` and `k` keep counting lines of the file.
+    pub fn move_cursor(&mut self, m: Move, extend: bool, height: usize, wrap: Option<usize>) {
         let head = match m {
             Move::Left => self.grapheme_left(self.sel.head),
             Move::Right => self.grapheme_right(self.sel.head),
@@ -699,10 +702,10 @@ impl View {
             Move::WordForward => self.word_forward(self.sel.head),
             Move::WordBack => self.word_back(self.sel.head),
             Move::WordEnd => self.word_end(self.sel.head),
-            Move::HalfPageUp => self.vertical(-((height / 2).max(1) as isize)),
-            Move::HalfPageDown => self.vertical((height / 2).max(1) as isize),
-            Move::PageUp => self.vertical(-(height as isize)),
-            Move::PageDown => self.vertical(height as isize),
+            Move::HalfPageUp => self.page(-((height / 2).max(1) as isize), wrap),
+            Move::HalfPageDown => self.page((height / 2).max(1) as isize, wrap),
+            Move::PageUp => self.page(-(height as isize), wrap),
+            Move::PageDown => self.page(height as isize, wrap),
             Move::ParagraphBack => self.paragraph(false),
             Move::ParagraphForward => self.paragraph(true),
             Move::FileStart => 0,
@@ -797,11 +800,18 @@ impl View {
 
     /// `^e` and `^y`: the view moved by lines, the cursor following only when
     /// it would otherwise be scrolled off the screen.
-    pub fn scroll_lines(&mut self, down: bool, count: usize, height: usize) {
+    pub fn scroll_lines(&mut self, down: bool, count: usize, height: usize, wrap: Option<usize>) {
         let last = self.doc.len_lines().saturating_sub(1);
+        // The top of the screen is a line, not a row - a line is drawn from
+        // its first row down - so wrapped, `count` rows is however many whole
+        // lines cover them, and one tall line can be the whole of a `^e`.
+        let lines = match wrap {
+            Some(width) => self.lines_covering(count, down, width),
+            None => count,
+        };
         self.scroll_top = match down {
-            true => (self.scroll_top + count).min(last),
-            false => self.scroll_top.saturating_sub(count),
+            true => (self.scroll_top + lines).min(last),
+            false => self.scroll_top.saturating_sub(lines),
         };
         let pad = SCROLLOFF.min(height.saturating_sub(1) / 2);
         let (line, _) = self.cursor_coords();
@@ -811,6 +821,29 @@ impl View {
         if wanted != line {
             self.goto_line(wanted);
         }
+    }
+
+    /// How many whole lines either side of the top one cover `rows` screen
+    /// rows: at least one, so `^e` always moves, and never more lines than
+    /// there are rows asked for.
+    fn lines_covering(&self, rows: usize, down: bool, width: usize) -> usize {
+        let last = self.doc.len_lines().saturating_sub(1);
+        let (mut lines, mut covered) = (0, 0);
+        while covered < rows {
+            let line = match down {
+                true => self.scroll_top + lines,
+                false => match self.scroll_top.checked_sub(lines + 1) {
+                    Some(line) => line,
+                    None => break,
+                },
+            };
+            if down && line > last {
+                break;
+            }
+            covered += self.line_rows(line, width).len();
+            lines += 1;
+        }
+        lines.max(1)
     }
 
     /// `H`, `M`, `L`: which line of the screen that is, given where the view
@@ -991,6 +1024,65 @@ impl View {
         let text = self.doc.line_str(target);
         self.doc.line_to_char(target) + char_col_at_display(&text, goal)
     }
+
+    /// A page, which is a thing about the screen: `delta` lines of the file
+    /// when lines do not wrap, and `delta` rows of the screen when they do.
+    fn page(&mut self, delta: isize, wrap: Option<usize>) -> usize {
+        match wrap {
+            Some(width) => self.by_rows(delta, width),
+            None => self.vertical(delta),
+        }
+    }
+
+    /// Move `delta` screen rows through the wrapping, and land on the column
+    /// of the row arrived at that the cursor was on in its own row. The goal
+    /// column is that column within the row, which is the same thing as the
+    /// column in the line whenever the line only takes one row.
+    fn by_rows(&mut self, delta: isize, width: usize) -> usize {
+        let (mut line, _) = self.cursor_coords();
+        let (mut row, col) = self.wrapped_cursor(width);
+        let goal = *self.goal_col.get_or_insert(col);
+
+        let last = self.doc.len_lines().saturating_sub(1);
+        for _ in 0..delta.unsigned_abs() {
+            if delta > 0 {
+                if row + 1 < self.line_rows(line, width).len() {
+                    row += 1;
+                } else if line < last {
+                    (line, row) = (line + 1, 0);
+                } else {
+                    break;
+                }
+            } else if row > 0 {
+                row -= 1;
+            } else if line > 0 {
+                line -= 1;
+                row = self.line_rows(line, width).len() - 1;
+            } else {
+                break;
+            }
+        }
+        self.char_at_row_col(line, row, goal, width)
+    }
+
+    /// The position at screen column `goal` of row `row` of `line`: the last
+    /// column of that row that is still at or before `goal`, since a wide
+    /// character or a hint can step straight over the column asked for.
+    fn char_at_row_col(&self, line: usize, row: usize, goal: usize, width: usize) -> usize {
+        let text = self.doc.line_str(line);
+        let hints = self.hints_on(line);
+        let starts = wrap_starts(&text, &hints, width);
+        let row = row.min(starts.len() - 1);
+        let start = starts[row];
+        let end = starts.get(row + 1).copied().unwrap_or_else(|| self.doc.line_len_chars(line)).max(start);
+        let segment: String = text.chars().skip(start).collect();
+        let hints: Vec<(usize, &str)> = hints.iter().filter(|(at, _)| *at >= start).map(|&(at, label)| (at - start, label)).collect();
+        let mut col = start;
+        while col < end && hinted_col(&segment, col + 1 - start, &hints) <= goal {
+            col += 1;
+        }
+        self.doc.line_to_char(line) + col
+    }
     pub fn grapheme_left(&self, pos: usize) -> usize {
         let (line, col) = self.doc.coords(pos);
         if col == 0 {
@@ -1161,7 +1253,7 @@ impl View {
     pub fn goto_line(&mut self, line: usize) {
         let line = line.min(self.last_line());
         self.sel = Selection::point(self.doc.line_to_char(line));
-        self.move_cursor(Move::FirstNonBlank, false, 0);
+        self.move_cursor(Move::FirstNonBlank, false, 0, None);
     }
     /// The bracket matching the one at `at`, if there is a bracket there.
     ///
@@ -1609,7 +1701,7 @@ fn class_of(ch: char) -> CharClass {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, Hint, Selection, View, difference, hinted_col};
+    use super::{Document, Hint, Move, Selection, View, difference, hinted_col};
 
     #[test]
     fn a_difference_leaves_out_what_both_ends_share() {
@@ -1664,5 +1756,69 @@ mod tests {
         assert_eq!(wrap_starts("let x = 1", &[(5, ": i32")], 10), [0, 6]);
         // Wide characters are two cells.
         assert_eq!(wrap_starts("日本語", &[], 4), [0, 2]);
+    }
+
+    /// Two lines of four rows each, wrapped at eight: a page is rows, so half
+    /// a page of six rows from the top of the first lands halfway down it.
+    fn wrapped_view() -> View {
+        let mut document = Document::scratch();
+        document.text = ropey::Rope::from_str("aaa bbb ccc ddd eee fff
+ggg hhh iii jjj kkk lll
+end\n");
+        View::new(document)
+    }
+
+    #[test]
+    fn a_page_counts_rows_when_lines_wrap_and_lines_when_they_do_not() {
+        let mut view = wrapped_view();
+        assert_eq!(view.line_rows(0, 8).len(), 3, "24 columns over 8 is three rows");
+
+        // Wrapped: four rows down from the first row of line 0 is the second
+        // row of line 1 - three rows to get off line 0, then one more.
+        view.move_cursor(Move::HalfPageDown, false, 8, Some(8));
+        assert_eq!(view.cursor_coords(), (1, 8));
+
+        // Unwrapped the same move is four lines, and the file has fewer.
+        let mut view = wrapped_view();
+        view.move_cursor(Move::HalfPageDown, false, 8, None);
+        assert_eq!(view.cursor_coords(), (3, 0));
+    }
+
+    #[test]
+    fn a_page_back_up_lands_on_the_column_of_the_row_it_started_on() {
+        let mut view = wrapped_view();
+        // Third row of line 1, column 2 of that row: char 16 + 2.
+        view.sel = Selection::point(24 + 16 + 2);
+        assert_eq!(view.wrapped_cursor(8), (2, 2));
+        view.move_cursor(Move::HalfPageUp, false, 8, Some(8));
+        // Four rows up: line 1 row 0 is one up, then line 0's three rows.
+        assert_eq!(view.wrapped_cursor(8), (1, 2));
+        assert_eq!(view.cursor_coords(), (0, 10));
+    }
+
+    #[test]
+    fn a_page_stops_at_the_ends_of_the_file() {
+        let mut view = wrapped_view();
+        view.move_cursor(Move::PageUp, false, 8, Some(8));
+        assert_eq!(view.cursor_coords(), (0, 0));
+        view.move_cursor(Move::PageDown, false, 40, Some(8));
+        assert_eq!(view.cursor_coords().0, 3, "the end of the file, not past it");
+    }
+
+    #[test]
+    fn scrolling_by_rows_moves_whole_lines() {
+        let mut view = wrapped_view();
+        // One row of `^e` still has to move a line, and line 0 is three rows.
+        view.scroll_lines(true, 1, 8, Some(8));
+        assert_eq!(view.scroll_top, 1);
+        view.scroll_lines(false, 1, 8, Some(8));
+        assert_eq!(view.scroll_top, 0);
+        // Four rows reaches into line 1, so two lines go by.
+        view.scroll_lines(true, 4, 8, Some(8));
+        assert_eq!(view.scroll_top, 2);
+        // Unwrapped, rows are lines.
+        let mut view = wrapped_view();
+        view.scroll_lines(true, 2, 8, None);
+        assert_eq!(view.scroll_top, 2);
     }
 }
