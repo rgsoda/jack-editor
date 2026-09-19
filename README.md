@@ -115,7 +115,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
 | `ys{motion}{pair}` `yss` | put a pair around text: `ysiw)` makes `(word)`, `ysiw(` makes `( word )` |
 | `ds{pair}` `cs{pair}{pair}` | take away the pair around the cursor, or swap it: `ds"`, `cs"'`, `cs(]` |
-| `v` `V` `^b` | select characters / whole lines / a rectangle |
+| `v` `V` `^b` (or `gb`) | select characters / whole lines / a rectangle |
 | `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
@@ -167,7 +167,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set lsp` | `nolsp`: start language servers for files that have one |
 | `:set shiftwidth=4` | `sw`: how wide one indent step is (a file that is already indented wins) |
 | `:set expandtab` | `noexpandtab`: indent with spaces or tabs |
-| `:set emacs` | `noemacs`: emacs chords in insert mode |
+| `:set emacs` | `noemacs`: emacs chords in insert and normal mode |
 | `:set autoindent` | `noautoindent`: indent new lines by the grammar |
 | `:set autopairs` | `noautopairs`: close brackets and quotes as they are opened |
 | `:set wrap` | `nowrap`: long lines continue on the rows below instead of off the right edge |
@@ -228,12 +228,14 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | arrows, `home`, `end` | move (with `shift` to select) |
 | `esc` | back to normal mode |
 
-### Emacs chords (insert mode, `:set emacs`)
+### Emacs chords (`:set emacs`)
 
 | | |
 |---|---|
-| `^a` `^e` `^f` `^b` `^n` `^p` | motions |
-| `M-f` `M-b` | word forward, back |
+| `^a` `^e` `^f` `^b` `^n` `^p` | motions (insert and normal mode) |
+| `M-f` `M-b` | word forward, back (insert and normal mode) |
+| `^v` `M-v` | page down, up (normal mode) |
+| `M-<` `M->` | start, end of the file (normal mode) |
 | `^k` `^u` `^w` `M-d` | kill to line end, to line start, a word back, forward |
 | `^y` `^t` `^g` | put the kill back, transpose, back to normal mode |
 | `M-/` | complete the word |
@@ -822,7 +824,9 @@ them when you leave insert mode. `c` is `I` after the delete.
 
 It is spelled `^b`, not vim's `^v`, because `^v` is the system paste here and
 that is worth more than the muscle memory. `b` is for block, and it is next to
-nothing else.
+nothing else. `gb` does the same thing, and is the one to reach for if you use
+`:set emacs`, where `^b` is back-a-character: a mode you can only get to on a
+key that might be spoken for is a mode you can lose.
 
 Unlike `v` and `V` this is a genuinely different model, and that is why it is
 its own module rather than a third variant of the other two. A range has a
@@ -1189,13 +1193,15 @@ There is a test that measures it.
 
 ## Emacs chords, and a config file
 
-`:set emacs` turns on the readline/emacs chords **in insert mode**:
+`:set emacs` turns on the readline/emacs chords:
 
 | | |
 |---|---|
 | `^a` `^e` | line start, line end |
 | `^f` `^b` `^n` `^p` | char right, left; line down, up |
 | `M-f` `M-b` | word forward, back |
+| `^v` `M-v` | page down, page up (normal mode) |
+| `M-<` `M->` | start, end of the file (normal mode) |
 | `^d` `^h` | delete the character after, before the cursor |
 | `^k` `^u` | kill to the end of the line, to the start |
 | `^w` `M-d` `M-backspace` | kill a word back, forward, back |
@@ -1204,10 +1210,20 @@ There is a test that measures it.
 | `^g` | never mind: back to normal mode |
 | `M-/` | complete the word |
 
-Insert mode only. Normal mode is the whole point of a modal editor, and `^d`
-there already means half a page. Kills go to the unnamed register rather than a
-kill ring of their own, so `^k` then `p` in normal mode works too, and `^y` is
-just that register coming back.
+The motions work in normal and visual mode as well — in visual mode they drag
+the selection, like the arrow keys with shift held. The edits are insert mode
+only: normal mode already has `d`, `c` and `y` with a motion after them, which
+is the whole point of a modal editor, and `^d` there means half a page. Kills
+go to the unnamed register rather than a kill ring of their own, so `^k` then
+`p` in normal mode works too, and `^y` is just that register coming back.
+
+Three normal-mode keys are spoken for, and under `:set emacs` the emacs meaning
+wins there too: `^b` is back-a-character rather than a block selection, `^e` is
+the end of the line rather than a line of scroll, and `^v` is a page down
+rather than the system paste. None of the three is stranded. A block selection
+is also `gb`, which is always there whether emacs is on or not; scrolling by a
+line is `^y`'s twin only when emacs is off, and `zz` `H` `M` `L` and a count
+with `j` reach the same places; the system paste is `"+p`.
 
 Half of these keys already meant something: `^t`/`^d` indent, `^y` accepts a
 completion, `^n`/`^p` open one. With `:set emacs` the emacs meaning wins, which

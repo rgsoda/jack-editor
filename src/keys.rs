@@ -93,7 +93,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste the line (the system clipboard)", mode: "normal" },
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>l", what: "pick a line in this buffer", mode: "normal" },
-    Binding { keys: "^b", what: "select a rectangle: the same columns of several lines", mode: "normal" },
+    Binding { keys: "^b gb", what: "select a rectangle: the same columns of several lines", mode: "normal" },
     Binding { keys: "I A", what: "in a block: type down its left / right side", mode: "visual" },
     Binding { keys: "$", what: "in a block: run it to the end of every line", mode: "visual" },
     Binding { keys: "r{c} ~", what: "replace every character selected / swap its case", mode: "visual" },
@@ -130,8 +130,10 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "enter tab ^y", what: "accept the selected completion", mode: "insert" },
     Binding { keys: "^t ^d", what: "indent, dedent this line", mode: "insert" },
     Binding { keys: "^v ^c ^x", what: "paste here, copy the line, cut the line", mode: "insert" },
-    Binding { keys: "^a ^e ^f ^b ^n ^p", what: "emacs: motions (:set emacs)", mode: "insert" },
-    Binding { keys: "M-f M-b", what: "emacs: word forward, back", mode: "insert" },
+    Binding { keys: "^a ^e ^f ^b ^n ^p", what: "emacs: motions (:set emacs)", mode: "any" },
+    Binding { keys: "M-f M-b", what: "emacs: word forward, back", mode: "any" },
+    Binding { keys: "M-< M->", what: "emacs: file start, end", mode: "normal" },
+    Binding { keys: "^v M-v", what: "emacs: page down, up", mode: "normal" },
     Binding { keys: "^k ^u ^w M-d", what: "emacs: kill to line end, start, word", mode: "insert" },
     Binding { keys: "^y ^t ^g", what: "emacs: put back, transpose, normal mode", mode: "insert" },
     Binding { keys: "M-/", what: "emacs: complete the word", mode: "insert" },
@@ -159,7 +161,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":config", what: "open the config file, writing the defaults first", mode: "command" },
     Binding { keys: ":set shiftwidth=4", what: "how wide one indent step is", mode: "command" },
     Binding { keys: ":set expandtab", what: "noexpandtab: indent with spaces or tabs", mode: "command" },
-    Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert mode", mode: "command" },
+    Binding { keys: ":set emacs", what: "noemacs: emacs chords in insert and normal mode", mode: "command" },
     Binding { keys: ":set autoindent", what: "noautoindent: indent new lines by the grammar", mode: "command" },
     Binding { keys: ":set autocomplete=2", what: "noautocomplete: word length that pops the list", mode: "command" },
     Binding { keys: ":set semicolon=find", what: "command: make ; open the command line", mode: "command" },
@@ -575,6 +577,11 @@ impl Keys {
                         editor.clamp_cursor();
                     }
                     KeyCode::Char('v') => editor.reselect(),
+                    // Block selection's other spelling. `^b` is the one to
+                    // reach for, but `:set emacs` takes that key for
+                    // back-a-character, and a mode you can only get to on a
+                    // key that might be spoken for is a mode you can lose.
+                    KeyCode::Char('b') => editor.set_mode(Mode::VisualBlock),
                     // An operator of its own, so it keeps the count typed
                     // before it and waits for a motion: `3gcc`, `gcap`.
                     KeyCode::Char('c') => {
@@ -814,6 +821,18 @@ impl Keys {
             return;
         }
 
+        // The same emacs chords, dragging the selection rather than moving.
+        if editor.emacs
+            && let Some(motion) = emacs_motion(key.code, ctrl, key.modifiers.contains(KeyModifiers::ALT))
+        {
+            for _ in 0..repeat {
+                editor.move_cursor(motion, true);
+            }
+            editor.clamp_cursor();
+            self.finish();
+            return;
+        }
+
         // A motion drags the selection instead of collapsing it. This is the
         // whole of visual mode.
         if let Some((motion, _)) = motion_for(key.code, ctrl) {
@@ -967,6 +986,18 @@ impl Keys {
         // Before the motions, where `^w` would be read as `w`.
         if ctrl && key.code == KeyCode::Char('w') {
             self.pending = Some(Pending::Window);
+            return;
+        }
+        // Emacs motions first, when they are turned on: three of them are keys
+        // normal mode already uses, and `:set emacs` is how you say which
+        // meaning you want.
+        if editor.emacs
+            && let Some(motion) = emacs_motion(key.code, ctrl, key.modifiers.contains(KeyModifiers::ALT))
+        {
+            for _ in 0..repeat {
+                editor.move_cursor(motion, false);
+            }
+            editor.clamp_cursor();
             return;
         }
         if let Some((motion, _)) = motion_for(key.code, ctrl) {
@@ -1486,6 +1517,34 @@ fn find_for(code: KeyCode, ctrl: bool) -> Option<(bool, bool)> {
         KeyCode::Char('T') => Some((true, true)),
         _ => None,
     }
+}
+
+/// The motion an emacs chord names, under `:set emacs`. Consulted before
+/// `motion_for` in normal and visual mode, which is how the emacs meaning wins
+/// on the three keys that were already spoken for: `^e` scrolled a line, `^b`
+/// started a block selection and `^v` pasted the system clipboard.
+///
+/// What is left of those three: the scroll has `zz` and its friends and the
+/// `{n}` prefix, the block has `gb`, and the paste has `"+p`.
+fn emacs_motion(code: KeyCode, ctrl: bool, alt: bool) -> Option<Move> {
+    let motion = match (code, ctrl, alt) {
+        (KeyCode::Char('a'), true, _) => Move::LineStart,
+        (KeyCode::Char('e'), true, _) => Move::LineEnd,
+        (KeyCode::Char('f'), true, _) => Move::Right,
+        (KeyCode::Char('b'), true, _) => Move::Left,
+        (KeyCode::Char('n'), true, _) => Move::Down,
+        (KeyCode::Char('p'), true, _) => Move::Up,
+        (KeyCode::Char('v'), true, _) => Move::PageDown,
+        (KeyCode::Char('f'), _, true) => Move::WordForward,
+        (KeyCode::Char('b'), _, true) => Move::WordBack,
+        (KeyCode::Char('v'), _, true) => Move::PageUp,
+        // `M-<` and `M->` are alt with a shifted key, so the character has
+        // already been shifted by the time it arrives.
+        (KeyCode::Char('<'), _, true) => Move::FileStart,
+        (KeyCode::Char('>'), _, true) => Move::FileEnd,
+        _ => return None,
+    };
+    Some(motion)
 }
 
 /// The motion a key names, and whether it includes the character it lands on.
@@ -4318,6 +4377,65 @@ plain
         assert_eq!(vim.text(), "\tone\n\ttwo\n\nthree\n");
     }
 
+
+    #[test]
+    fn emacs_motions_work_in_normal_mode_too() {
+        let mut vim = Vim::new("one two three\nfour five\n");
+        vim.press(":set emacs<cr>");
+
+        vim.at(1, 1).press("<C-e>");
+        assert_eq!(vim.cursor(), (1, 13), "^e is the end of the line");
+        vim.press("<C-a>");
+        assert_eq!(vim.cursor(), (1, 1), "and ^a the start");
+
+        vim.press("<C-n>");
+        assert_eq!(vim.cursor().0, 2, "^n is down");
+        vim.press("<C-p>");
+        assert_eq!(vim.cursor().0, 1, "^p is up");
+
+        vim.press("<C-f>");
+        assert_eq!(vim.cursor(), (1, 2), "^f is right");
+        vim.press("<C-b>");
+        assert_eq!(vim.cursor(), (1, 1), "^b is left, not a block selection");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+
+        // A count still counts: the chords go through the same motion path.
+        vim.press("3<C-f>");
+        assert_eq!(vim.cursor(), (1, 4));
+    }
+
+    #[test]
+    fn the_emacs_chords_drag_a_selection_in_visual_mode() {
+        let mut vim = Vim::new("one two three\n");
+        vim.press(":set emacs<cr>");
+        vim.at(1, 1).press("v<C-e>");
+        assert_eq!(vim.editor.mode, Mode::Visual);
+        vim.press("d");
+        assert_eq!(vim.text(), "\n", "the whole line went");
+    }
+
+    #[test]
+    fn block_selection_keeps_a_key_the_emacs_chords_cannot_take() {
+        // `^b` is back-a-character under `:set emacs`, so the rectangle needs
+        // a spelling that is always there.
+        let mut vim = Vim::new("abc\ndef\n");
+        vim.at(1, 1).press("gb");
+        assert_eq!(vim.editor.mode, Mode::VisualBlock);
+        vim.press("<esc>");
+
+        vim.press(":set emacs<cr>");
+        vim.at(1, 1).press("gb");
+        assert_eq!(vim.editor.mode, Mode::VisualBlock, "and still there with emacs on");
+    }
+
+    #[test]
+    fn without_the_setting_normal_mode_is_untouched() {
+        // `^b` is the rectangle and `^e` scrolls until `:set emacs` says
+        // otherwise. Nothing changes for anyone who has not asked.
+        let mut vim = Vim::new("abc\ndef\n");
+        vim.at(1, 1).press("<C-b>");
+        assert_eq!(vim.editor.mode, Mode::VisualBlock);
+    }
 
     #[test]
     fn emacs_motions_move_the_cursor_in_insert_mode() {
