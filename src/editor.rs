@@ -15,7 +15,7 @@ use crate::info::{self, Info};
 use crate::jump::{Jump, Jumps};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
-use crate::picker::{Item, Open, Outcome, Picker, Source};
+use crate::picker::{Choice, Item, Open, Outcome, Picker, Source};
 use crate::search::{self, Search};
 use crate::substitute;
 use crate::stream::{self, Message, Sign};
@@ -1835,6 +1835,16 @@ impl Editor {
                         return;
                     }
                 }
+                // A window already showing what was chosen is the window to
+                // land in: the same file twice on screen is a window wasted,
+                // and the buffer this one is showing keeps its place. An
+                // explicit `^v` or `^s` asked for a new window, so it is only
+                // the plain enter that goes looking.
+                if open == Open::Here
+                    && let Some(id) = self.window_showing(source, &choice)
+                {
+                    self.focus_window(id);
+                }
                 match source {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
@@ -2129,6 +2139,22 @@ impl Editor {
         self.focus = 0;
         self.load_focus();
         self.refresh_watched();
+    }
+
+    /// The window, other than this one, already showing what a picker's
+    /// choice points at - by buffer index for the buffer picker, by path for
+    /// the sources that name a file. Sources that stay in this buffer, and
+    /// the ones that open nothing, point at no window.
+    fn window_showing(&self, source: Source, choice: &Choice) -> Option<usize> {
+        let view = match source {
+            Source::Buffers => choice.id,
+            Source::Files | Source::Grep | Source::Diagnostics | Source::References | Source::Workspace => {
+                let path = crate::editor::lsp::absolute(Path::new(&choice.target));
+                self.views.iter().position(|view| view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone()))?
+            }
+            Source::Help | Source::Actions | Source::Symbols | Source::Lines => return None,
+        };
+        (0..self.windows.len()).find(|&id| id != self.focus && self.windows[id].view == view)
     }
 
     pub fn focus_window(&mut self, id: usize) {
@@ -3871,6 +3897,57 @@ mod tests {
         e
     }
 
+    /// Two files open, and a grep hit taken in one of them.
+    fn two_files(name: &str) -> (PathBuf, PathBuf, Editor) {
+        let dir = std::env::temp_dir().join(format!("jack_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "1\n2\n3\n4\n5\nneedle\n7\n").unwrap();
+        std::fs::write(&b, "x\ny\n").unwrap();
+        let editor = Editor::open(&[a.clone(), b.clone()]).unwrap();
+        (a, b, editor)
+    }
+
+    #[test]
+    fn a_hit_lands_in_the_window_that_already_has_the_file() {
+        let (a, _, mut e) = two_files("useopen");
+        // Window 0 reading a.txt at line 2; window 1 beside it, on b.txt.
+        e.switch_to(0);
+        e.goto_line(1);
+        e.split_window(true, None);
+        e.switch_to(1);
+        assert_eq!((e.windows_open(), e.focus()), (2, 1));
+
+        let hit = Choice { id: 6, target: a.to_string_lossy().into() };
+        e.picker = Some(Picker::new(Source::Grep, Vec::new()));
+        e.picker_outcome(Outcome::Confirm(Source::Grep, hit, Open::Here));
+
+        // The window that had a.txt is the one that went to the hit, and
+        // b.txt is still on screen rather than pushed out by a second a.txt.
+        assert_eq!(e.focus(), 0, "focus moved to the window that had it");
+        assert_eq!(e.cursor_coords(), (5, 0));
+        let (other, sel, _, _) = e.window_state(1);
+        assert!(other.doc.path.as_deref().unwrap().ends_with("b.txt"));
+        assert_eq!(other.doc.coords(sel.head), (0, 0), "left where it was");
+        // And the jump list comes back out of it, into that other window.
+        e.jump_back();
+        assert_eq!(e.focus(), 0);
+    }
+
+    #[test]
+    fn a_split_asked_for_is_a_split_even_when_a_window_has_the_file() {
+        let (a, _, mut e) = two_files("useopen_split");
+        e.switch_to(0);
+        e.split_window(true, None);
+        e.switch_to(1);
+        let hit = Choice { id: 6, target: a.to_string_lossy().into() };
+        e.picker = Some(Picker::new(Source::Grep, Vec::new()));
+        e.picker_outcome(Outcome::Confirm(Source::Grep, hit, Open::Beside));
+        assert_eq!(e.windows_open(), 3, "^v asked for a window and gets one");
+        assert_eq!(e.cursor_coords(), (5, 0));
+    }
+
     /// A view built the way opening a file builds one, so the indentation is
     /// read from the text rather than left at the default.
     fn opened(text: &str) -> Editor {
@@ -5364,3 +5441,4 @@ mod tests {
         assert!(e.message.contains("no file name"), "{}", e.message);
     }
 }
+

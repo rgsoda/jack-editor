@@ -1574,6 +1574,16 @@ the numbers line up and never enter the ranking. And the picker opens with its
 cursor already on the line you are on, scrolled to it: `<space>l` then enter is
 nothing happening, and the lines either side of you are what you see first.
 
+## Landing where the file already is
+
+Choosing a hit — a grep line, a diagnostic, a reference, a file — that is
+already showing in another window focuses *that* window and jumps there, rather
+than pulling the file into the window you are in. Two copies of one file on
+screen is a window wasted, and the buffer you were reading keeps its place
+instead of being pushed out from under you. It is vim's `switchbuf=useopen`,
+and it is only the plain enter that goes looking: `^v` and `^s` asked for a new
+window and get one, whatever is already open where.
+
 ## The jump list
 
 `^o` goes back to where the last jump started, `^i` forward again. What counts
@@ -1828,8 +1838,6 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- Opening a hit in a buffer that is already open should keep that buffer's
-  cursor, not move it.
 - `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
   kind. `:sh` is the same thing from the other end and needs nothing.
 - More languages. Cross-language injection (JS in HTML, SQL in strings) is the
