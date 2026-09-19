@@ -50,9 +50,9 @@ pub fn marker_for(path: Option<&Path>) -> Option<Marker> {
     Some(marker)
 }
 
-/// The marker for one of the grammars, by the name the language registry uses
-/// - which is how an injected region gets its own. Only the languages jack
-/// parses are here, because only those can be injected into anything.
+/// The marker for one of the grammars, by the name the language registry
+/// uses, which is how an injected region gets its own. Only the languages
+/// jack parses are here, because only those can be injected into anything.
 pub fn marker_for_language(name: &str) -> Option<Marker> {
     let marker = match name {
         "rust" | "javascript" | "go" | "java" | "c" | "cpp" => SLASHES,
