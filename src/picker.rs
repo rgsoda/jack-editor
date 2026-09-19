@@ -1,5 +1,70 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// Where the picker is drawn, in the columns and rows of the text area.
+///
+/// Telescope's shape: a box floating in the middle of the screen with a frame
+/// around it. On a terminal too small for a frame and something worth putting
+/// inside it, the panel across the bottom that this used to be, which needs no
+/// room for anything but itself.
+///
+/// One type for all of it, because the drawing, the cursor and the scrolling
+/// have to agree about where the rows are: three spellings of the same
+/// arithmetic is how a list ends up scrolling by one row more than it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    /// A frame around it, which is also what says it floats.
+    pub framed: bool,
+}
+
+/// The smallest screen a floating box is worth having on. Under this there is
+/// more frame than list.
+const FLOATS_AT: (usize, usize) = (50, 12);
+
+impl Layout {
+    pub fn new(cols: usize, text_rows: usize) -> Layout {
+        if cols < FLOATS_AT.0 || text_rows < FLOATS_AT.1 {
+            // The old panel: as tall as half the text area, and no frame.
+            let height = (text_rows / 2).clamp(2, 13);
+            let y = text_rows.saturating_sub(height);
+            return Layout { x: 0, y, width: cols, height, framed: false };
+        }
+        let width = (cols * 4 / 5).clamp(FLOATS_AT.0, cols);
+        let height = (text_rows * 4 / 5).clamp(FLOATS_AT.1, text_rows);
+        Layout { x: (cols - width) / 2, y: (text_rows - height) / 2, width, height, framed: true }
+    }
+
+    /// The rows the list itself gets: the box, less its frame, its prompt row
+    /// and the rule under the prompt.
+    pub fn list_rows(&self) -> usize {
+        match self.framed {
+            true => self.height.saturating_sub(4),
+            false => self.height.saturating_sub(1),
+        }
+    }
+
+    pub fn prompt_row(&self) -> usize {
+        self.y + usize::from(self.framed)
+    }
+
+    /// The row the first item is drawn on.
+    pub fn list_top(&self) -> usize {
+        self.y + if self.framed { 3 } else { 1 }
+    }
+
+    /// The first column inside the frame, and the one after the last.
+    pub fn left(&self) -> usize {
+        self.x + usize::from(self.framed)
+    }
+
+    pub fn right(&self) -> usize {
+        (self.x + self.width).saturating_sub(usize::from(self.framed))
+    }
+}
+
 /// Where a picker's items came from, and so what confirming one does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
@@ -208,10 +273,10 @@ impl Picker {
     /// Start with the cursor on a particular item rather than the first:
     /// the line picker opens on the line you are already on, with the list
     /// scrolled to it rather than waiting for the first keypress to do it.
-    pub fn focus(&mut self, item: usize, text_rows: usize) {
+    pub fn focus(&mut self, item: usize, layout: Layout) {
         if let Some(position) = self.matches.iter().position(|m| m.index == item) {
             self.cursor = position;
-            self.scroll_to_cursor(text_rows);
+            self.scroll_to_cursor(layout);
         }
     }
 
@@ -223,16 +288,6 @@ impl Picker {
         self.items.len()
     }
 
-    /// Rows the panel takes out of the text area: the prompt plus the list.
-    /// Fixed rather than fitted to the number of matches, so the text does not
-    /// jump around underneath while typing.
-    pub fn panel_height(text_rows: usize) -> usize {
-        (text_rows / 2).clamp(2, 13)
-    }
-
-    pub fn list_rows(text_rows: usize) -> usize {
-        Picker::panel_height(text_rows) - 1
-    }
 
     /// The prompt row: the source's name and what has been typed into it.
     ///
@@ -246,10 +301,10 @@ impl Picker {
     }
 
     /// Where the terminal cursor belongs: the end of the query on the prompt
-    /// row, which is the top row of the panel.
-    pub fn cursor_screen(&self, text_rows: usize) -> (u16, u16) {
-        let row = text_rows.saturating_sub(Picker::panel_height(text_rows));
-        (crate::ui::str_width(&self.prompt_text()) as u16, row as u16)
+    /// row. Relative to the text area, which the caller offsets.
+    pub fn cursor_screen(&self, layout: Layout) -> (u16, u16) {
+        let x = layout.left() + crate::ui::str_width(&self.prompt_text());
+        (x as u16, layout.prompt_row() as u16)
     }
 
     fn confirm(&self, open: Open) -> Outcome {
@@ -264,7 +319,7 @@ impl Picker {
         }
     }
 
-    pub fn input(&mut self, key: KeyEvent, text_rows: usize) -> Outcome {
+    pub fn input(&mut self, key: KeyEvent, layout: Layout) -> Outcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return Outcome::Cancel,
@@ -307,7 +362,7 @@ impl Picker {
             }
             _ => {}
         }
-        self.scroll_to_cursor(text_rows);
+        self.scroll_to_cursor(layout);
         Outcome::Continue
     }
 
@@ -347,8 +402,8 @@ impl Picker {
         self.cursor = ((self.cursor as isize + delta).rem_euclid(len)) as usize;
     }
 
-    fn scroll_to_cursor(&mut self, text_rows: usize) {
-        let rows = Picker::list_rows(text_rows);
+    fn scroll_to_cursor(&mut self, layout: Layout) {
+        let rows = layout.list_rows();
         if self.cursor < self.scroll {
             self.scroll = self.cursor;
         } else if self.cursor >= self.scroll + rows {
@@ -548,6 +603,12 @@ mod tests {
         Picker::new(Source::Buffers, items)
     }
 
+    /// A layout that is the panel, not the floating box: these tests are
+    /// about the list, and the panel's arithmetic is the simpler of the two.
+    fn rows(text_rows: usize) -> Layout {
+        Layout::new(80, text_rows)
+    }
+
     fn ranked(p: &Picker) -> Vec<&str> {
         p.matches()
             .iter()
@@ -557,7 +618,7 @@ mod tests {
 
     fn type_query(p: &mut Picker, query: &str) {
         for c in query.chars() {
-            p.input(key(c), 10);
+            p.input(key(c), rows(10));
         }
     }
 
@@ -614,9 +675,9 @@ mod tests {
         let mut p = picker(&["one.rs", "two.rs"]);
         type_query(&mut p, "one");
         assert_eq!(p.matches().len(), 1);
-        p.input(code(KeyCode::Backspace), 10);
-        p.input(code(KeyCode::Backspace), 10);
-        p.input(code(KeyCode::Backspace), 10);
+        p.input(code(KeyCode::Backspace), rows(10));
+        p.input(code(KeyCode::Backspace), rows(10));
+        p.input(code(KeyCode::Backspace), rows(10));
         assert_eq!(p.matches().len(), 2);
     }
 
@@ -624,25 +685,25 @@ mod tests {
     fn ctrl_w_deletes_a_word_of_the_query() {
         let mut p = picker(&["a"]);
         type_query(&mut p, "src/main");
-        p.input(ctrl('w'), 10);
+        p.input(ctrl('w'), rows(10));
         assert_eq!(p.query, "src/");
-        p.input(ctrl('u'), 10);
+        p.input(ctrl('u'), rows(10));
         assert_eq!(p.query, "");
     }
 
     #[test]
     fn the_cursor_wraps_at_both_ends() {
         let mut p = picker(&["a", "b", "c"]);
-        p.input(code(KeyCode::Up), 10);
+        p.input(code(KeyCode::Up), rows(10));
         assert_eq!(p.cursor(), 2);
-        p.input(code(KeyCode::Down), 10);
+        p.input(code(KeyCode::Down), rows(10));
         assert_eq!(p.cursor(), 0);
     }
 
     #[test]
     fn retyping_resets_the_cursor_to_the_best_match() {
         let mut p = picker(&["a", "b", "c"]);
-        p.input(code(KeyCode::Down), 10);
+        p.input(code(KeyCode::Down), rows(10));
         assert_eq!(p.cursor(), 1);
         type_query(&mut p, "a");
         assert_eq!(p.cursor(), 0);
@@ -652,9 +713,9 @@ mod tests {
     fn the_list_scrolls_to_keep_the_cursor_visible() {
         // 10 text rows: a 5-row panel, so 4 list rows.
         let mut p = picker(&["a", "b", "c", "d", "e", "f"]);
-        assert_eq!(Picker::list_rows(10), 4);
+        assert_eq!(rows(10).list_rows(), 4);
         for _ in 0..4 {
-            p.input(code(KeyCode::Down), 10);
+            p.input(code(KeyCode::Down), rows(10));
         }
         assert_eq!(p.cursor(), 4);
         assert_eq!(p.scroll(), 1);
@@ -664,7 +725,7 @@ mod tests {
     fn confirming_reports_the_item_id_not_the_row() {
         let mut p = picker(&["zero", "one", "two"]);
         type_query(&mut p, "two");
-        match p.input(code(KeyCode::Enter), 10) {
+        match p.input(code(KeyCode::Enter), rows(10)) {
             Outcome::Confirm(Source::Buffers, choice, Open::Here) => {
                 assert_eq!(choice.id, 2);
                 assert_eq!(choice.target, "two");
@@ -679,7 +740,7 @@ mod tests {
         for (c, open) in [('v', Open::Beside), ('s', Open::Below), ('x', Open::Below)] {
             let mut p = picker(&["a", "b"]);
             assert!(
-                matches!(p.input(chord(c), 10), Outcome::Confirm(_, _, got) if got == open),
+                matches!(p.input(chord(c), rows(10)), Outcome::Confirm(_, _, got) if got == open),
                 "^{c}"
             );
             assert_eq!(p.query, "", "^{c} is not typed into the query");
@@ -691,7 +752,7 @@ mod tests {
         let mut p = picker(&["a"]);
         type_query(&mut p, "zzz");
         assert!(matches!(
-            p.input(code(KeyCode::Enter), 10),
+            p.input(code(KeyCode::Enter), rows(10)),
             Outcome::Cancel
         ));
     }
@@ -699,7 +760,7 @@ mod tests {
     #[test]
     fn escape_cancels() {
         let mut p = picker(&["a"]);
-        assert!(matches!(p.input(code(KeyCode::Esc), 10), Outcome::Cancel));
+        assert!(matches!(p.input(code(KeyCode::Esc), rows(10)), Outcome::Cancel));
     }
 
     fn items(texts: &[&str]) -> Vec<Item> {
@@ -739,7 +800,7 @@ mod tests {
     fn a_batch_arriving_does_not_move_the_selection_off_its_item() {
         let mut p = Picker::streaming(Source::Files);
         p.extend(items(&["one.rs", "two.rs"]), false);
-        p.input(code(KeyCode::Down), 10);
+        p.input(code(KeyCode::Down), rows(10));
         assert_eq!(p.item(&p.matches()[p.cursor()]).text, "two.rs");
 
         // An empty query ranks everything equally, so the new item sorts in
@@ -752,7 +813,7 @@ mod tests {
     fn typing_after_a_batch_starts_from_the_best_match_again() {
         let mut p = Picker::streaming(Source::Files);
         p.extend(items(&["one.rs", "two.rs"]), true);
-        p.input(code(KeyCode::Down), 10);
+        p.input(code(KeyCode::Down), rows(10));
         assert_eq!(p.cursor(), 1);
         type_query(&mut p, "o");
         assert_eq!(p.cursor(), 0);
@@ -836,10 +897,10 @@ mod tests {
     #[test]
     fn a_live_source_asks_for_the_search_to_be_run_again() {
         let mut p = Picker::live(Source::Grep);
-        assert!(matches!(p.input(key('f'), 10), Outcome::Search(q) if q == "f"));
-        assert!(matches!(p.input(key('n'), 10), Outcome::Search(q) if q == "fn"));
+        assert!(matches!(p.input(key('f'), rows(10)), Outcome::Search(q) if q == "f"));
+        assert!(matches!(p.input(key('n'), rows(10)), Outcome::Search(q) if q == "fn"));
         assert!(matches!(
-            p.input(code(KeyCode::Backspace), 10),
+            p.input(code(KeyCode::Backspace), rows(10)),
             Outcome::Search(q) if q == "f"
         ));
     }
@@ -847,13 +908,13 @@ mod tests {
     #[test]
     fn a_live_source_drops_the_old_results_when_the_query_changes() {
         let mut p = Picker::live(Source::Grep);
-        p.input(key('f'), 10);
+        p.input(key('f'), rows(10));
         p.extend(items(&["a.rs:1:fn one", "b.rs:2:fn two"]), true);
         assert_eq!(p.matches().len(), 2);
 
         // The new pattern's hits will arrive from the search; whatever matched
         // the old one is not an answer to it.
-        p.input(key('n'), 10);
+        p.input(key('n'), rows(10));
         assert_eq!(p.matches().len(), 0);
         assert!(!p.is_complete());
     }
@@ -861,7 +922,7 @@ mod tests {
     #[test]
     fn a_live_source_keeps_its_results_in_the_order_they_were_found() {
         let mut p = Picker::live(Source::Grep);
-        p.input(key('z'), 10);
+        p.input(key('z'), rows(10));
         // None of these contain the query - a live source does not filter.
         p.extend(items(&["b.rs:9:second", "a.rs:1:first"]), true);
         assert_eq!(ranked(&p), ["b.rs:9:second", "a.rs:1:first"]);
@@ -870,8 +931,8 @@ mod tests {
     #[test]
     fn clearing_a_live_query_asks_for_nothing_and_waits() {
         let mut p = Picker::live(Source::Grep);
-        p.input(key('f'), 10);
-        match p.input(ctrl('u'), 10) {
+        p.input(key('f'), rows(10));
+        match p.input(ctrl('u'), rows(10)) {
             Outcome::Search(q) => assert_eq!(q, ""),
             _ => panic!("expected a search"),
         }
@@ -885,16 +946,26 @@ mod tests {
         let mut p = Picker::live(Source::Files);
         p.query = "mode".into();
         // " file> mode" is eleven columns, and the cursor is the twelfth.
+        // A 20-row panel has no frame, so the box starts at column 0.
         assert_eq!(p.prompt_text(), " file> mode");
-        let (column, _) = p.cursor_screen(20);
+        let (column, row) = p.cursor_screen(rows(10));
         assert_eq!(column as usize, p.prompt_text().chars().count());
         assert_eq!(column, 11);
+        assert_eq!(row as usize, rows(10).prompt_row());
+
+        // In a floating box it is the same place, counted from the box's own
+        // left edge rather than the screen's.
+        let floating = Layout::new(80, 24);
+        assert!(floating.framed);
+        let (column, row) = p.cursor_screen(floating);
+        assert_eq!(column as usize, floating.left() + 11);
+        assert_eq!(row as usize, floating.prompt_row());
 
         // Whatever the source is called, and however long the query is.
         for (source, query) in [(Source::Grep, ""), (Source::Symbols, "a longer one")] {
             let mut p = Picker::live(source);
             p.query = query.into();
-            assert_eq!(p.cursor_screen(20).0 as usize, p.prompt_text().chars().count());
+            assert_eq!(p.cursor_screen(rows(10)).0 as usize, p.prompt_text().chars().count());
         }
     }
 

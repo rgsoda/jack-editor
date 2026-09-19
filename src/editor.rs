@@ -1811,9 +1811,9 @@ impl Editor {
             })
             .collect();
         let (line, _) = self.cursor_coords();
-        let rows = self.area_rows();
+        let layout = self.picker_layout();
         let mut picker = Picker::new(Source::Lines, items);
-        picker.focus(line, rows);
+        picker.focus(line, layout);
         self.open_picker(picker);
     }
 
@@ -1957,11 +1957,11 @@ impl Editor {
     /// Route a key to the open picker. The caller has already checked that one
     /// is open.
     pub fn picker_input(&mut self, key: crossterm::event::KeyEvent) {
-        let rows = self.area_rows();
+        let layout = self.picker_layout();
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        let outcome = picker.input(key, rows);
+        let outcome = picker.input(key, layout);
         self.picker_outcome(outcome);
     }
 
@@ -2148,6 +2148,13 @@ impl Editor {
 
     /// Text rows of the whole screen below the buffer list, less the bottom
     /// status line: what a picker opens over, whatever the windows are.
+    /// Where an open picker is drawn. One place works it out, so what is
+    /// drawn, what the cursor sits on and what the list scrolls by cannot
+    /// disagree.
+    pub fn picker_layout(&self) -> crate::picker::Layout {
+        crate::picker::Layout::new(self.screen.0, self.area_rows())
+    }
+
     pub fn area_rows(&self) -> usize {
         self.screen.1.saturating_sub(1).max(1)
     }
@@ -2569,7 +2576,7 @@ impl Editor {
         }
         match self.picker.as_ref() {
             Some(picker) => {
-                let (x, y) = picker.cursor_screen(self.area_rows());
+                let (x, y) = picker.cursor_screen(self.picker_layout());
                 (x, y + self.top() as u16)
             }
             None => {
@@ -5304,9 +5311,11 @@ a two
         let text_cursor = e.cursor_screen();
         e.open_buffer_picker();
         assert_ne!(e.cursor_screen(), text_cursor);
-        // On the prompt row, past " buffer> " - the leading space included,
-        // which is what this used to be one short of.
-        assert_eq!(e.cursor_screen(), (9, 10));
+        // On the picker's prompt row, past " buffer> " - the leading space
+        // included, which is what this used to be one short of - and inside
+        // the frame, which the box's own left edge accounts for.
+        let layout = e.picker_layout();
+        assert_eq!(e.cursor_screen(), ((layout.left() + 9) as u16, layout.prompt_row() as u16));
     }
 
     #[test]

@@ -1944,7 +1944,7 @@ same `Segment` and separator code as the status line, so they wedge into each
 other the same way and degrade to hairlines under `:set noglyphs`.
 
 The row costs the text area a line: `editor.top()` is 0 or 1, and everything
-that maps a buffer line to a screen row — the text, the picker panel, the
+that maps a buffer line to a screen row — the text, the picker, the
 completion popup, the cursor — goes through it. That was the whole of the work;
 the list itself is twenty lines.
 
@@ -2103,6 +2103,21 @@ keymap itself. The source builds the items and
 says what confirming one does; everything else — the query, the matching, the ranking,
 the scrolling, the keymap — is shared, so adding the file and grep pickers is
 adding a source, not another picker.
+
+It floats: a box in the middle of the screen with a frame around it and the
+file still visible on either side, which is what Telescope looks like and what
+a picker over a whole project should look like. Four fifths of the screen each
+way, centred, clamped so it is never smaller than 50x12 — and on a terminal
+that cannot spare that, it falls back to the panel across the bottom it used to
+be, because a frame costs two columns and four rows and on a small screen that
+is most of the list. The frame is box-drawing characters, or ASCII under `:set
+noglyphs`, like the status line.
+
+One `Layout` works the geometry out, and the drawing, the terminal cursor and
+the list's scrolling all ask it rather than each doing the arithmetic again —
+three spellings of the same sum is how a list comes to scroll by one row more
+than it shows. Every cell inside the frame is written, including the ones a
+short list does not reach, so the text underneath never shows through.
 
 Matching is fzf's simple two-pass algorithm: forward to find where a match can
 end, then backward from there to pull the start as far right as it goes, so

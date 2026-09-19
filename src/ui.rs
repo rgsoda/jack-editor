@@ -9,7 +9,7 @@ use crate::window::Rect;
 use crate::view::cluster_width;
 use unicode_segmentation::UnicodeSegmentation;
 use crate::keys::Keys;
-use crate::picker::Picker;
+use crate::picker::{Layout, Picker};
 use crate::complete::{Candidate, Completion};
 use crate::info::Info;
 use crate::screen::{Style, Surface};
@@ -452,20 +452,23 @@ fn draw_info(editor: &Editor, info: &Info, surface: &mut Surface) {
     }
 }
 
-/// The picker panel, drawn over the bottom rows of the text area. It is opaque:
-/// every cell in the panel is written, so nothing of the text shows through.
+/// The picker: a box floating in the middle of the screen, as Telescope draws
+/// it, or on a small terminal the panel across the bottom it used to be. It is
+/// opaque either way - every cell inside it is written, so nothing of the text
+/// shows through.
 fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
-    let (width, _) = surface.size();
-    let rows = editor.area_rows();
-    let panel = Picker::panel_height(rows);
-    // Relative to the text area, which may start a row down.
-    let top = editor.top() + rows.saturating_sub(panel);
-    let bottom = editor.top() + rows;
+    let layout = editor.picker_layout();
+    let top = editor.top();
+    let (left, right) = (layout.left(), layout.right());
 
     let base = editor.theme.style("ui.picker");
     let selected = editor.theme.style("ui.picker.selected");
     let matched = editor.theme.style("ui.picker.match");
     let detail = editor.theme.style("ui.picker.detail");
+
+    if layout.framed {
+        draw_frame(editor, surface, layout, top, base);
+    }
 
     // Prompt row: the source's name, the query, and the match count.
     let prompt = picker.prompt_text();
@@ -478,22 +481,18 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
         if picker.is_complete() { "" } else { "+" }
     );
     let style = editor.theme.style("ui.picker.prompt");
-    let mut x = put_str(surface, 0, top, &prompt, style, width);
-    let gap = width.saturating_sub(x + str_width(&count));
-    x = put_str(surface, x, top, &" ".repeat(gap), style, width);
-    x = put_str(surface, x, top, &count, style, width);
-    while x < width {
-        surface.put(x, top, ' ', 1, style);
+    let row = top + layout.prompt_row();
+    let mut x = put_str(surface, left, row, &prompt, style, right);
+    let gap = right.saturating_sub(x + str_width(&count));
+    x = put_str(surface, x, row, &" ".repeat(gap), style, right);
+    x = put_str(surface, x, row, &count, style, right);
+    while x < right {
+        surface.put(x, row, ' ', 1, style);
         x += 1;
     }
 
-    let list_rows = Picker::list_rows(rows);
-    for row in 0..list_rows {
-        let y = top + 1 + row;
-        // On a very short terminal the panel would reach the status line.
-        if y >= bottom {
-            break;
-        }
+    for row in 0..layout.list_rows() {
+        let y = top + layout.list_top() + row;
         let index = picker.scroll() + row;
         // A row with nothing on it is not the selected row, whatever the
         // cursor says: an empty list still has a cursor at 0, and highlighting
@@ -504,12 +503,13 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
         let is_cursor = found.is_some() && index == picker.cursor();
         let row_style = if is_cursor { selected } else { base };
 
-        let mut x = put_str(surface, 0, y, if is_cursor { " > " } else { "   " }, row_style, width);
+        let mut x =
+            put_str(surface, left, y, if is_cursor { " > " } else { "   " }, row_style, right);
         // Nothing matched, and nothing else is coming: say so, rather than
         // leaving an empty box to be read as a broken one.
         if row == 0 && picker.matches().is_empty() && !picker.query.is_empty() && picker.is_complete()
         {
-            x = put_str(surface, x, y, "no matches", base.patch(detail), width);
+            x = put_str(surface, x, y, "no matches", base.patch(detail), right);
         }
         if let Some(m) = found {
             let item = picker.item(m);
@@ -520,7 +520,7 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
                 true => 0,
                 false => str_width(&item.detail) + 2,
             };
-            let room = width.saturating_sub(tail);
+            let room = right.saturating_sub(tail);
 
             // Matched characters are tinted; the selected row keeps its own
             // background, so the tint patches over it rather than replacing it.
@@ -540,18 +540,61 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
                 x += w;
             }
             if tail > 0 {
-                while x < width.saturating_sub(tail - 1) {
+                while x < right.saturating_sub(tail - 1) {
                     surface.put(x, y, ' ', 1, row_style);
                     x += 1;
                 }
-                x = put_str(surface, x, y, &item.detail, row_style.patch(detail), width);
+                x = put_str(surface, x, y, &item.detail, row_style.patch(detail), right);
             }
         }
-        while x < width {
+        while x < right {
             surface.put(x, y, ' ', 1, row_style);
             x += 1;
         }
     }
+}
+
+/// The frame around a floating picker, with the rule under its prompt row.
+///
+/// Box-drawing characters unless `:set noglyphs` says the terminal has no font
+/// for them, in which case the ASCII a frame was drawn with before anyone had
+/// one. The corners are the only part that has to be said twice.
+fn draw_frame(editor: &Editor, surface: &mut Surface, layout: Layout, top: usize, base: Style) {
+    let style = editor.theme.style("ui.picker.border");
+    let [tl, tr, bl, br, h, v, tee_left, tee_right] = match editor.glyphs {
+        true => ['╭', '╮', '╰', '╯', '─', '│', '├', '┤'],
+        false => ['+', '+', '+', '+', '-', '|', '+', '+'],
+    };
+
+    let (x0, x1) = (layout.x, layout.x + layout.width - 1);
+    let (y0, y1) = (top + layout.y, top + layout.y + layout.height - 1);
+    // The rule under the prompt, which is what makes the query a field of its
+    // own rather than the first line of the list.
+    let rule = top + layout.prompt_row() + 1;
+
+    for x in x0..=x1 {
+        surface.put(x, y0, h, 1, style);
+        surface.put(x, y1, h, 1, style);
+        surface.put(x, rule, h, 1, style);
+    }
+    for y in y0 + 1..y1 {
+        surface.put(x0, y, v, 1, style);
+        surface.put(x1, y, v, 1, style);
+        // The inside is painted here so that every cell of the box is written
+        // whatever the rows below do with it: a short list must not leave the
+        // text showing through the bottom of the frame.
+        if y != rule {
+            for x in x0 + 1..x1 {
+                surface.put(x, y, ' ', 1, base);
+            }
+        }
+    }
+    surface.put(x0, y0, tl, 1, style);
+    surface.put(x1, y0, tr, 1, style);
+    surface.put(x0, y1, bl, 1, style);
+    surface.put(x1, y1, br, 1, style);
+    surface.put(x0, rule, tee_left, 1, style);
+    surface.put(x1, rule, tee_right, 1, style);
 }
 
 /// The parts of drawing a line that are the same for every line in a frame.
@@ -1112,15 +1155,53 @@ mod tests {
         // open, and with nothing in it yet.
         editor.picker = Some(crate::picker::Picker::streaming(crate::picker::Source::Files));
         let keys = Keys::default();
-        let rows = editor.area_rows();
-        let panel = crate::picker::Picker::panel_height(rows);
-        let first = editor.top() + rows - panel + 1;
+        let layout = editor.picker_layout();
+        let first = editor.top() + layout.list_top();
 
-        let row = row_text(&editor, &keys, first);
+        // Inside the frame: the text of the file goes on either side of a box
+        // that floats, and it is the box's own row that has to be empty.
+        let row: String =
+            row_text(&editor, &keys, first).chars().take(layout.right()).skip(layout.left()).collect();
         assert!(row.trim().is_empty(), "no lone marker on an empty list: {row:?}");
         let styles = row_backgrounds(&editor, &keys, first);
         let selected = editor.theme.style("ui.picker.selected").bg;
         assert!(styles.iter().all(|bg| *bg != selected), "and nothing lit up either");
+    }
+
+    #[test]
+    fn the_picker_floats_in_a_frame_with_the_text_still_around_it() {
+        let mut editor = editor_with_lines(40);
+        editor.picker = Some(crate::picker::Picker::streaming(crate::picker::Source::Files));
+        let keys = Keys::default();
+        let layout = editor.picker_layout();
+        assert!(layout.framed, "80x24 has room to float");
+
+        // The frame's top row: a corner, a rule, a corner - and the file
+        // showing on both sides of it.
+        let row = row_text(&editor, &keys, editor.top() + layout.y);
+        let chars: Vec<char> = row.chars().collect();
+        assert_eq!(chars[layout.x], '\u{256d}');
+        assert_eq!(chars[layout.x + layout.width - 1], '\u{256e}');
+        assert_eq!(chars[layout.x + 1], '\u{2500}');
+        assert!(row[..layout.x].trim().is_empty() || row.trim_start().starts_with(|c: char| c.is_ascii_digit()));
+        assert!(chars[..layout.x].iter().any(|c| !c.is_whitespace()), "text to the left");
+
+        // And the rule under the prompt, which makes the query its own field.
+        let rule = row_text(&editor, &keys, editor.top() + layout.prompt_row() + 1);
+        let chars: Vec<char> = rule.chars().collect();
+        assert_eq!(chars[layout.x], '\u{251c}');
+        assert_eq!(chars[layout.x + layout.width - 1], '\u{2524}');
+    }
+
+    #[test]
+    fn a_narrow_terminal_gets_the_panel_instead_of_a_box() {
+        // A frame costs two columns and four rows, which on a small terminal
+        // is most of the list. Below that it is the bottom panel it was.
+        let layout = crate::picker::Layout::new(40, 20);
+        assert!(!layout.framed);
+        assert_eq!(layout.x, 0);
+        assert_eq!(layout.width, 40);
+        assert_eq!(layout.y + layout.height, 20, "against the status line");
     }
 
     #[test]
@@ -1141,8 +1222,7 @@ mod tests {
         }
 
         let keys = Keys::default();
-        let rows = editor.area_rows();
-        let first = editor.top() + rows - crate::picker::Picker::panel_height(rows) + 1;
+        let first = editor.top() + editor.picker_layout().list_top();
         assert!(row_text(&editor, &keys, first).contains("no matches"));
     }
 

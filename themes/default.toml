@@ -86,6 +86,7 @@
 "ui.picker.selected" = { fg = "#f8f8f2", bg = "#44475a", bold = true }
 "ui.picker.match" = { fg = "#50fa7b" }
 "ui.picker.detail" = { fg = "#6272a4" }
+"ui.picker.border" = { fg = "#bd93f9", bg = "#282a36" }
 "ui.mode.visual" = { fg = "#282a36", bg = "#ffb86c", bold = true }
 "ui.cursorline" = { bg = "#44475a" }
 "ui.linenr" = { fg = "#6272a4" }
