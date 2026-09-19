@@ -151,6 +151,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:revert` `:stage` | put back git's lines for the hunk under the cursor, or stage just that hunk |
 | `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
 | `:sh` | a shell; `exit` comes back |
+| `^z` `:suspend` | stop jack and go back to the shell; `fg` comes back |
 | `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
 | `:e path` `:e!` | open a file, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
@@ -1426,6 +1427,25 @@ A config file does not get to do this. It is for settings, a line in one that
 runs a program at startup is a surprise nobody wants, and there is no terminal
 to hand over at that point anyway.
 
+### Suspending
+
+`^z` is the same handover with a different program on the other end: the one
+jack was started from. `:suspend`, `:sus` and `:stop` spell it out.
+
+Raw mode is why it takes any code at all. With the terminal raw, `^z` is a key
+like any other and never reaches the line discipline, so the signal the shell is
+waiting for is one jack has to send itself — `raise(SIGTSTP)`, whose default
+disposition does the stopping. That one line is the only reason `libc` is in
+`Cargo.toml`, and it is a unix dependency: on a platform with no job control
+`^z` does nothing rather than lying about what it did.
+
+The shape falls out of what a signal is. Everything before the raise is the
+handover — the reader stopped, raw mode off, off the alternate screen — and
+everything after it runs when `fg` sends `SIGCONT`, so taking the terminal back
+is the second half of the same function. Including reading the files back in:
+being stopped is how you go and change them, so coming back is exactly when to
+look.
+
 ## Formatting
 
 `:fmt` hands the buffer to whatever the server formats with - rustfmt through
@@ -1971,8 +1991,6 @@ was at first:
 
 ## Next
 
-- `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
-  kind. `:sh` is the same thing from the other end and needs nothing.
 - More languages. Cross-language injection works for every query kind now, so
   what is left is registering grammars in `LANGUAGES` — `css` for HTML's
   `<style>`, `markdown` for fenced code, `sql` for queries in strings.

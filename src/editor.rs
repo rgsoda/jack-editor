@@ -375,6 +375,9 @@ pub struct Editor {
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
     pub shell: Option<String>,
+    /// `^z`: the run loop should hand the terminal back and stop the process.
+    /// Same reason as `shell` - the terminal is not the editor's to give away.
+    pub suspend: bool,
     /// An escape sequence the run loop should write out with the next frame.
     /// A copy with no clipboard helper to run leaves an OSC 52 here, because
     /// the editor does not own stdout and the renderer does.
@@ -493,6 +496,7 @@ impl Editor {
             info: None,
             actions: None,
             shell: None,
+            suspend: false,
             leader: BTreeMap::new(),
             disk_checked: None,
             positions: Default::default(),
@@ -1092,6 +1096,7 @@ impl Editor {
             ("hunk", _) => self.preview_hunk(),
             ("blame", _) => self.blame_line(),
             ("sh" | "shell", _) => self.run_shell(""),
+            ("sus" | "stop" | "suspend", _) => self.suspend(),
             ("map", argument) => self.map_leader(argument),
             ("unmap", argument) => self.unmap_leader(argument),
             ("e" | "edit", "") => self.reload(force),
@@ -1171,6 +1176,17 @@ impl Editor {
     /// the reason this exists.
     ///
     /// An empty command means the shell itself, and `exit` comes back here.
+    /// `^z` and `:suspend`: stop, and come back on `fg` where you left off.
+    pub fn suspend(&mut self) {
+        // As with `:!`, a config file has no terminal to hand back yet, and a
+        // line in one that stops the editor before it starts is nobody's idea.
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        self.suspend = true;
+    }
+
     fn run_shell(&mut self, command: &str) {
         // A config file is for settings. A line in one that runs a program at
         // startup is a surprise nobody wants, and there is no terminal to hand
@@ -5238,6 +5254,26 @@ mod tests {
         e.shell = None;
         e.run_command("sh");
         assert_eq!(e.shell.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn suspending_leaves_the_signal_for_the_run_loop() {
+        // The editor does not own the terminal, so `^z` cannot stop anything
+        // itself: it leaves a flag, the same way `:!` leaves a command.
+        let mut e = Editor::scratch();
+        assert!(!e.suspend);
+        e.suspend();
+        assert!(e.suspend);
+
+        e.suspend = false;
+        e.run_command("stop");
+        assert!(e.suspend, "`:stop` and `:sus` are `:suspend`");
+
+        e.suspend = false;
+        e.from_config = true;
+        e.run_command("suspend");
+        assert!(!e.suspend, "and a config file has no terminal to hand back");
+        assert_eq!(e.message, "not from a config file");
     }
 
     #[test]

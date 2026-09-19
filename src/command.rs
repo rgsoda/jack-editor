@@ -45,6 +45,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "stage", argument: Argument::None },
     Command { name: "revert", argument: Argument::None },
     Command { name: "shell", argument: Argument::None },
+    Command { name: "suspend", argument: Argument::None },
     Command { name: "map", argument: Argument::None },
     Command { name: "unmap", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
@@ -346,6 +347,7 @@ fn argument_for(name: &str) -> Argument {
         "noh" => "nohlsearch",
         "fmt" => "format",
         "sh" => "shell",
+        "sus" | "stop" => "suspend",
         other => other,
     };
     COMMANDS

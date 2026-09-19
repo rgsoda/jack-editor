@@ -18,6 +18,7 @@ pub struct Binding {
 pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^s", what: "save", mode: "any" },
     Binding { keys: "^q", what: "quit (twice if unsaved)", mode: "any" },
+    Binding { keys: "^z", what: "suspend to the shell (fg to come back)", mode: "normal" },
 
     Binding { keys: "h j k l", what: "move left, down, up, right", mode: "normal" },
     Binding { keys: "arrows", what: "move", mode: "normal" },
@@ -1042,6 +1043,10 @@ impl Keys {
             KeyCode::Char('z') if !ctrl => {
                 self.pending = Some(Pending::Reveal);
             }
+            // `^z` where every other program in the terminal has it: the
+            // shell back, and jack stopped until `fg`. Raw mode means the
+            // terminal never sees the key, so it is raised by hand.
+            KeyCode::Char('z') if ctrl => editor.suspend(),
             KeyCode::Char('e') if ctrl => editor.scroll_lines(true, repeat),
             KeyCode::Char('y') if ctrl => editor.scroll_lines(false, repeat),
             KeyCode::Char('H') => editor.goto_screen_line(Screen::Top, repeat, false),
@@ -2065,6 +2070,15 @@ mod tests {
         let mut vim = Vim::file("demo.js", text);
         vim.at(3, 8).press("gd");
         assert_eq!(vim.cursor(), (2, 9));
+    }
+
+    #[test]
+    fn control_z_asks_for_a_suspend() {
+        // Raw mode means the terminal never sees `^z`, so the key has to be
+        // bound like any other and the signal raised by hand.
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.press("<C-z>");
+        assert!(vim.editor.suspend);
     }
 
     #[test]

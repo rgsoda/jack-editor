@@ -292,6 +292,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "regex",
  "ropey",
  "serde",

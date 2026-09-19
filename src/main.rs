@@ -198,6 +198,14 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
             shown_mode = None;
         }
 
+        // `^z` - the same handover, except that what gets the terminal is the
+        // shell jack was started from, and what comes back is `fg`.
+        if std::mem::take(&mut editor.suspend) {
+            stop(editor, input)?;
+            screen = screen::Screen::new();
+            shown_mode = None;
+        }
+
         // A stat per buffer, at most once a second - and first, so that what
         // it reloads is scrolled to, synced and drawn in this same frame.
         editor.watch_disk();
@@ -326,6 +334,38 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
 /// thread told to stop reading so the program gets every key it is sent.
 /// Anything less and a full-screen program - which is what this is for - gets
 /// half a keyboard and a screen jack is still drawing on.
+/// `^z`: the terminal back to the shell, and the process stopped where it
+/// stands. The next line runs when `fg` sends `SIGCONT`, which is where the
+/// screen is taken back - so the whole of suspending is these two halves
+/// around one raise.
+///
+/// Raw mode is why it has to be raised by hand. With the terminal in raw mode
+/// `^z` is a key like any other and never reaches the line discipline, so the
+/// signal the shell is waiting for is one jack has to send itself.
+#[cfg(unix)]
+fn stop(editor: &mut Editor, input: &stream::Input) -> Result<()> {
+    input.pause();
+    restore();
+    // Safe: `raise` takes a signal number and touches nothing of ours. The
+    // default disposition of SIGTSTP is what does the stopping.
+    unsafe { libc::raise(libc::SIGTSTP) };
+
+    terminal::enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
+    input.resume();
+    // Whatever was done to these files while jack was stopped, which is the
+    // usual reason for stopping it.
+    editor.reload_changed_files();
+    Ok(())
+}
+
+/// Nowhere to send the signal: on a platform without job control, `^z` is a
+/// key that does nothing rather than a key that lies about what it did.
+#[cfg(not(unix))]
+fn stop(_editor: &mut Editor, _input: &stream::Input) -> Result<()> {
+    Ok(())
+}
+
 fn hand_over(editor: &mut Editor, command: &str, input: &stream::Input) -> Result<()> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     input.pause();
