@@ -945,7 +945,7 @@ impl Editor {
             return;
         };
         let at = self.view().sel.head;
-        let Some(found) = self.view().definition(&word, at, local) else {
+        let Some(found) = self.view().definition(&word, at, local, &self.theme) else {
             self.message = format!("no definition of {word}");
             return;
         };
@@ -1623,7 +1623,7 @@ impl Editor {
     /// `gd` reads, asked for the whole file - so a language we can highlight is
     /// a language we can list.
     pub fn open_symbol_picker(&mut self) {
-        let definitions = self.view().definitions();
+        let definitions = self.view().definitions(&self.theme);
         if definitions.is_empty() {
             self.message = match self.view().has_grammar() {
                 true => "nothing defined in this buffer".into(),
@@ -2792,7 +2792,7 @@ impl Editor {
         let last = last.min(self.view().last_line());
         let mut targets = Vec::new();
         for line in first..=last {
-            if let Some(level) = self.view().indent_level(line) {
+            if let Some(level) = self.view().indent_level(line, &self.theme) {
                 targets.push((line, level * indent.width));
             }
         }
@@ -2853,7 +2853,7 @@ impl Editor {
         }
         let indent = self.indent();
         let (line, _) = self.view().cursor_coords();
-        let column = match self.view().indent_level(line) {
+        let column = match self.view().indent_level(line, &self.theme) {
             Some(level) => level * indent.width,
             None => match self.guessed_indent_column(line) {
                 Some(column) => column,

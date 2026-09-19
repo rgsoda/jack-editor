@@ -336,6 +336,13 @@ fn kind_for(capture: &str) -> Option<&'static str> {
     Some(kind)
 }
 
+/// An injected region, parsed: the language it is in and the tree for it.
+/// Built on demand and dropped after - see `Syntax::layers_at`.
+struct Layer {
+    compiled: Rc<Compiled>,
+    tree: Tree,
+}
+
 /// The parts of a highlight pass that do not change as injections recurse.
 struct Frame<'a> {
     rope: &'a Rope,
@@ -434,25 +441,44 @@ impl Syntax {
     /// about types - `gd` on a method call finds a method with that name, not
     /// the one for the receiver's type. That is where a real index begins, and
     /// this is what is worth having before one.
-    pub fn definition(&self, rope: &Rope, at: usize, name: &str, local: bool) -> Option<usize> {
+    pub fn definition(&self, rope: &Rope, at: usize, name: &str, local: bool, theme: &Theme) -> Option<usize> {
+        // Inside an injected region the innermost language is the one that
+        // knows the name: a function in a `<script>` is JavaScript's, and
+        // HTML's queries have never heard of it. So those layers are asked
+        // first, innermost out, and the host after them.
+        let layers = self.layers_at(rope, at, theme);
+        for layer in layers.iter().rev() {
+            let root = layer.tree.root_node();
+            if local
+                && let Some(item) = enclosing_item(root, at)
+                && let Some(found) = self.local_definition(&layer.compiled, root, rope, at, name, item)
+            {
+                return Some(found);
+            }
+            if let Some(found) = self.tagged_definition(&layer.compiled, root, rope, at, name) {
+                return Some(found);
+            }
+        }
+
+        let root = self.tree.root_node();
         // A binding can only be in scope from inside the item that holds it,
         // so the first tier reads that item and not the file. It is what makes
         // `gd` on a local instant in a file where reading the whole tree is
         // tens of milliseconds.
         if local
-            && let Some(item) = self.enclosing_item(at)
-            && let Some(found) = self.local_definition(rope, at, name, item)
+            && let Some(item) = enclosing_item(root, at)
+            && let Some(found) = self.local_definition(&self.root, root, rope, at, name, item)
         {
             return Some(found);
         }
-        if let Some(found) = self.tagged_definition(rope, at, name) {
+        if let Some(found) = self.tagged_definition(&self.root, root, rope, at, name) {
             return Some(found);
         }
         // Left over: a binding at the top level of the file, which is to say a
         // `const` or a `static`. No tags query names those, and they are the
         // one kind of binding the first tier cannot have seen.
         match local {
-            true => self.local_definition(rope, at, name, 0..rope.len_bytes()),
+            true => self.local_definition(&self.root, root, rope, at, name, 0..rope.len_bytes()),
             false => None,
         }
     }
@@ -463,18 +489,34 @@ impl Syntax {
     /// The same tags query `gd` reads, asked for all of it rather than for one
     /// name. `@definition.function` and friends give the kind; the `@name`
     /// capture gives the name and the place to jump to.
-    pub fn definitions(&self, rope: &Rope) -> Vec<(String, &'static str, usize)> {
-        let Some(query) = self.root.tags.as_ref() else {
+    pub fn definitions(&self, rope: &Rope, theme: &Theme) -> Vec<(String, &'static str, usize)> {
+        // The page's own, and whatever its `<script>` defines: an injected
+        // region is code in the file, and this is the list of what the file
+        // defines.
+        let mut found = self.tagged(&self.root, self.tree.root_node(), rope);
+        for layer in self.all_layers(rope, theme) {
+            found.extend(self.tagged(&layer.compiled, layer.tree.root_node(), rope));
+        }
+        // Query order is not file order, and a list of what a file holds is
+        // only readable in the order it holds it.
+        found.sort_by_key(|(_, _, start)| *start);
+        found.dedup_by_key(|(_, _, start)| *start);
+        found
+    }
+
+    /// One layer's definitions, in whatever order the query found them.
+    fn tagged(&self, compiled: &Compiled, root: Node, rope: &Rope) -> Vec<(String, &'static str, usize)> {
+        let Some(query) = compiled.tags.as_ref() else {
             return Vec::new();
         };
-        let Some(capture_index) = self.root.name_capture else {
+        let Some(capture_index) = compiled.name_capture else {
             return Vec::new();
         };
         let names = query.capture_names();
 
         let mut found = Vec::new();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, self.tree.root_node(), RopeProvider(rope));
+        let mut matches = cursor.matches(query, root, RopeProvider(rope));
         while let Some(m) = matches.next() {
             let captures = m.captures();
             let Some(kind) = captures
@@ -493,26 +535,7 @@ impl Syntax {
                 node.start_byte(),
             ));
         }
-        // Query order is not file order, and a list of what a file holds is
-        // only readable in the order it holds it.
-        found.sort_by_key(|(_, _, start)| *start);
-        found.dedup_by_key(|(_, _, start)| *start);
         found
-    }
-
-    /// The byte range of the top-level item holding `at` - the function,
-    /// `impl` or `mod` that a binding in scope has to be inside.
-    fn enclosing_item(&self, at: usize) -> Option<Range<usize>> {
-        let root = self.tree.root_node();
-        let end = (at + 1).min(root.end_byte());
-        let mut node = root.descendant_for_byte_range(at, end)?;
-        while let Some(parent) = node.parent() {
-            if parent.id() == root.id() {
-                return Some(node.byte_range());
-            }
-            node = parent;
-        }
-        None
     }
 
     /// A binding of `name` in scope at `at`: the innermost one wins, which is
@@ -520,19 +543,21 @@ impl Syntax {
     /// to a `let` of the same name further in.
     fn local_definition(
         &self,
+        compiled: &Compiled,
+        root: Node,
         rope: &Rope,
         at: usize,
         name: &str,
         range: Range<usize>,
     ) -> Option<usize> {
-        let query = self.root.locals.as_ref()?;
-        let (scope, definition) = (self.root.scope_capture?, self.root.definition_capture?);
+        let query = compiled.locals.as_ref()?;
+        let (scope, definition) = (compiled.scope_capture?, compiled.definition_capture?);
 
         let mut scopes: HashSet<usize> = HashSet::new();
         let mut found: Vec<(usize, usize)> = Vec::new();
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(range);
-        let mut matches = cursor.captures(query, self.tree.root_node(), RopeProvider(rope));
+        let mut matches = cursor.captures(query, root, RopeProvider(rope));
         while let Some((m, index)) = matches.next() {
             let capture = m.captures()[*index];
             if capture.index == scope {
@@ -545,10 +570,9 @@ impl Syntax {
             return None;
         }
 
-        // The scopes around the cursor, innermost first. The file itself is
+        // The scopes around the cursor, innermost first. The layer itself is
         // the last of them, for grammars whose locals query does not name the
         // root - JavaScript's does not.
-        let root = self.tree.root_node();
         let end = (at + 1).min(root.end_byte());
         let mut chain: Vec<usize> = Vec::new();
         let mut node = root.descendant_for_byte_range(at, end);
@@ -563,7 +587,7 @@ impl Syntax {
         for scope in chain {
             let mut best: Option<usize> = None;
             for &(id, start) in &found {
-                if self.scope_of(id, start, &scopes) != Some(scope) {
+                if scope_of(root, id, start, &scopes) != Some(scope) {
                     continue;
                 }
                 // The last binding before the cursor, because a rebinding
@@ -589,21 +613,6 @@ impl Syntax {
         None
     }
 
-    /// Which scope a binding belongs to: the nearest one above it.
-    fn scope_of(&self, id: usize, start: usize, scopes: &HashSet<usize>) -> Option<usize> {
-        let root = self.tree.root_node();
-        let end = (start + 1).min(root.end_byte());
-        let mut node = root.descendant_for_byte_range(start, end);
-        // Walk up to the captured node itself first, then on to its scope.
-        while let Some(current) = node {
-            if current.id() != id && scopes.contains(&current.id()) {
-                return Some(current.id());
-            }
-            node = current.parent();
-        }
-        Some(root.id())
-    }
-
     /// What the file itself defines, from the tags query every grammar crate
     /// ships. Nearest to the cursor wins, so a method defined in the impl you
     /// are reading beats one of the same name further off.
@@ -612,14 +621,14 @@ impl Syntax {
     /// an index that cross-references both - so a match only counts when it
     /// also carries a `@definition.*` capture. Without that check `gd` lands
     /// on the call it was pressed over.
-    fn tagged_definition(&self, rope: &Rope, at: usize, name: &str) -> Option<usize> {
-        let query = self.root.tags.as_ref()?;
-        let capture_index = self.root.name_capture?;
+    fn tagged_definition(&self, compiled: &Compiled, root: Node, rope: &Rope, at: usize, name: &str) -> Option<usize> {
+        let query = compiled.tags.as_ref()?;
+        let capture_index = compiled.name_capture?;
         let names = query.capture_names();
 
         let mut best: Option<usize> = None;
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, self.tree.root_node(), RopeProvider(rope));
+        let mut matches = cursor.matches(query, root, RopeProvider(rope));
         while let Some(m) = matches.next() {
             let captures = m.captures();
             if !captures.iter().any(|c| names[c.index as usize].starts_with("definition")) {
@@ -662,19 +671,6 @@ impl Syntax {
         false
     }
 
-    /// Whether the byte sits anywhere inside a node tree-sitter could not
-    /// make sense of.
-    fn inside_error(&self, byte: usize) -> bool {
-        let mut node = self.tree.root_node().descendant_for_byte_range(byte, byte);
-        while let Some(current) = node {
-            if current.is_error() {
-                return true;
-            }
-            node = current.parent();
-        }
-        false
-    }
-
     pub fn has_indent_rules(&self) -> bool {
         self.root.indents.is_some()
     }
@@ -686,9 +682,23 @@ impl Syntax {
     /// Every `@indent` ancestor that started on an earlier line is a step; an
     /// `@outdent` node starting on this line takes one back, which is what
     /// puts a closing brace under the thing it closes.
-    pub fn indent_level(&self, rope: &Rope, at: usize, line: Range<usize>) -> Option<usize> {
-        let query = self.root.indents.as_ref()?;
-        let (indent, outdent) = (self.root.indent_capture?, self.root.outdent_capture);
+    pub fn indent_level(&self, rope: &Rope, at: usize, line: Range<usize>, theme: &Theme) -> Option<usize> {
+        // The host language indents its way to the injected region - a
+        // `<script>` body starts one step in - and the injected language
+        // indents inside it. Both count, so both are asked.
+        let mut steps = self.steps(&self.root, self.tree.root_node(), rope, at, line.clone())?;
+        for layer in self.layers_at(rope, at, theme) {
+            steps += self.steps(&layer.compiled, layer.tree.root_node(), rope, at, line.clone()).unwrap_or(0);
+        }
+        Some(steps)
+    }
+
+    /// One layer's contribution: the `@indent` ancestors of `at` in this tree
+    /// that started on an earlier line, less the `@outdent` nodes that start
+    /// on this one.
+    fn steps(&self, compiled: &Compiled, root: Node, rope: &Rope, at: usize, line: Range<usize>) -> Option<usize> {
+        let query = compiled.indents.as_ref()?;
+        let (indent, outdent) = (compiled.indent_capture?, compiled.outdent_capture);
 
         // One query run, restricted to the line: tree-sitter returns every
         // match that *overlaps* that range, which is exactly the enclosing
@@ -697,7 +707,7 @@ impl Syntax {
         let mut outdents: Vec<usize> = Vec::new();
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(line);
-        let mut matches = cursor.captures(query, self.tree.root_node(), RopeProvider(rope));
+        let mut matches = cursor.captures(query, root, RopeProvider(rope));
         while let Some((m, index)) = matches.next() {
             let capture = m.captures()[*index];
             if capture.index == indent {
@@ -716,7 +726,7 @@ impl Syntax {
             .reversed()
             .position(|b| !b.is_ascii_whitespace())
             .map(|back| at - back - 1);
-        if self.inside_error(at) || before.is_some_and(|byte| self.inside_error(byte)) {
+        if inside_error(root, at) || before.is_some_and(|byte| inside_error(root, byte)) {
             return None;
         }
 
@@ -725,7 +735,7 @@ impl Syntax {
         // the node that *contains* it, and the closing brace we need to see is
         // the one that starts there.
         let end = (at + 1).min(rope.len_bytes());
-        let mut node = self.tree.root_node().descendant_for_byte_range(at, end)?;
+        let mut node = root.descendant_for_byte_range(at, end)?;
         // Counted separately and subtracted at the end: the walk meets the
         // closing brace before the blocks that put it there, so taking one off
         // as we go would take it off nothing.
@@ -765,22 +775,9 @@ impl Syntax {
                 continue;
             };
 
-            let tree = {
-                let mut parser = self.scratch.borrow_mut();
-                if parser.set_language(&child.language).is_err()
-                    || parser.set_included_ranges(&ranges).is_err()
-                {
-                    continue;
-                }
-                let tree = parse(&mut parser, rope, None);
-                // Leave the scratch parser unrestricted for the next caller.
-                let _ = parser.set_included_ranges(&[]);
-                tree
-            };
-
             // An injected layer paints over its host, so the inner language's
             // idea of a token wins inside the injected region.
-            if let Some(tree) = tree {
+            if let Some(tree) = self.parse_injected(&child, rope, &ranges) {
                 self.paint(frame, &child, tree.root_node(), styles, depth + 1);
             }
         }
@@ -881,6 +878,81 @@ impl Syntax {
         found
     }
 
+    /// Parse `ranges` with an injected language, using the scratch parser.
+    fn parse_injected(&self, child: &Compiled, rope: &Rope, ranges: &[tree_sitter::Range]) -> Option<Tree> {
+        let mut parser = self.scratch.borrow_mut();
+        if parser.set_language(&child.language).is_err() || parser.set_included_ranges(ranges).is_err() {
+            return None;
+        }
+        let tree = parse(&mut parser, rope, None);
+        // Leave the scratch parser unrestricted for the next caller.
+        let _ = parser.set_included_ranges(&[]);
+        tree
+    }
+
+    /// The injected layers covering `at`, outermost first: JavaScript inside a
+    /// `<script>`, and whatever that JavaScript injects in turn.
+    ///
+    /// Parsed here and thrown away after, the same way highlighting does it.
+    /// Injected regions are small, and a layer set kept across edits is a
+    /// layer set that can go stale.
+    fn layers_at(&self, rope: &Rope, at: usize, theme: &Theme) -> Vec<Layer> {
+        let range = at..(at + 1).min(rope.len_bytes()).max(at);
+        let mut layers: Vec<Layer> = Vec::new();
+        while layers.len() < MAX_DEPTH {
+            let found = {
+                let (compiled, node) = match layers.last() {
+                    Some(layer) => (Rc::clone(&layer.compiled), layer.tree.root_node()),
+                    None => (Rc::clone(&self.root), self.tree.root_node()),
+                };
+                self.injections(&compiled, node, rope, &range)
+                    .into_iter()
+                    .filter(|(_, ranges)| ranges.iter().any(|r| r.start_byte <= at && at < r.end_byte))
+                    .find_map(|(language, ranges)| {
+                        let child = self.compiled_for(&language, theme)?;
+                        let tree = self.parse_injected(&child, rope, &ranges)?;
+                        Some(Layer { compiled: child, tree })
+                    })
+            };
+            match found {
+                Some(layer) => layers.push(layer),
+                None => break,
+            }
+        }
+        layers
+    }
+
+    /// Every injected layer in the file, at every depth. What `<space>d` walks
+    /// to list the functions in a page's `<script>` alongside the page's own.
+    fn all_layers(&self, rope: &Rope, theme: &Theme) -> Vec<Layer> {
+        let whole = 0..rope.len_bytes();
+        let mut layers: Vec<Layer> = Vec::new();
+        let mut next = self.layer_children(&self.root, self.tree.root_node(), rope, &whole, theme);
+        for _ in 0..MAX_DEPTH {
+            if next.is_empty() {
+                break;
+            }
+            let mut deeper = Vec::new();
+            for layer in &next {
+                deeper.extend(self.layer_children(&layer.compiled, layer.tree.root_node(), rope, &whole, theme));
+            }
+            layers.append(&mut next);
+            next = deeper;
+        }
+        layers
+    }
+
+    fn layer_children(&self, compiled: &Compiled, node: Node, rope: &Rope, range: &Range<usize>, theme: &Theme) -> Vec<Layer> {
+        self.injections(compiled, node, rope, range)
+            .into_iter()
+            .filter_map(|(language, ranges)| {
+                let child = self.compiled_for(&language, theme)?;
+                let tree = self.parse_injected(&child, rope, &ranges)?;
+                Some(Layer { compiled: child, tree })
+            })
+            .collect()
+    }
+
     fn compiled_for(&self, name: &str, theme: &Theme) -> Option<Rc<Compiled>> {
         if let Some(entry) = self.compiled.borrow().get(name) {
             return entry.clone();
@@ -892,6 +964,47 @@ impl Syntax {
         entry
     }
 
+}
+
+/// Which scope a binding belongs to: the nearest one above it.
+fn scope_of(root: Node, id: usize, start: usize, scopes: &HashSet<usize>) -> Option<usize> {
+    let end = (start + 1).min(root.end_byte());
+    let mut node = root.descendant_for_byte_range(start, end);
+    // Walk up to the captured node itself first, then on to its scope.
+    while let Some(current) = node {
+        if current.id() != id && scopes.contains(&current.id()) {
+            return Some(current.id());
+        }
+        node = current.parent();
+    }
+    Some(root.id())
+}
+
+/// The byte range of the top-level item holding `at` - the function, `impl`
+/// or `mod` that a binding in scope has to be inside.
+fn enclosing_item(root: Node, at: usize) -> Option<Range<usize>> {
+    let end = (at + 1).min(root.end_byte());
+    let mut node = root.descendant_for_byte_range(at, end)?;
+    while let Some(parent) = node.parent() {
+        if parent.id() == root.id() {
+            return Some(node.byte_range());
+        }
+        node = parent;
+    }
+    None
+}
+
+/// Whether the byte sits anywhere inside a node this tree could not make
+/// sense of.
+fn inside_error(root: Node, byte: usize) -> bool {
+    let mut node = root.descendant_for_byte_range(byte, byte);
+    while let Some(current) = node {
+        if current.is_error() {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
 }
 
 /// The byte ranges an injection covers. Without `include-children`, the named
@@ -1060,7 +1173,7 @@ mod tests {
             // The second line, which every snippet has indented by one step.
             let start = f.doc.text.line_to_byte(1);
             let end = f.doc.text.line_to_byte(2);
-            let level = f.syntax.indent_level(&f.doc.text, start, start..end);
+            let level = f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme);
             assert_eq!(level, Some(1), "{language}: one step on line two");
         }
     }
@@ -1176,6 +1289,53 @@ mod tests {
         // injected Rust layer parses `Foo::new(1)` as a call.
         let f = Fixture::new("fn main() { let v = vec![Foo::new(1)]; }\n");
         assert_eq!(f.color_of("new"), Some(Color::Blue));
+    }
+
+    #[test]
+    fn an_injected_language_indents_inside_its_host() {
+        // A function body in a `<script>`: HTML indents the script contents
+        // one step, and JavaScript indents the statement block one more. Only
+        // the host used to be asked, so the body came out one step short.
+        let html = "<html>\n<script>\nfunction f() {\n  let x = 1;\n}\n</script>\n</html>\n";
+        let f = Fixture::with_language("html", html);
+        let level = |line: usize| {
+            let start = f.doc.text.line_to_byte(line);
+            let end = f.doc.text.line_to_byte(line + 1);
+            f.syntax.indent_level(&f.doc.text, start, start..end, &f.theme)
+        };
+        // Line 1 is `<script>`, inside `<html>` alone.
+        assert_eq!(level(1), Some(1), "the script tag, one step in");
+        // Line 2 is the function header: inside html and the script element.
+        assert_eq!(level(2), Some(2), "javascript inside the script element");
+        // Line 3 is the body: those two, and JavaScript's own block.
+        assert_eq!(level(3), Some(3), "and one more for the block");
+        // Line 4 is the closing brace, which JavaScript pulls back out.
+        assert_eq!(level(4), Some(2), "the closing brace comes back out");
+    }
+
+    #[test]
+    fn what_an_injected_region_defines_is_what_the_file_defines() {
+        // `<space>d` in a page should list the functions in its script, which
+        // HTML's queries have never heard of - it has no tags query at all.
+        let html = "<html>\n<script>\nfunction alpha() {}\nfunction beta() {}\n</script>\n</html>\n";
+        let f = Fixture::with_language("html", html);
+        let names: Vec<String> = f
+            .syntax
+            .definitions(&f.doc.text, &f.theme)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(names, ["alpha", "beta"]);
+    }
+
+    #[test]
+    fn gd_inside_a_script_finds_what_the_script_defines() {
+        let html = "<html>\n<script>\nfunction alpha() {}\nalpha();\n</script>\n</html>\n";
+        let f = Fixture::with_language("html", html);
+        // From the call on the last line of the script, back to the function.
+        let at = f.doc.text.line_to_byte(3);
+        let found = f.syntax.definition(&f.doc.text, at, "alpha", true, &f.theme);
+        assert_eq!(found.map(|b| f.doc.text.byte_to_line(b)), Some(2));
     }
 
     #[test]

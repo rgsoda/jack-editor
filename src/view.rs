@@ -300,10 +300,10 @@ impl View {
 
     /// Everything this buffer defines, as (name, kind, line). Empty without a
     /// grammar, which is what the picker reports rather than pretending.
-    pub fn definitions(&self) -> Vec<(String, &'static str, usize)> {
+    pub fn definitions(&self, theme: &Theme) -> Vec<(String, &'static str, usize)> {
         match &self.syntax {
             Some(syntax) => syntax
-                .definitions(&self.doc.text)
+                .definitions(&self.doc.text, theme)
                 .into_iter()
                 .map(|(name, kind, byte)| (name, kind, self.doc.text.byte_to_line(byte)))
                 .collect(),
@@ -314,10 +314,10 @@ impl View {
     /// Where `name` is defined, as a char index: `gd` with `local`, `gD`
     /// without. Three tiers, and the last one needs no grammar at all - which
     /// is why `gd` does something sensible in a file we have no parser for.
-    pub fn definition(&self, name: &str, at: usize, local: bool) -> Option<usize> {
+    pub fn definition(&self, name: &str, at: usize, local: bool, theme: &Theme) -> Option<usize> {
         if let Some(syntax) = &self.syntax {
             let byte = self.doc.text.char_to_byte(at);
-            if let Some(found) = syntax.definition(&self.doc.text, byte, name, local) {
+            if let Some(found) = syntax.definition(&self.doc.text, byte, name, local, theme) {
                 return Some(self.doc.text.byte_to_char(found));
             }
         }
@@ -424,7 +424,7 @@ impl View {
 
     /// What the grammar says this line's indentation should be, in steps.
     /// `None` when there is no indent query for the language.
-    pub fn indent_level(&self, line: usize) -> Option<usize> {
+    pub fn indent_level(&self, line: usize, theme: &Theme) -> Option<usize> {
         let syntax = self.syntax.as_ref()?;
         let blank = self.doc.line_indent_len(line);
         let base = self.doc.line_to_char(line);
@@ -435,7 +435,7 @@ impl View {
             true => self.doc.line_to_byte(line + 1),
             false => self.doc.len_bytes(),
         };
-        syntax.indent_level(&self.doc.text, at, start..end)
+        syntax.indent_level(&self.doc.text, at, start..end, theme)
     }
 
     /// Put each of `targets` - (line, display column) - at that column, as one

@@ -2054,7 +2054,7 @@ mod tests {
         // file is.
         vim.at(2, 36);
         let start = std::time::Instant::now();
-        let local = vim.editor.view().definition("count", vim.editor.view().sel.head, true);
+        let local = vim.editor.view().definition("count", vim.editor.view().sel.head, true, &vim.editor.theme);
         let binding = start.elapsed();
         assert!(local.is_some());
 

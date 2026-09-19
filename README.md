@@ -343,6 +343,24 @@ those regions get their own parse with that language's grammar:
   highlights as HTML. The language comes out of the document rather than being
   fixed by the query.
 
+An injected region is code in the file, so it is not only highlighting that
+looks into one. The indent query, the tags query and the locals query all
+follow injections too:
+
+- `=` inside a `<script>` indents by JavaScript's rules, on top of the step
+  HTML gave the script element. Both layers are asked and their steps added,
+  which is the only way a brace body ends up one step in from its header rather
+  than flat against the tag.
+- `<space>d` lists what the script defines alongside what the page does. HTML
+  has no tags query at all, so before this a page of JavaScript defined nothing.
+- `gd` on a name inside an injected region asks that region's language first,
+  innermost outwards, and the host after it — the function is JavaScript's, and
+  HTML's queries have never heard of it.
+
+The layers are parsed for the question and thrown away, the way highlighting
+already did it. Injected regions are small, and a layer set kept across edits is
+a layer set that can go stale.
+
 Adding a language is one entry in `LANGUAGES` in `syntax.rs`: the grammar crate
 in `Cargo.toml`, a row naming its extensions and its queries, and an indent
 query in `queries/<name>/indents.scm` — no grammar crate ships one. Its `name`
@@ -1903,6 +1921,7 @@ was at first:
   columns, which the walk does not track yet.
 - `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some
   kind. `:sh` is the same thing from the other end and needs nothing.
-- More languages. Cross-language injection (JS in HTML, SQL in strings) is the
-  same code path; it needs grammars registered in `LANGUAGES`.
+- More languages. Cross-language injection works for every query kind now, so
+  what is left is registering grammars in `LANGUAGES` — `css` for HTML's
+  `<style>`, `markdown` for fenced code, `sql` for queries in strings.
 - Caching injected parses so scrolling a macro-heavy file does not reparse.
