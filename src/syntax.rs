@@ -471,6 +471,9 @@ fn align_column(rope: &Rope, node: Node) -> Option<usize> {
 /// An injected region, parsed: the language it is in and the tree for it. The
 /// tree is shared with the cache it came from - see `Syntax::parse_injected`.
 struct Layer {
+    /// The name the injection query asked for, which is also the name the
+    /// status line shows.
+    language: String,
     compiled: Rc<Compiled>,
     tree: Rc<Tree>,
 }
@@ -1134,7 +1137,7 @@ impl Syntax {
                     .find_map(|(language, ranges)| {
                         let child = self.compiled_for(&language, theme)?;
                         let tree = self.parse_injected(&language, &child, rope, &ranges)?;
-                        Some(Layer { compiled: child, tree })
+                        Some(Layer { language, compiled: child, tree })
                     })
             };
             match found {
@@ -1143,6 +1146,24 @@ impl Syntax {
             }
         }
         layers
+    }
+
+    /// The injected language covering `at`, the innermost one that is a kind
+    /// of file, and `None` when the position is in the file's own language.
+    /// What the status line names, since it is also what the highlight,
+    /// indent and definition queries use there.
+    ///
+    /// "A kind of file" skips `markdown_inline`, which is a layer but not a
+    /// language anyone has: it is half of how the markdown grammar is built,
+    /// and naming it in the status line would be naming a screw.
+    pub fn language_at(&self, rope: &Rope, at: usize, theme: &Theme) -> Option<String> {
+        self.layers_at(rope, at, theme)
+            .into_iter()
+            .rev()
+            .find(|layer| {
+                language_by_name(&layer.language).is_some_and(|c| !c.extensions.is_empty())
+            })
+            .map(|layer| layer.language)
     }
 
     /// Every injected layer in the file, at every depth. What `<space>d` walks
@@ -1171,7 +1192,7 @@ impl Syntax {
             .filter_map(|(language, ranges)| {
                 let child = self.compiled_for(&language, theme)?;
                 let tree = self.parse_injected(&language, &child, rope, &ranges)?;
-                Some(Layer { compiled: child, tree })
+                Some(Layer { language, compiled: child, tree })
             })
             .collect()
     }
@@ -1648,6 +1669,42 @@ mod tests {
         };
         assert_eq!(level(1), Some(1), "one step under `a:`");
         assert_eq!(level(3), Some(2), "and two under `c:` inside it");
+    }
+
+    #[test]
+    fn the_language_at_the_cursor_is_the_injected_one() {
+        // What the status line names. Inside a `<script>` the highlighting,
+        // the indent rules and `gd` are all JavaScript's, so a bar still
+        // saying "html" is the one part of the editor that disagrees.
+        let html = "<html>\n<style>\na { color: red; }\n</style>\n<script>\nlet x = 1;\n</script>\n</html>\n";
+        let f = Fixture::with_language("html", html);
+        let at = |needle: &str| {
+            let byte = html.find(needle).expect("needle");
+            f.syntax.language_at(&f.doc.text, byte, &f.theme)
+        };
+        assert_eq!(at("<html>"), None, "the file's own language, unnamed");
+        assert_eq!(at("color"), Some("css".to_string()));
+        assert_eq!(at("let x"), Some("javascript".to_string()));
+    }
+
+    #[test]
+    fn a_layer_that_is_not_a_kind_of_file_is_not_named() {
+        // `markdown_inline` is half of how the markdown grammar is built, not
+        // a language anyone has. It is the innermost layer over a paragraph
+        // and naming it in the status line would be naming a screw.
+        let text = "a paragraph with `code` in it\n";
+        let f = Fixture::with_language("markdown", text);
+        let byte = text.find("code").unwrap();
+        assert_eq!(f.syntax.language_at(&f.doc.text, byte, &f.theme), None);
+
+        // A fence still names itself, because a fence is a kind of file.
+        let text = "```sql\nSELECT a FROM t\n```\n";
+        let f = Fixture::with_language("markdown", text);
+        let byte = text.find("SELECT").unwrap();
+        assert_eq!(
+            f.syntax.language_at(&f.doc.text, byte, &f.theme),
+            Some("sql".to_string())
+        );
     }
 
     #[test]

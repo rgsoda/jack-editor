@@ -116,6 +116,15 @@ fn language_icon(language: Option<&str>, glyphs: &Glyphs) -> &'static str {
         Some("rust") => "\u{e7a8}",
         Some("html") => "\u{e736}",
         Some("javascript") => "\u{e781}",
+        Some("python") => "\u{e73c}",
+        Some("go") => "\u{e627}",
+        Some("java") => "\u{e738}",
+        Some("c") => "\u{e61e}",
+        Some("cpp") => "\u{e61d}",
+        Some("css") => "\u{e749}",
+        Some("sql") => "\u{e706}",
+        Some("markdown") => "\u{e73e}",
+        Some("yaml" | "toml") => "\u{e615}",
         _ => "\u{f15b}",
     }
 }
@@ -161,7 +170,13 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
     let glyphs = glyphs(editor);
     let bar = editor.theme.style("ui.statusline");
     let view = editor.view();
-    let language = language_for_path(view.doc.path.as_deref()).map(|l| l.name);
+    // Where the cursor is, not what the file is called: inside a `<script>`
+    // the highlighting, the indent rules and `gd` are all JavaScript's, and a
+    // status line still saying "html" is the one part that disagrees.
+    let injected = view.injected_language(&editor.theme);
+    let language = injected
+        .as_deref()
+        .or_else(|| language_for_path(view.doc.path.as_deref()).map(|l| l.name));
 
     let mode_style = editor.theme.style(match editor.mode {
         Mode::Normal => "ui.mode.normal",

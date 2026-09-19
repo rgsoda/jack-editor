@@ -422,6 +422,15 @@ impl View {
         self.syntax.as_ref().is_some_and(|syntax| syntax.has_indent_rules())
     }
 
+    /// The injected language the cursor is in - JavaScript inside a
+    /// `<script>`, SQL inside a query string - or `None` when it is in the
+    /// file's own language.
+    pub fn injected_language(&self, theme: &Theme) -> Option<String> {
+        let syntax = self.syntax.as_ref()?;
+        let at = self.doc.text.char_to_byte(self.sel.head);
+        syntax.language_at(&self.doc.text, at, theme)
+    }
+
     /// What the grammar says this line's indentation should be. `None` when
     /// there is no indent query for the language.
     pub fn indent_level(&self, line: usize, theme: &Theme) -> Option<Indentation> {

@@ -1900,6 +1900,18 @@ the end; in a terminal too narrow for everything, the right side gives up its
 blocks from the left and the file name is what gets clipped, because the
 position is the part you actually look at.
 
+The language block, and the icon with it, is **where the cursor is** rather than
+what the file is called. Put the cursor in a `<script>` and an HTML file says
+`javascript`; in a `<style>` it says `css`; in a ```` ```sql ```` fence in a
+markdown file it says `sql`. That is not decoration — inside that region the
+highlighting, the indent rules and `gd` are all the injected language's already,
+and the status line was the one part of the editor still saying otherwise.
+
+A layer that is not a *kind of file* is skipped: `markdown_inline` is the
+innermost layer over every paragraph in a markdown document, but it is half of
+how that grammar is built rather than a language anyone has, and naming it would
+be naming a screw. The rule is whether the language has file extensions.
+
 The wedge between two blocks is drawn in the left one's background colour on the
 right one's, which is the whole trick: it needs both colours to be *known*, so
 `ui.statusline` and friends name their colours instead of reversing video. Two
