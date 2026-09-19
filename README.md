@@ -1990,10 +1990,11 @@ its own is the whole change: the wedge appears where it meets the bar, the two
 segments sharing it are divided by a hairline the way the git counts already
 are, and each half of the line reads as a plain middle between two blocks.
 
-The glyphs are Nerd Font code points — the Powerline wedges, the Devicons file
-icons, and `` in front of the position, which reads `12:13`: line and column
-the way every other tool writes them, one marker rather than a label on each
-number.
+The glyphs are Nerd Font code points — the Powerline wedges and the Devicons
+file icons. The position is bare: `12:13`, line and column the way every other
+tool writes them. Powerline has a glyph for it, and the fonts that do not carry
+that code point draw the letters `LN` instead — a label nobody asked for, on
+the one part of the line that already says what it is.
 
 The counts are not icons, in either set. `+3 ~1 -2` for git and `E4 W2` for the
 language server are what the pretty set draws too, because an icon squeezed
@@ -2001,7 +2002,8 @@ into one cell with a number pushed against it is a smudge at terminal sizes —
 and these are the parts of the line you read rather than recognise. They are
 the same characters the gutter draws down the side, so the status line is a
 tally of what is already there, and the colour still says which is which. If your terminal font is not patched you will see boxes, and `:set
-noglyphs` swaps in an ASCII set (`|`, `+`, and a bare `12:13`) that keeps the
+noglyphs` swaps in an ASCII set (`|` and `+` for the wedges and the dot) that
+keeps the
 colours and loses the pictures. Everything else is unaffected: the glyph set is
 ten strings in `status.rs` and nothing else knows about it.
 

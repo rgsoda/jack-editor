@@ -34,9 +34,6 @@ pub struct Glyphs {
     pub thin_right: &'static str,
     pub thin_left: &'static str,
     pub modified: &'static str,
-    /// Marks the line:column at the end of the line. One glyph, not one per
-    /// number: `12:13` is what a position looks like everywhere else.
-    pub position: &'static str,
     pub scratch: &'static str,
     pub added: &'static str,
     pub modified_sign: &'static str,
@@ -66,7 +63,6 @@ pub const NERD: Glyphs = Glyphs {
     thin_right: "\u{e0b1}",
     thin_left: "\u{e0b3}",
     modified: "\u{25cf}",
-    position: "\u{e0a1}",
     scratch: "\u{f15b}",
     // The counts are text even in the pretty set, and on purpose: an icon in
     // one cell with a number against it is a smudge, and these are the parts
@@ -89,7 +85,6 @@ pub const PLAIN: Glyphs = Glyphs {
     thin_right: "|",
     thin_left: "|",
     modified: "+",
-    position: "",
     scratch: "",
     added: "+",
     modified_sign: "~",
@@ -260,12 +255,11 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
     let (line, column) = editor.cursor_coords();
     let last = editor.last_line();
     right.push(Segment { text: percentage(line, last), style: info });
-    let position = format!("{}:{}", line + 1, column + 1);
+    // No glyph in front of it. Powerline has one, and the fonts that do not
+    // have it draw the letters `LN` instead - a label nobody asked for, on the
+    // one part of the line that already says what it is.
     right.push(Segment {
-        text: match glyphs.position.is_empty() {
-            true => position,
-            false => format!("{} {position}", glyphs.position),
-        },
+        text: format!("{}:{}", line + 1, column + 1),
         style: editor.theme.style("ui.statusline.position"),
     });
 
@@ -326,7 +320,7 @@ mod tests {
     fn the_plain_set_is_pure_ascii() {
         let plain = [
             PLAIN.section_right, PLAIN.section_left, PLAIN.thin_right, PLAIN.thin_left,
-            PLAIN.modified, PLAIN.position, PLAIN.scratch,
+            PLAIN.modified, PLAIN.scratch,
             PLAIN.added, PLAIN.modified_sign, PLAIN.deleted,
             PLAIN.error, PLAIN.warning, PLAIN.diagnostic,
         ];
