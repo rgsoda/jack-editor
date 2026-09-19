@@ -108,6 +108,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste over the selection", mode: "visual" },
     Binding { keys: "any motion", what: "drag the selection", mode: "visual" },
     Binding { keys: "o", what: "swap which end moves", mode: "visual" },
+    Binding { keys: "/ ? n N *", what: "search: the selection grows to the match", mode: "visual" },
     Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
     Binding { keys: "v V", what: "characters, lines, or back to normal", mode: "visual" },
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
@@ -908,6 +909,19 @@ impl Keys {
                 editor.open_command_over_selection();
                 return;
             }
+            // A search from visual mode drags the selection to the match
+            // rather than throwing it away: `v/foo<cr>d` is the idiom.
+            KeyCode::Char('/') => {
+                editor.open_search(false);
+                return;
+            }
+            KeyCode::Char('?') => {
+                editor.open_search(true);
+                return;
+            }
+            KeyCode::Char('n') => editor.search_repeat(false, repeat),
+            KeyCode::Char('N') => editor.search_repeat(true, repeat),
+            KeyCode::Char('*') => editor.search_word_under_cursor(),
 
             KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
                 editor.delete_visual(self.register)
@@ -3570,6 +3584,44 @@ plain
         assert_eq!(vim.editor.cursor_coords(), (0, 12));
         vim.press("N");
         assert_eq!(vim.editor.cursor_coords(), (0, 6));
+    }
+
+    #[test]
+    fn a_search_from_visual_mode_drags_the_selection_to_the_match() {
+        let mut vim = Vim::new("one two three four
+");
+        vim.at(1, 1).press("v/three<cr>");
+        assert_eq!(vim.editor.mode, Mode::Visual, "still selecting");
+        assert_eq!(vim.editor.view().sel.anchor, 0, "the other end stayed put");
+        vim.press("d");
+        assert_eq!(vim.text(), "hree four
+");
+    }
+
+    #[test]
+    fn n_extends_the_selection_too_and_cancelling_leaves_it_alone() {
+        let mut vim = Vim::new("x one x two x
+");
+        vim.press("/x<cr>");
+        vim.at(1, 1).press("vn");
+        assert_eq!(vim.editor.view().sel.anchor, 0);
+        assert_eq!(vim.editor.cursor_coords(), (0, 6));
+
+        // A cancelled search puts back both ends, not just the head.
+        vim.press("/two");
+        assert_eq!(vim.editor.cursor_coords(), (0, 8));
+        vim.press("<esc>");
+        assert_eq!(vim.editor.mode, Mode::Visual);
+        assert_eq!(vim.editor.view().sel.anchor, 0);
+        assert_eq!(vim.editor.cursor_coords(), (0, 6));
+    }
+
+    #[test]
+    fn a_search_from_normal_mode_still_collapses_the_selection() {
+        let mut vim = Vim::new("one two three
+");
+        vim.at(1, 1).press("v$<esc>/three<cr>");
+        assert!(vim.editor.view().sel.is_empty(), "a jump is a point, not a range");
     }
 
     #[test]

@@ -197,6 +197,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `o` | swap which end moves |
 | `iw` `a"` `i(` `ip` … | select a text object |
 | `v` `V` `^b` | switch between characters, lines and blocks, or back to normal |
+| `/` `?` `n` `N` `*` | search: the selection grows to the match |
 | `d` `x` | delete the selection |
 | `c` `s` | delete it and start typing |
 | `y` | yank it |
@@ -575,9 +576,12 @@ Two things this got wrong to begin with, both worth knowing:
   round the end" was `start < cursor` when it needed to be `start <= cursor` -
   the one match you are already sitting on is still a wrap.
 
-Searching does not yet work from visual mode to extend a selection to a match,
-which is a real vim idiom: the prompt would have to know to extend rather than
-jump.
+`/`, `?`, `n`, `N` and `*` work from visual mode too, and there the selection
+grows to the match rather than being thrown away: `v/foo<cr>d` deletes from
+where you were up to the next `foo`, which is the reason to search from visual
+mode at all. The prompt remembers the anchor it was opened with, so the
+incremental preview drags only the head, and cancelling with `esc` puts both
+ends back rather than leaving half a selection behind.
 
 ## Commands, and where settings live
 

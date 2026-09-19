@@ -63,6 +63,10 @@ pub struct Prompt {
     /// Where the cursor and viewport were when it opened, so cancelling can
     /// put them back after the incremental preview has moved them.
     origin: (usize, usize),
+    /// The selection's anchor, when the prompt was opened from visual mode.
+    /// A search from there extends rather than jumps: the head goes to the
+    /// match and this end stays where it was.
+    anchor: Option<usize>,
     /// What `tab` is cycling through, while it is being pressed. Dropped by
     /// the next key that is not another `tab`, so the list on screen is always
     /// the list for what is written.
@@ -543,11 +547,13 @@ impl Editor {
     }
 
     fn open_prompt(&mut self, kind: PromptKind) {
+        let anchor = self.mode.is_visual().then(|| self.view().sel.anchor);
         let view = self.view();
         self.prompt = Some(Prompt {
             kind,
             input: String::new(),
             origin: (view.sel.head, view.scroll_top),
+            anchor,
             completion: None,
         });
     }
@@ -641,7 +647,8 @@ impl Editor {
         let Some(prompt) = self.prompt.as_ref() else {
             return;
         };
-        let (pattern, backward, origin) = (prompt.input.clone(), prompt.backward(), prompt.origin);
+        let (pattern, backward) = (prompt.input.clone(), prompt.backward());
+        let (origin, anchor) = (prompt.origin, prompt.anchor);
 
         if let Err(err) = self.search.set_pattern(&pattern) {
             self.message = err;
@@ -654,8 +661,8 @@ impl Editor {
         // A half-typed pattern often matches nothing; that is not worth saying
         // until enter is pressed, but the cursor should go back either way.
         match self.search.find(&self.view().doc, origin.0, backward) {
-            Some(hit) => self.jump_to(hit.start),
-            None => self.restore_origin(origin),
+            Some(hit) => self.reach(hit.start),
+            None => self.restore_origin(origin, anchor),
         }
     }
 
@@ -691,7 +698,7 @@ impl Editor {
             return;
         }
         if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward()).is_none() {
-            self.restore_origin(prompt.origin);
+            self.restore_origin(prompt.origin, prompt.anchor);
             self.message = format!("pattern not found: {}", prompt.input);
             return;
         }
@@ -704,7 +711,7 @@ impl Editor {
         match self.prompt.take() {
             // A cancelled search puts back what its preview moved.
             Some(prompt) if prompt.is_search() => {
-                self.restore_origin(prompt.origin);
+                self.restore_origin(prompt.origin, prompt.anchor);
                 self.search.highlight = false;
             }
             _ => {}
@@ -712,9 +719,15 @@ impl Editor {
         self.message.clear();
     }
 
-    fn restore_origin(&mut self, origin: (usize, usize)) {
+    /// Put back what the preview moved. The anchor comes in rather than being
+    /// read off the prompt, because by the time a prompt is accepted or
+    /// cancelled it has already been taken out of the editor.
+    fn restore_origin(&mut self, origin: (usize, usize), anchor: Option<usize>) {
         let view = self.view_mut();
-        view.sel = Selection::point(origin.0);
+        view.sel = match anchor {
+            Some(anchor) => Selection { anchor, head: origin.0 },
+            None => Selection::point(origin.0),
+        };
         view.scroll_top = origin.1;
         self.clamp_cursor();
     }
@@ -779,6 +792,19 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// Where a search hit takes the cursor. In visual mode the selection grows
+    /// to it instead of being thrown away, which is what `v/foo<cr>d` is for:
+    /// the anchor stays put and only the head moves.
+    fn reach(&mut self, at: usize) {
+        match self.mode.is_visual() {
+            true => {
+                self.view_mut().sel.head = at;
+                self.clamp_cursor();
+            }
+            false => self.jump_to(at),
+        }
+    }
+
     /// `n` repeats the last search the way it was going; `N` turns it around.
     pub fn search_repeat(&mut self, reverse: bool, count: usize) {
         self.search_again(self.search.backward != reverse, count);
@@ -804,7 +830,7 @@ impl Editor {
                     if step == 0 {
                         self.jumps.push(origin);
                     }
-                    self.jump_to(hit.start);
+                    self.reach(hit.start);
                 }
                 None => {
                     self.message = format!("pattern not found: {}", self.search.pattern);
