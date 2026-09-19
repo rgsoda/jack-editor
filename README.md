@@ -1887,7 +1887,7 @@ the list itself is twenty lines.
 ## The status line
 
 ```
- NORMAL   main.rs ● 1/2  +3 ~1                    rust   42%    128   17 
+ NORMAL   main.rs ● 1/2  +3 ~1              rust  42%   12:13 
 ```
 
 Blocks, left to right: the mode, the file (its language's icon, its name, a dot
@@ -1917,6 +1917,14 @@ right one's, which is the whole trick: it needs both colours to be *known*, so
 `ui.statusline` and friends name their colours instead of reversing video. Two
 blocks that share a background get a hairline instead, and a theme that leaves a
 block's colours to the terminal degrades to hairlines rather than to mud.
+
+Which is also all it takes to give the right side the shape the left has. The
+language and the position-in-the-file sit on `ui.statusline.info`, and that used
+to be the bar's own background — so they were not blocks at all, and the line
+had two blocks on the left and one on the right. Giving `info` a background of
+its own is the whole change: the wedge appears where it meets the bar, the two
+segments sharing it are divided by a hairline the way the git counts already
+are, and each half of the line reads as a plain middle between two blocks.
 
 The glyphs are Nerd Font code points — the Powerline wedges, the Devicons file
 icons, and `` in front of the position, which reads `12:13`: line and column

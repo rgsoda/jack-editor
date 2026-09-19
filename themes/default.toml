@@ -56,7 +56,12 @@
 # needs both to be known. A segment left uncolored falls back to a hairline.
 "ui.statusline"    = { fg = "#f8f8f2", bg = "#44475a" }
 "ui.statusline.file" = { fg = "#f8f8f2", bg = "#6272a4" }
-"ui.statusline.info" = { fg = "#f8f8f2", bg = "#44475a" }
+# The right side's block, and deliberately the file block's colour: it makes
+# each half of the line a plain middle between two blocks, rather than a left
+# side with two and a right side with one. A background of its own is also the
+# whole of what makes it a block - a segment sharing the bar's background gets
+# a hairline instead of a wedge, which is what this used to be.
+"ui.statusline.info" = { fg = "#f8f8f2", bg = "#6272a4" }
 "ui.statusline.position" = { fg = "#282a36", bg = "#bd93f9", bold = true }
 # The windows you are not typing in, and the line between side-by-side ones.
 "ui.statusline.inactive" = { fg = "#6272a4", bg = "#282a36" }
