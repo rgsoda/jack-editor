@@ -4418,6 +4418,32 @@ plain
     }
 
     #[test]
+    fn a_colon_opens_a_block_too() {
+        // The grammar cannot help on the line `enter` just opened: there is
+        // no content to place, and `a:` is a complete mapping pair until
+        // something appears under it. So the guess gets a say on a blank line,
+        // and what it knows is that a line ending in a colon opened something.
+        let mut vim = Vim::file("ci.yml", "jobs:\n");
+        vim.press("GA<cr>test: 1<esc>");
+        assert_eq!(vim.text(), "jobs:\n\ttest: 1\n");
+
+        // Python had the same gap, and for the same reason.
+        let mut vim = Vim::file("x.py", "def f():\n");
+        vim.press("GA<cr>return 1<esc>");
+        assert_eq!(vim.text(), "def f():\n\treturn 1\n");
+    }
+
+    #[test]
+    fn the_grammar_still_wins_on_a_line_with_something_on_it() {
+        // Only a blank line takes the deeper of the two. A closing brace has
+        // content, and it belongs under its opener whatever came before it -
+        // which is the opposite of what the guess would say.
+        let mut vim = Vim::file("x.rs", "fn f() {\n\tlet x = 1;\n");
+        vim.press("GA<cr>}<esc>");
+        assert_eq!(vim.text(), "fn f() {\n\tlet x = 1;\n}\n");
+    }
+
+    #[test]
     fn markdown_says_there_is_nothing_to_reindent() {
         // A grammar, and deliberately no indent query: the indentation of a
         // markdown file is its content, and `=` would eat the nesting of a

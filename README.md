@@ -4,10 +4,11 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, twelve languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
-Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, TOML.
+Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
+TOML.
 
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
@@ -347,6 +348,9 @@ those regions get their own parse with that language's grammar:
   *inline* grammar into every run of text, because the block grammar sees a
   paragraph as one undifferentiated lump and emphasis, links and code spans
   live a level below that.
+- A string that is a query is SQL — in Rust, Python, Go and Java. This is the
+  one injection nothing ships, because what a string *holds* is not a fact the
+  language knows. It is ours, and it is a guess.
 - JavaScript injects whatever a tagged template names, so ``html`<div>` ``
   highlights as HTML. The language comes out of the document rather than being
   fixed by the query.
@@ -364,6 +368,41 @@ follow injections too:
 - `gd` on a name inside an injected region asks that region's language first,
   innermost outwards, and the host after it — the function is JavaScript's, and
   HTML's queries have never heard of it.
+
+### Guessing that a string is a query
+
+```rust
+let rows = run(r#"
+    SELECT name, age
+    FROM users
+    WHERE age > 18
+"#);
+```
+
+The grammar has nothing to say about this. To Rust that is a string, and it is
+right — nothing in the syntax makes it a query. So the injection query is ours,
+and since it is a guess the whole design is about what it takes to be wrong.
+
+One leading verb is not enough. `"Select a file to continue"` is English and so
+is `"Update the settings"`, and a rule that keys off the first word turns both
+into SQL. So every shape wants **two** SQL tokens in the right order: SELECT
+with a FROM after it, INSERT with INTO, UPDATE with SET, CREATE with what is
+being created. `SELECT 1` is let through by a digit, because that is the other
+query anyone actually writes.
+
+The predicate runs because tree-sitter runs it. `#match?`, `#eq?` and the rest
+are evaluated inside `QueryCursor` when the query is given text to read, and
+giving it text without copying the document is the entire job of `RopeProvider`
+— so a rope-backed query gets working predicates for free. That is also why
+Rust's own `@constant` pattern behaves: it is `#match?`-guarded, and a plain
+`count` is left alone.
+
+The same rule is written four times, once per grammar, because a query cannot
+ask across languages and the node holding a string's text is called something
+different in each: `string_content` in Rust and Python, two different names in
+Go depending on the quote, `string_fragment` in Java. `injections` is a list
+for this, the way `highlights` already was — a grammar's own injections go
+under ours.
 
 The layer *sets* are built for the question and thrown away — what is worth
 keeping is the trees, and those are remembered by the pair that identifies them:
@@ -1113,6 +1152,31 @@ is the rule every editor used before grammars, and it is exactly right for the
 case the grammar cannot see, which is the one that happens on every keystroke.
 `:set noautoindent` turns the whole thing off; without a grammar, `enter` still
 copies the line above as it always did.
+
+There is a second way the tree fails to see what you are doing, and it is
+quieter than an error node, because the file parses perfectly:
+
+```yaml
+jobs:
+```
+
+That is a complete mapping pair. It will keep being a complete mapping pair
+until something appears under it, so the query — asked about the blank line
+`enter` just opened — answers nought steps, correctly, about a line that is
+plainly one step in. Python's `def f():` is the same shape and had the same
+gap.
+
+So on a *blank* line the two answers are compared and the deeper wins. That is
+safe in the one direction that matters: on a blank line the guess is the only
+one of the two that can see the line above ended with something that opened a
+block, and the grammar never knows more than it about a line with nothing in
+it. A line with content on it goes to the grammar alone, which is what keeps
+the `}` you just typed under its opener rather than under the guess.
+
+Which made the opener set grow a character. `{ [ (` and now `:` — a Python
+`def`, a YAML key, a `case` in C or Go all open a block with one, and a line
+that ends in a colon has opened something whatever the parser has managed so
+far.
 
 One query run per line, restricted to that line's bytes, which is about 11µs:
 `=` over 5000 lines is 57ms, and the single line `enter` re-indents is free.
@@ -2016,11 +2080,9 @@ was at first:
 
 ## Next
 
-- SQL in strings. The grammar is registered now, so a `.sql` file and a
-  ```` ```sql ```` fence both work, but nothing injects SQL into a string
-  literal and that is the half that would matter in a Rust file. It needs an
-  injection query of ours that decides a string is SQL — by the macro around
-  it, `sqlx::query!`, or by what it starts with. Either is a guess about the
-  file rather than a fact about it, which is why it is not in yet.
-- YAML. Markdown's injection query asks for it by name for `---` frontmatter,
-  and there is no grammar to answer. It is also worth having on its own.
+- The SQL guess could be a fact where the code says so. `sqlx::query!("...")`
+  names the language in the macro around the string, and a pattern matching
+  that would not have to read the string at all. It would sit above the
+  heuristic rather than replace it, since most queries are not in a macro.
+- LaTeX, which markdown's *inline* query asks for by name and nothing answers —
+  the last injection in the tree with no grammar behind it.

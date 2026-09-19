@@ -2879,12 +2879,29 @@ impl Editor {
         }
         let indent = self.indent();
         let (line, _) = self.view().cursor_coords();
-        let column = match self.view().indent_level(line, &self.theme) {
-            Some(level) => level.column(indent.width),
-            None => match self.guessed_indent_column(line) {
-                Some(column) => column,
-                None => return,
-            },
+        let grammar = self
+            .view()
+            .indent_level(line, &self.theme)
+            .map(|level| level.column(indent.width));
+        let guess = self.guessed_indent_column(line);
+
+        // On a line with something on it the grammar is the authority: it can
+        // see what the line *is*, and a closing brace belongs under its opener
+        // whatever came before it.
+        //
+        // On a blank one it cannot. The line the cursor just opened has no
+        // content to place, and a tree that parses without it is a tree that
+        // has not been told about it yet: `a:` in YAML is a complete mapping
+        // pair until something appears under it, so the grammar says nought
+        // steps for a line that is plainly one step in. So the deeper of the
+        // two wins there, which is the guess saying a step is owed and the
+        // grammar never contradicting it - it only ever knows less.
+        let blank = self.view().doc.line_str(line).trim().is_empty();
+        let column = match (grammar, guess) {
+            (Some(grammar), Some(guess)) if blank => grammar.max(guess),
+            (Some(grammar), _) => grammar,
+            (None, Some(guess)) => guess,
+            (None, None) => return,
         };
         self.view_mut().set_line_indent(line, column, indent, merge);
     }
@@ -2902,7 +2919,11 @@ impl Editor {
 
         let leading = previous.chars().take_while(|c| *c == ' ' || *c == '\t').count();
         let mut column = view::display_col(&previous, leading);
-        if previous.trim_end().ends_with(['{', '[', '(']) {
+        // A colon opens a block in as many languages as a brace does - a
+        // Python `def`, a YAML key, a `case` in C or Go - and a line that ends
+        // with one is a line that has opened something whatever the grammar
+        // has managed to parse so far.
+        if previous.trim_end().ends_with(['{', '[', '(', ':']) {
             column += self.indent().width;
         }
         if view.doc.line_str(line).trim_start().starts_with(['}', ']', ')']) {

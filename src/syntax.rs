@@ -28,7 +28,10 @@ pub struct LanguageConfig {
     /// A list because a language can be another language plus its own: C++'s
     /// query is the C++ half only, and means nothing without C's under it.
     highlights: &'static [&'static str],
-    injections: &'static str,
+    /// A list for the same reason, and for one more: a grammar's own
+    /// injections are about its own syntax, and what a *string* holds is not
+    /// something the grammar has an opinion about. Ours go under theirs.
+    injections: &'static [&'static str],
     /// Written here rather than shipped by the grammar crates, which have no
     /// indent queries: what indents, and what comes back out.
     indents: &'static str,
@@ -63,6 +66,10 @@ fn c_language() -> Language {
 
 fn cpp_language() -> Language {
     tree_sitter_cpp::LANGUAGE.into()
+}
+
+fn yaml_language() -> Language {
+    tree_sitter_yaml::LANGUAGE.into()
 }
 
 fn css_language() -> Language {
@@ -101,7 +108,10 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["rs"],
         language: rust_language,
         highlights: &[tree_sitter_rust::HIGHLIGHTS_QUERY],
-        injections: tree_sitter_rust::INJECTIONS_QUERY,
+        injections: &[
+            tree_sitter_rust::INJECTIONS_QUERY,
+            include_str!("../queries/rust/injections.scm"),
+        ],
         indents: include_str!("../queries/rust/indents.scm"),
         locals: include_str!("../queries/rust/locals.scm"),
         tags: tree_sitter_rust::TAGS_QUERY,
@@ -111,7 +121,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["html", "htm"],
         language: html_language,
         highlights: &[tree_sitter_html::HIGHLIGHTS_QUERY],
-        injections: tree_sitter_html::INJECTIONS_QUERY,
+        injections: &[tree_sitter_html::INJECTIONS_QUERY],
         indents: include_str!("../queries/html/indents.scm"),
         // A markup language binds no names and defines nothing: `gd` falls
         // back to looking for the word.
@@ -123,7 +133,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["js", "mjs", "cjs"],
         language: javascript_language,
         highlights: &[tree_sitter_javascript::HIGHLIGHT_QUERY],
-        injections: tree_sitter_javascript::INJECTIONS_QUERY,
+        injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
         indents: include_str!("../queries/javascript/indents.scm"),
         locals: tree_sitter_javascript::LOCALS_QUERY,
         tags: tree_sitter_javascript::TAGS_QUERY,
@@ -133,7 +143,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["py", "pyi"],
         language: python_language,
         highlights: &[tree_sitter_python::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[include_str!("../queries/python/injections.scm")],
         indents: include_str!("../queries/python/indents.scm"),
         locals: "",
         tags: tree_sitter_python::TAGS_QUERY,
@@ -143,7 +153,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["toml"],
         language: toml_language,
         highlights: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[],
         indents: include_str!("../queries/toml/indents.scm"),
         // Nothing to bind and nothing to define: a key is not a definition
         // you can go to, it is the thing itself.
@@ -155,7 +165,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["go"],
         language: go_language,
         highlights: &[tree_sitter_go::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[include_str!("../queries/go/injections.scm")],
         indents: include_str!("../queries/go/indents.scm"),
         locals: "",
         tags: tree_sitter_go::TAGS_QUERY,
@@ -165,7 +175,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["java"],
         language: java_language,
         highlights: &[tree_sitter_java::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[include_str!("../queries/java/injections.scm")],
         indents: include_str!("../queries/java/indents.scm"),
         locals: "",
         tags: tree_sitter_java::TAGS_QUERY,
@@ -175,17 +185,33 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["c", "h"],
         language: c_language,
         highlights: &[tree_sitter_c::HIGHLIGHT_QUERY],
-        injections: "",
+        injections: &[],
         indents: include_str!("../queries/c/indents.scm"),
         locals: "",
         tags: tree_sitter_c::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "yaml",
+        extensions: &["yaml", "yml"],
+        language: yaml_language,
+        // Ours first: the crate's query calls every plain scalar a string
+        // before it says which of them are keys, and the earliest wins.
+        highlights: &[
+            include_str!("../queries/yaml/highlights.scm"),
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        ],
+        injections: &[],
+        indents: include_str!("../queries/yaml/indents.scm"),
+        // A key is the thing itself, not a definition to go to.
+        locals: "",
+        tags: "",
     },
     LanguageConfig {
         name: "css",
         extensions: &["css"],
         language: css_language,
         highlights: &[tree_sitter_css::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[],
         indents: include_str!("../queries/css/indents.scm"),
         // A rule binds nothing and defines nothing a `gd` could land on.
         locals: "",
@@ -196,7 +222,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["sql"],
         language: sql_language,
         highlights: &[tree_sitter_sequel::HIGHLIGHTS_QUERY],
-        injections: "",
+        injections: &[],
         indents: include_str!("../queries/sql/indents.scm"),
         locals: "",
         tags: "",
@@ -208,7 +234,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
         // The one that matters: a fenced code block names its own language,
         // and whatever that name is gets its own parse if it is registered.
-        injections: tree_sitter_md::INJECTION_QUERY_BLOCK,
+        injections: &[tree_sitter_md::INJECTION_QUERY_BLOCK],
         // Indentation in markdown is not syntax, it *is* the content - two
         // spaces before a list item are what makes it a nested list. So there
         // is nothing for `=` to correct, and it says so rather than guessing.
@@ -224,7 +250,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         extensions: &[],
         language: markdown_inline_language,
         highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
-        injections: tree_sitter_md::INJECTION_QUERY_INLINE,
+        injections: &[tree_sitter_md::INJECTION_QUERY_INLINE],
         indents: "",
         locals: "",
         tags: "",
@@ -236,7 +262,7 @@ static LANGUAGES: &[LanguageConfig] = &[
         // C++ first, then C: the earliest pattern wins, and the C++ query is
         // only the half that C does not already say.
         highlights: &[tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
-        injections: "",
+        injections: &[],
         indents: include_str!("../queries/cpp/indents.scm"),
         locals: "",
         tags: tree_sitter_cpp::TAGS_QUERY,
@@ -288,10 +314,11 @@ fn compile(config: &LanguageConfig, theme: &Theme) -> Result<Rc<Compiled>> {
         .map(|name| theme.has(name).then(|| theme.style(name)))
         .collect();
 
-    let injections = match config.injections.trim().is_empty() {
+    let injected = config.injections.join("\n");
+    let injections = match injected.trim().is_empty() {
         true => None,
         false => Some(
-            Query::new(&language, config.injections)
+            Query::new(&language, &injected)
                 .with_context(|| format!("compiling {} injection query", config.name))?,
         ),
     };
@@ -1368,6 +1395,7 @@ mod tests {
             ("cpp", "namespace n {\n    int x = 1;\n}\n", "namespace"),
             ("css", "a {\n    color: red;\n}\n", "color"),
             ("sql", "SELECT\n    a\nFROM t;\n", "SELECT"),
+            ("yaml", "a:\n    b: 1\n", "a"),
         ];
         for (language, text, word) in cases {
             let f = Fixture::with_language(language, text);
@@ -1420,6 +1448,8 @@ mod tests {
         assert_eq!(name("site.css"), Some("css"));
         assert_eq!(name("schema.sql"), Some("sql"));
         assert_eq!(name("README.md"), Some("markdown"));
+        assert_eq!(name("ci.yml"), Some("yaml"));
+        assert_eq!(name("compose.yaml"), Some("yaml"));
         assert_eq!(name("notes.txt"), None);
         assert!(language_for_path(None).is_none());
         // Reachable only through markdown's injection query, never by name.
@@ -1548,6 +1578,76 @@ mod tests {
         // item are what nests it. There is no query, and that is the answer.
         let f = Fixture::with_language("markdown", "- a\n  - b\n");
         assert!(!f.syntax.has_indent_rules());
+    }
+
+    #[test]
+    fn a_string_that_is_a_query_is_highlighted_as_one() {
+        // No grammar will say this: what a string holds is not a fact about
+        // the language. The query is ours and it is a guess, so what it is
+        // guessing on is two SQL tokens in the right order.
+        let f = Fixture::new("fn f() { run(\"SELECT name FROM users\"); }\n");
+        assert_eq!(f.color_of("SELECT"), Some(Color::Magenta), "a keyword");
+        assert_eq!(f.color_of("users"), Some(Color::Yellow), "and a table");
+
+        // A raw string is where a real query lives, and it is the same node.
+        let f = Fixture::new("fn f() { run(r#\"INSERT INTO t VALUES (1)\"#); }\n");
+        assert_eq!(f.color_of("INSERT"), Some(Color::Magenta));
+    }
+
+    #[test]
+    fn a_string_that_is_english_is_left_alone() {
+        // The reason the guess wants two tokens: one leading verb is a word
+        // that sentences start with. These are the strings that made the rule.
+        for text in [
+            "fn f() { msg(\"Select a file to continue\"); }\n",
+            "fn f() { msg(\"Update the settings and try again\"); }\n",
+            "fn f() { msg(\"Insert the disk\"); }\n",
+        ] {
+            let f = Fixture::new(text);
+            let word = text.split('"').nth(1).unwrap().split(' ').next().unwrap();
+            assert_eq!(f.color_of(word), Some(Color::Green), "{text:?} is a string");
+        }
+    }
+
+    #[test]
+    fn go_and_python_and_java_guess_the_same_way() {
+        // One rule, four grammars, because the node holding a string's text is
+        // named differently in each and a query cannot ask across languages.
+        let cases = [
+            ("go", "func f() {\n\tq(`SELECT a FROM t`)\n}\n"),
+            ("python", "q(\"SELECT a FROM t\")\n"),
+            ("java", "class A { void f() { q(\"SELECT a FROM t\"); } }\n"),
+        ];
+        for (language, text) in cases {
+            let f = Fixture::with_language(language, text);
+            assert_eq!(f.color_of("SELECT"), Some(Color::Magenta), "{language}");
+        }
+    }
+
+    #[test]
+    fn yaml_frontmatter_and_yaml_files_are_yaml() {
+        // Registering it answers markdown's injection query, which has asked
+        // for "yaml" by name since the day the grammar was added.
+        let f = Fixture::with_language("yaml", "name: jack\nversion: 1\n");
+        assert_eq!(f.color_of("name"), Some(Color::DarkYellow), "a key");
+        assert_eq!(f.color_of("1"), Some(Color::Cyan), "and a number");
+    }
+
+    #[test]
+    fn yaml_indents_from_the_key_that_opens_the_block() {
+        // The same shape as Python: the mapping starts at its first key, on
+        // the line after the one that opened it, so the *pair* is the step.
+        let text = "a:\n  b: 1\n  c:\n    - x\n";
+        let f = Fixture::with_language("yaml", text);
+        let level = |line: usize| {
+            let start = f.doc.text.line_to_byte(line);
+            let end = f.doc.text.line_to_byte(line + 1);
+            f.syntax
+                .indent_level(&f.doc.text, start, start..end, &f.theme)
+                .map(|i| i.steps)
+        };
+        assert_eq!(level(1), Some(1), "one step under `a:`");
+        assert_eq!(level(3), Some(2), "and two under `c:` inside it");
     }
 
     #[test]
