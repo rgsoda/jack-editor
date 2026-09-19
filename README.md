@@ -4,10 +4,10 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, nine languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, twelve languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
-Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, TOML.
+Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, TOML.
 
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
@@ -341,8 +341,12 @@ those regions get their own parse with that language's grammar:
 
 - Rust injects Rust into macro token trees, so `vec![Foo::new(1)]` highlights as
   real code rather than the loose tokens the outer grammar sees.
-- HTML injects JavaScript into `<script>`, and CSS into `<style>`. There is no
-  CSS grammar registered, so those regions simply stay unhighlighted.
+- HTML injects JavaScript into `<script>`, and CSS into `<style>`.
+- Markdown injects whatever a fenced code block names, so a ```` ```sql ````
+  block is SQL and a ```` ```rust ```` block is Rust. It also injects its own
+  *inline* grammar into every run of text, because the block grammar sees a
+  paragraph as one undifferentiated lump and emphasis, links and code spans
+  live a level below that.
 - JavaScript injects whatever a tagged template names, so ``html`<div>` ``
   highlights as HTML. The language comes out of the document rather than being
   fixed by the query.
@@ -383,7 +387,22 @@ they use. `highlights` is the only field that has to be filled in; `injections`,
 `locals` and `tags` are `""` where the grammar has none, and the features that
 read them (injected regions, `gd`'s first tier, `<space>d`) simply do not apply.
 
-Two things the nine languages here taught the shape:
+A fourth thing is not in `LANGUAGES` at all: the **theme has to name the
+captures**. A capture the theme has no key for is skipped rather than painted,
+which is right — it is what keeps an unstyled capture from flattening the text
+under it — but it also means a grammar can be registered, compile, parse, match
+every pattern and still look like a plain file. CSS was exactly that: property
+names are most of a stylesheet and `property` was not a key. Adding one coloured
+Rust's struct fields and TOML's keys too, because seven of the grammars capture
+the same name. SQL's `conditional` and `storageclass`, CSS's per-at-rule
+captures and markdown's `text.*` are all only their own language's.
+
+What the theme still deliberately does not name is `variable`. Every grammar
+captures it, and a plain identifier is the thing itself rather than a kind of
+thing, so it stays the terminal's own foreground. SQL's `field` is left out for
+the same reason — a column reference is a name, not a keyword.
+
+Three things the languages here taught the shape:
 
 - **`highlights` is a list, not a string.** C++'s query is only the half that C
   does not already say — on its own, `return` in a `.cpp` file is unhighlighted.
@@ -400,6 +419,12 @@ Two things the nine languages here taught the shape:
   under its `if`. Writing a language's indent query is one afternoon of reading
   `tree-sitter parse` output, and the test that every query compiles catches a
   node name the grammar does not have.
+- **Sometimes the right indent query is no indent query.** Markdown ships
+  none on purpose. Indentation there is not syntax, it *is* the content: two
+  spaces before a list item are what nests it, and four are what makes a code
+  block. `=` would flatten the document. With no query, `has_indent_rules` is
+  false and `=` says "no indent rules for this file" — which is the honest
+  answer and already the one it gives a file with no grammar at all.
 
 Python-flavoured caveat: a Python file whose indentation is already wrong cannot
 be reindented, because in Python the indentation *is* the syntax — the tree is
@@ -1991,6 +2016,11 @@ was at first:
 
 ## Next
 
-- More languages. Cross-language injection works for every query kind now, so
-  what is left is registering grammars in `LANGUAGES` — `css` for HTML's
-  `<style>`, `markdown` for fenced code, `sql` for queries in strings.
+- SQL in strings. The grammar is registered now, so a `.sql` file and a
+  ```` ```sql ```` fence both work, but nothing injects SQL into a string
+  literal and that is the half that would matter in a Rust file. It needs an
+  injection query of ours that decides a string is SQL — by the macro around
+  it, `sqlx::query!`, or by what it starts with. Either is a guess about the
+  file rather than a fact about it, which is why it is not in yet.
+- YAML. Markdown's injection query asks for it by name for `---` frontmatter,
+  and there is no grammar to answer. It is also worth having on its own.

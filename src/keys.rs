@@ -4418,6 +4418,17 @@ plain
     }
 
     #[test]
+    fn markdown_says_there_is_nothing_to_reindent() {
+        // A grammar, and deliberately no indent query: the indentation of a
+        // markdown file is its content, and `=` would eat the nesting of a
+        // list. So it says so rather than flattening anything.
+        let mut vim = Vim::file("notes.md", "- a\n  - b\n");
+        vim.press("gg=G");
+        assert_eq!(vim.text(), "- a\n  - b\n", "the list is left alone");
+        assert_eq!(vim.editor.message, "no indent rules for this file");
+    }
+
+    #[test]
     fn autoindent_can_be_turned_off() {
         let mut vim = Vim::rust("fn main() {\n}\n");
         vim.press(":set noautoindent<cr>A<cr>x");

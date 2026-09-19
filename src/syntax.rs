@@ -65,6 +65,22 @@ fn cpp_language() -> Language {
     tree_sitter_cpp::LANGUAGE.into()
 }
 
+fn css_language() -> Language {
+    tree_sitter_css::LANGUAGE.into()
+}
+
+fn sql_language() -> Language {
+    tree_sitter_sequel::LANGUAGE.into()
+}
+
+fn markdown_language() -> Language {
+    tree_sitter_md::LANGUAGE.into()
+}
+
+fn markdown_inline_language() -> Language {
+    tree_sitter_md::INLINE_LANGUAGE.into()
+}
+
 fn rust_language() -> Language {
     tree_sitter_rust::LANGUAGE.into()
 }
@@ -163,6 +179,55 @@ static LANGUAGES: &[LanguageConfig] = &[
         indents: include_str!("../queries/c/indents.scm"),
         locals: "",
         tags: tree_sitter_c::TAGS_QUERY,
+    },
+    LanguageConfig {
+        name: "css",
+        extensions: &["css"],
+        language: css_language,
+        highlights: &[tree_sitter_css::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/css/indents.scm"),
+        // A rule binds nothing and defines nothing a `gd` could land on.
+        locals: "",
+        tags: "",
+    },
+    LanguageConfig {
+        name: "sql",
+        extensions: &["sql"],
+        language: sql_language,
+        highlights: &[tree_sitter_sequel::HIGHLIGHTS_QUERY],
+        injections: "",
+        indents: include_str!("../queries/sql/indents.scm"),
+        locals: "",
+        tags: "",
+    },
+    LanguageConfig {
+        name: "markdown",
+        extensions: &["md", "markdown"],
+        language: markdown_language,
+        highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+        // The one that matters: a fenced code block names its own language,
+        // and whatever that name is gets its own parse if it is registered.
+        injections: tree_sitter_md::INJECTION_QUERY_BLOCK,
+        // Indentation in markdown is not syntax, it *is* the content - two
+        // spaces before a list item are what makes it a nested list. So there
+        // is nothing for `=` to correct, and it says so rather than guessing.
+        indents: "",
+        locals: "",
+        tags: "",
+    },
+    LanguageConfig {
+        // Not a file you can open: the block grammar parses the structure and
+        // injects this one into every run of text, which is where emphasis,
+        // links and inline code actually live.
+        name: "markdown_inline",
+        extensions: &[],
+        language: markdown_inline_language,
+        highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
+        injections: tree_sitter_md::INJECTION_QUERY_INLINE,
+        indents: "",
+        locals: "",
+        tags: "",
     },
     LanguageConfig {
         name: "cpp",
@@ -1301,6 +1366,8 @@ mod tests {
             ("java", "class A {\n    int x = 1;\n}\n", "class"),
             ("c", "int main(void) {\n    int x = 1;\n}\n", "int"),
             ("cpp", "namespace n {\n    int x = 1;\n}\n", "namespace"),
+            ("css", "a {\n    color: red;\n}\n", "color"),
+            ("sql", "SELECT\n    a\nFROM t;\n", "SELECT"),
         ];
         for (language, text, word) in cases {
             let f = Fixture::with_language(language, text);
@@ -1350,8 +1417,13 @@ mod tests {
         assert_eq!(name("main.rs"), Some("rust"));
         assert_eq!(name("index.html"), Some("html"));
         assert_eq!(name("app.mjs"), Some("javascript"));
+        assert_eq!(name("site.css"), Some("css"));
+        assert_eq!(name("schema.sql"), Some("sql"));
+        assert_eq!(name("README.md"), Some("markdown"));
         assert_eq!(name("notes.txt"), None);
         assert!(language_for_path(None).is_none());
+        // Reachable only through markdown's injection query, never by name.
+        assert_eq!(name("x.markdown_inline"), None);
     }
 
     #[test]
@@ -1425,6 +1497,57 @@ mod tests {
         // injected Rust layer parses `Foo::new(1)` as a call.
         let f = Fixture::new("fn main() { let v = vec![Foo::new(1)]; }\n");
         assert_eq!(f.color_of("new"), Some(Color::Blue));
+    }
+
+    #[test]
+    fn css_in_a_style_tag_is_css() {
+        // HTML's injection query has always said "css". Until the grammar was
+        // registered, saying it got nothing: a `<style>` body stayed grey.
+        let f = Fixture::with_language(
+            "html",
+            "<html>\n<style>\na { color: red; }\n</style>\n</html>\n",
+        );
+        assert_eq!(f.color_of("color"), Some(Color::DarkYellow), "the property");
+        assert_eq!(f.color_of("a {"), Some(Color::Blue), "and the selector");
+        // The host is still the host: `html` is a tag, not a CSS anything.
+        assert_eq!(f.color_of("html"), Some(Color::Blue));
+    }
+
+    #[test]
+    fn a_fenced_code_block_is_whatever_it_says_it_is() {
+        // The language is read out of the info string rather than fixed by the
+        // query, so a ```rust block is parsed by the Rust grammar.
+        let text = "# A page\n\n```rust\nfn main() { let s: String = \"hi\"; }\n```\n";
+        let f = Fixture::with_language("markdown", text);
+        assert_eq!(f.color_of("fn"), Some(Color::Magenta), "a keyword in the fence");
+        assert_eq!(f.color_of("String"), Some(Color::Yellow), "and a type");
+    }
+
+    #[test]
+    fn a_fence_naming_a_language_nobody_has_keeps_markdowns_own() {
+        // There is no brainfuck grammar to look up - and `compiled_for`
+        // remembers the miss, so it is one failed lookup rather than one per
+        // frame. What is left is what markdown itself says a fence is.
+        let text = "```brainfuck\n+++[->+++<]\n```\n";
+        let f = Fixture::with_language("markdown", text);
+        assert_eq!(f.color_of("+++"), Some(Color::Green), "a literal, no more");
+    }
+
+    #[test]
+    fn markdown_injects_its_own_inline_grammar() {
+        // The block grammar sees a paragraph as one undifferentiated run of
+        // text. Emphasis and code spans are the inline grammar's, which the
+        // block grammar injects into every one of those runs.
+        let f = Fixture::with_language("markdown", "a paragraph with `code` in it\n");
+        assert!(f.color_of("`code`").is_some(), "the code span is coloured");
+    }
+
+    #[test]
+    fn markdown_has_nothing_for_the_indent_key_to_do() {
+        // Indentation in markdown is the content: two spaces before a list
+        // item are what nests it. There is no query, and that is the answer.
+        let f = Fixture::with_language("markdown", "- a\n  - b\n");
+        assert!(!f.syntax.has_indent_rules());
     }
 
     #[test]

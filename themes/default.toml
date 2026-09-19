@@ -22,6 +22,34 @@
 "number"           = "cyan"
 "tag"              = "blue"
 "tag.error"        = "red"
+# A name that belongs to something: a CSS property, a struct field, a TOML
+# key. Seven of the registered grammars capture it and it was uncoloured
+# until CSS arrived, where property names are most of the file.
+"property"         = "dark_yellow"
+"boolean"          = "cyan"
+"float"            = "cyan"
+# SQL calls its own keywords these.
+"conditional"      = "magenta"
+"storageclass"     = "magenta"
+# CSS gives each at-rule its own capture rather than calling them keywords.
+"charset"          = "magenta"
+"import"           = "magenta"
+"media"            = "magenta"
+"namespace"        = "magenta"
+"supports"         = "magenta"
+"keyframes"        = "magenta"
+# The braces of an interpolation - `${}` in a template literal, `{}` in an
+# f-string - and the markers markdown is made of.
+"punctuation.special" = "dark_cyan"
+
+# Markdown, where the markup is the content. A heading is not a keyword and a
+# link is not a string, so they get names of their own.
+"text.title"       = { fg = "blue", bold = true }
+"text.literal"     = "green"
+"text.uri"         = { fg = "dark_cyan", underline = true }
+"text.reference"   = "cyan"
+"text.emphasis"    = { italic = true }
+"text.strong"      = { bold = true }
 
 # The status line names its colors rather than reversing video: the powerline
 # separators are drawn in one segment's background over the next one's, which
