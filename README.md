@@ -114,7 +114,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
 | `ys{motion}{pair}` `yss` | put a pair around text: `ysiw)` makes `(word)`, `ysiw(` makes `( word )` |
 | `ds{pair}` `cs{pair}{pair}` | take away the pair around the cursor, or swap it: `ds"`, `cs"'`, `cs(]` |
-| `v` `V` | select characters / whole lines |
+| `v` `V` `^b` | select characters / whole lines / a rectangle |
 | `gv` | select what was selected last |
 | `shift` + arrows, `home`, `end` | select, entering visual mode |
 | `"x` before a command | use register `x` (`"X` appends) |
@@ -194,7 +194,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | any motion | drag the selection |
 | `o` | swap which end moves |
 | `iw` `a"` `i(` `ip` … | select a text object |
-| `v` `V` | switch between characters and lines, or back to normal |
+| `v` `V` `^b` | switch between characters, lines and blocks, or back to normal |
 | `d` `x` | delete the selection |
 | `c` `s` | delete it and start typing |
 | `y` | yank it |
@@ -205,6 +205,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^c` `^x` `^v` | copy / cut / paste over the selection |
 | `D` `X` `Y` `C` | the same, on whole lines |
 | `S(` `S"` … | put a pair around the selection |
+| `I` `A` (in `^b`) | type down the left / right side of the block |
 | `esc` | back to normal mode |
 
 ### Insert mode
@@ -681,6 +682,41 @@ a file is open in more than one window.
 The focused window has the full status line; the others show their file and
 position, dimmed. The command line, pickers and the buffer list still take the
 whole width of the screen.
+
+## Block selection
+
+`^b` selects a rectangle: the same columns of several lines, which is what you
+want for a column of assignments, a table, or commenting out a nested block.
+`d` and `x` take the rectangle out, `y` yanks it, `p` puts it back as a
+rectangle wherever the cursor is, and `I` and `A` type down its left or right
+side — you type once, on the first line, and what you typed lands on all of
+them when you leave insert mode. `c` is `I` after the delete.
+
+It is spelled `^b`, not vim's `^v`, because `^v` is the system paste here and
+that is worth more than the muscle memory. `b` is for block, and it is next to
+nothing else.
+
+Unlike `v` and `V` this is a genuinely different model, and that is why it is
+its own module rather than a third variant of the other two. A range has a
+start and an end and every operator in the editor takes one; a rectangle is one
+piece of each of several lines, and those pieces are not next to each other in
+the rope. So the block carries its own geometry — which lines, and which two
+screen *columns* — and the commands that understand it are written against
+that. Screen columns rather than character offsets, because a rectangle is a
+thing you see: a tab is one character and four columns wide, and the block has
+to line up on screen with what was selected.
+
+Three things fall out of the geometry and are worth saying. A line too short to
+reach the block contributes what it has, so a block over ragged lines takes
+only what is there rather than inventing spaces. `A` is the exception, and
+pads: appending past the end of a short line is exactly how you add a column of
+trailing text, so those lines are filled out to the column first. And every row
+is edited from the bottom up inside one undo group, because a row's position in
+the rope is only still right while nothing before it has moved — so `u` takes
+the whole rectangle back in one step, not a line at a time.
+
+What a block does not do yet: `r` and `~` over a rectangle, and vim's `$` block
+that runs to the end of every line however ragged they are.
 
 ## Comments
 
@@ -1843,7 +1879,5 @@ was at first:
 - More languages. Cross-language injection (JS in HTML, SQL in strings) is the
   same code path; it needs grammars registered in `LANGUAGES`.
 - Caching injected parses so scrolling a macro-heavy file does not reparse.
-- Block selection (`^V`). Unlike `v` and `V` it is a genuinely different
-  model - a rectangle is not a range - so it is not a third variant of this.
 - Widths are measured per char, not per grapheme cluster — wrong for emoji ZWJ
   sequences and combining marks.

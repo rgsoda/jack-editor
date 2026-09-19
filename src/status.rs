@@ -166,7 +166,7 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
     let mode_style = editor.theme.style(match editor.mode {
         Mode::Normal => "ui.mode.normal",
         Mode::Insert => "ui.mode.insert",
-        Mode::Visual | Mode::VisualLine => "ui.mode.visual",
+        Mode::Visual | Mode::VisualLine | Mode::VisualBlock => "ui.mode.visual",
     });
 
     let mut left = vec![Segment { text: editor.mode.name().to_string(), style: mode_style }];

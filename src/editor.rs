@@ -19,11 +19,12 @@ use crate::picker::{Choice, Item, Open, Outcome, Picker, Source};
 use crate::search::{self, Search};
 use crate::substitute;
 use crate::stream::{self, Message, Sign};
-use crate::register::{RegisterValue, Registers, SYSTEM};
+use crate::register::{Kind, RegisterValue, Registers, SYSTEM};
 use crate::theme::Theme;
 use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH, View};
 use crate::window::{self, Direction, Layout, Rect, Window};
 
+mod block;
 mod git;
 mod lsp;
 mod replace;
@@ -249,6 +250,10 @@ pub enum Mode {
     Visual,
     /// Visual, snapped to whole lines.
     VisualLine,
+    /// Visual over a rectangle rather than a range: the same columns of
+    /// several lines, which is a different model and not a third variant of
+    /// the other two. See `editor::block`.
+    VisualBlock,
 }
 
 impl Mode {
@@ -258,11 +263,12 @@ impl Mode {
             Mode::Insert => "INSERT",
             Mode::Visual => "VISUAL",
             Mode::VisualLine => "V-LINE",
+            Mode::VisualBlock => "V-BLOCK",
         }
     }
 
     pub fn is_visual(self) -> bool {
-        matches!(self, Mode::Visual | Mode::VisualLine)
+        matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
     }
 }
 
@@ -358,6 +364,9 @@ pub struct Editor {
     pub wrap: bool,
     /// The grep pattern a project-wide replace is waiting on a replacement for.
     replacing: String,
+    /// A block `I`, `A` or `c` waiting for insert mode to end, so what was
+    /// typed on one line can be put on the rest of them.
+    pending_block: Option<block::PendingBlock>,
     /// A command line the run loop should hand the terminal to. The editor
     /// does not own the terminal - the renderer does - so `:!` leaves the
     /// command here rather than running it.
@@ -488,6 +497,7 @@ impl Editor {
             inlayhints: true,
             wrap: false,
             replacing: String::new(),
+            pending_block: None,
             prompt: None,
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
@@ -3145,6 +3155,12 @@ impl Editor {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
+        // Leaving insert mode after a block `I`, `A` or `c` puts what was
+        // typed on the rest of the block's lines. It has to happen before the
+        // cursor steps back off the last character typed.
+        if self.mode == Mode::Insert && mode != Mode::Insert && self.pending_block.is_some() {
+            self.finish_block_insert();
+        }
         // The popup belongs to insert mode, whichever way you leave it, and so
         // does the signature of the call that was being typed.
         if mode != Mode::Insert {
@@ -3219,6 +3235,12 @@ impl Editor {
             Mode::Visual => {
                 let end = view.grapheme_right(end.max(start));
                 Some((start, end.min(view.doc.len_chars())))
+            }
+            // A block is not a range, so this is its bounding box: the
+            // commands that understand rectangles ask `block()` instead.
+            Mode::VisualBlock => {
+                let block = self.block()?;
+                Some((block.rows.first()?.0, block.rows.last()?.1))
             }
             Mode::VisualLine => {
                 let (first, _) = view.doc.coords(start);
@@ -3575,7 +3597,7 @@ impl Editor {
             return;
         }
         match self.mode {
-            Mode::Visual | Mode::VisualLine => self.put_over_visual(Some(SYSTEM)),
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => self.put_over_visual(Some(SYSTEM)),
             Mode::Insert => {
                 let text = self.registers.get(Some(SYSTEM)).text;
                 self.insert(&text);
@@ -3638,6 +3660,9 @@ impl Editor {
     /// Delete what visual mode has selected, and leave visual mode. Whether it
     /// is remembered as lines or as characters is what `v` and `V` decide.
     pub fn delete_visual(&mut self, register: Option<char>) {
+        if self.mode == Mode::VisualBlock {
+            return self.delete_block(register);
+        }
         let Some((start, end)) = self.selection_range() else {
             return;
         };
@@ -3647,13 +3672,16 @@ impl Editor {
     }
 
     pub fn yank_visual(&mut self, register: Option<char>) {
+        if self.mode == Mode::VisualBlock {
+            return self.yank_block(register);
+        }
         let Some((start, end)) = self.selection_range() else {
             return;
         };
-        let linewise = self.mode == Mode::VisualLine;
+        let kind = self.register_kind();
         let (view, registers) = self.view_and_registers();
         let text = view.doc.slice_str(start, end);
-        registers.record_yank(register, RegisterValue { text, linewise });
+        registers.record_yank(register, RegisterValue { text, kind });
         // The cursor lands at the start of what was yanked, as vim does.
         view.sel = Selection::point(start);
         self.set_mode(Mode::Normal);
@@ -3662,6 +3690,28 @@ impl Editor {
     /// Replace the selection with a register's contents. What was there goes
     /// to the register the delete would have used, so it can be put back.
     pub fn put_over_visual(&mut self, register: Option<char>) {
+        // Over a block, what was there goes and what is put takes its place
+        // as a rectangle of its own - the same two steps, spelled twice.
+        if self.mode == Mode::VisualBlock {
+            let value = self.register_value(register);
+            if value.is_empty() {
+                self.message = "nothing to put".into();
+                self.set_mode(Mode::Normal);
+                return;
+            }
+            self.begin_undo_group();
+            self.delete_block(None);
+            match value.is_block() {
+                true => self.put_block(&value, false),
+                false => {
+                    let at = self.view().sel.head;
+                    self.view_mut().put_inline_at(at, &value.text);
+                }
+            }
+            self.end_undo_group();
+            self.clamp_cursor();
+            return;
+        }
         let Some((start, end)) = self.selection_range() else {
             return;
         };
@@ -3676,7 +3726,7 @@ impl Editor {
         self.cut_range(None, start, end, linewise);
         self.set_mode(Mode::Normal);
 
-        match (value.linewise, linewise) {
+        match (value.is_linewise(), linewise) {
             // Lines replacing lines: the cut took the newline with it, so the
             // text goes back in at the start of the line it left behind.
             (true, true) => self.view_mut().put_lines_at(start, &value.text),
@@ -3690,9 +3740,22 @@ impl Editor {
         if end <= start {
             return;
         }
+        let kind = match linewise {
+            true => Kind::Line,
+            false => Kind::Char,
+        };
         let (view, registers) = self.view_and_registers();
         let text = view.cut(start, end);
-        registers.record_delete(register, RegisterValue { text, linewise });
+        registers.record_delete(register, RegisterValue { text, kind });
+    }
+
+    /// What shape the mode says a yank or a delete is.
+    fn register_kind(&self) -> Kind {
+        match self.mode {
+            Mode::VisualLine => Kind::Line,
+            Mode::VisualBlock => Kind::Block,
+            _ => Kind::Char,
+        }
     }
 
     pub fn yank_selection(&mut self, register: Option<char>) {
@@ -3799,7 +3862,11 @@ impl Editor {
         }
         let text = value.text.repeat(count);
 
-        if value.linewise {
+        if value.is_block() {
+            self.put_block(&value, after);
+            return;
+        }
+        if value.is_linewise() {
             self.view_mut().put_lines(&text, after);
         } else {
             self.view_mut().put_inline(&text, after);

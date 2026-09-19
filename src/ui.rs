@@ -101,6 +101,9 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
 
     let selection = editor.selection_range().filter(|_| focused);
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
+    // A block is not one range but one per line, so it is carried alongside
+    // and asked for the line being drawn.
+    let block = editor.block().filter(|_| focused);
 
     // The diagnostics on screen: their ranges to underline, and for each line
     // the worst of them, for the gutter and the message after the text.
@@ -175,13 +178,13 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         };
 
         // Selection clipped to this line, as char offsets within it.
-        let sel = if selection.is_some() && sel_end > line_start && sel_start <= line_end {
-            Some((
+        let sel = match &block {
+            Some(block) => block.row(line).map(|(start, end)| (start - line_start, end - line_start)),
+            None if selection.is_some() && sel_end > line_start && sel_start <= line_end => Some((
                 sel_start.saturating_sub(line_start),
                 sel_end.saturating_sub(line_start),
-            ))
-        } else {
-            None
+            )),
+            None => None,
         };
 
         for (segment, &from) in starts.iter().enumerate() {
@@ -1230,6 +1233,46 @@ mod tests {
             None => assert_eq!(row[text], tint),
         }
         assert_eq!(row[text + 8], tint);
+    }
+
+    /// Which cells of a drawn row are in the selection, by the reverse-video
+    /// the default theme marks it with.
+    fn row_selected(editor: &Editor, keys: &Keys, y: usize) -> Vec<bool> {
+        let mut screen = Screen::new();
+        let (width, height) = (editor.width, editor.top() + editor.height + 1);
+        let surface = screen.begin(width, height);
+        draw(editor, keys, surface);
+        (0..width).map(|x| surface.get(x, y).style.reverse).collect()
+    }
+
+    #[test]
+    fn a_block_selection_is_drawn_as_a_rectangle() {
+        // Lines 1 to 3, over columns 5 to 7 of each of them.
+        let mut editor = editor_with_lines(10);
+        editor.goto_line(1);
+        // The corner the block is anchored at, before it is a block at all.
+        for _ in 0..5 {
+            editor.move_cursor(Move::Right, false);
+        }
+        editor.set_mode(crate::editor::Mode::VisualBlock);
+        for _ in 0..2 {
+            editor.move_cursor(Move::Down, true);
+        }
+        for _ in 0..2 {
+            editor.move_cursor(Move::Right, true);
+        }
+        let keys = Keys::default();
+        let gutter = editor.gutter_width();
+
+        // The same three columns on all three rows, and nothing on the row
+        // above: a rectangle, rather than a run of text crossing lines.
+        for y in 1..=3 {
+            let row = row_selected(&editor, &keys, y);
+            let lit: Vec<usize> = (0..12).filter(|x| row[gutter + x]).collect();
+            assert_eq!(lit, [5, 6, 7], "row {y}");
+        }
+        assert!(!row_selected(&editor, &keys, 0).iter().any(|&on| on), "the line above is not in it");
+        assert!(!row_selected(&editor, &keys, 4).iter().any(|&on| on), "nor the line below");
     }
 
     #[test]

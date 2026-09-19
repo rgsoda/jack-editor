@@ -92,6 +92,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste the line (the system clipboard)", mode: "normal" },
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
     Binding { keys: "<space>l", what: "pick a line in this buffer", mode: "normal" },
+    Binding { keys: "^b", what: "select a rectangle: the same columns of several lines", mode: "normal" },
+    Binding { keys: "I A", what: "in a block: type down its left / right side", mode: "visual" },
     Binding { keys: "<space>S", what: "pick a symbol anywhere in the project (language server)", mode: "normal" },
     Binding { keys: "<space>e", what: "pick a diagnostic, in any open buffer", mode: "normal" },
     Binding { keys: "<space>h", what: "what this change was: git's lines and yours", mode: "normal" },
@@ -321,7 +323,7 @@ impl Keys {
         match editor.mode {
             Mode::Normal => self.normal(editor, key, ctrl),
             Mode::Insert => insert(editor, key, ctrl),
-            Mode::Visual | Mode::VisualLine => self.visual(editor, key, ctrl),
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => self.visual(editor, key, ctrl),
         }
 
         if !self.replaying {
@@ -811,6 +813,11 @@ impl Keys {
                 Mode::VisualLine => Mode::Normal,
                 _ => Mode::VisualLine,
             }),
+            // `^b` rather than vim's `^v`, which is the system paste here.
+            KeyCode::Char('b') if ctrl => editor.set_mode(match editor.mode {
+                Mode::VisualBlock => Mode::Normal,
+                _ => Mode::VisualBlock,
+            }),
             KeyCode::Char('o') => editor.swap_selection_ends(),
             KeyCode::Char(';') | KeyCode::Char(',') => {
                 let reverse = key.code == KeyCode::Char(',') && !editor.semicolon_is_command();
@@ -853,6 +860,13 @@ impl Keys {
                 editor.delete_visual(self.register)
             }
             KeyCode::Char('y') => editor.yank_visual(self.register),
+            KeyCode::Char('c') | KeyCode::Char('s') if editor.mode == Mode::VisualBlock => {
+                editor.insert_block(false, true);
+            }
+            // `I` and `A` over a block type down the left or right side of it;
+            // anywhere else they are what they are in normal mode.
+            KeyCode::Char('I') if editor.mode == Mode::VisualBlock => editor.insert_block(false, false),
+            KeyCode::Char('A') if editor.mode == Mode::VisualBlock => editor.insert_block(true, false),
             KeyCode::Char('c') | KeyCode::Char('s') => {
                 editor.delete_visual(self.register);
                 editor.set_mode(Mode::Insert);
@@ -985,6 +999,9 @@ impl Keys {
 
             KeyCode::Char('v') => editor.set_mode(Mode::Visual),
             KeyCode::Char('V') => editor.set_mode(Mode::VisualLine),
+            // Block selection. Vim spells this `^v`, which here is the system
+            // paste, so it is `^b` - for block, and next to nothing else.
+            KeyCode::Char('b') if ctrl => editor.set_mode(Mode::VisualBlock),
 
             // The view rather than the cursor: `z` puts the cursor's line
             // somewhere on the screen, `^e` and `^y` scroll under it, and
@@ -3063,7 +3080,7 @@ plain
         let mut vim = Vim::new("hello world\n");
         vim.press("llvlly");
         assert_eq!(vim.editor.registers.get(None).text, "llo");
-        assert!(!vim.editor.registers.get(None).linewise);
+        assert!(!vim.editor.registers.get(None).is_linewise());
         assert_eq!(vim.editor.cursor_coords(), (0, 2));
         assert_eq!(vim.editor.mode, Mode::Normal);
     }
@@ -3093,7 +3110,7 @@ plain
     fn a_visual_line_yank_puts_back_as_lines() {
         let mut vim = Vim::new("one\ntwo\n");
         vim.press("Vy");
-        assert!(vim.editor.registers.get(None).linewise);
+        assert!(vim.editor.registers.get(None).is_linewise());
         vim.press("jp");
         assert_eq!(vim.editor.view().doc.text.to_string(), "one\ntwo\none\n");
     }
@@ -3290,6 +3307,39 @@ plain
         assert_eq!(vim.editor.cursor_coords(), (3, 0));
         vim.press("<C-o>");
         assert_eq!(vim.editor.cursor_coords(), (2, 0));
+    }
+
+    #[test]
+    fn control_b_selects_a_rectangle_and_operators_take_it() {
+        let mut vim = Vim::new("one two\nthree four\nfive six\n");
+        // A block over the first four columns of all three lines.
+        vim.press("<C-b>jjlll");
+        assert_eq!(vim.editor.mode, Mode::VisualBlock);
+        let block = vim.editor.block().expect("a block");
+        assert_eq!((block.left, block.right), (0, 3));
+        vim.press("d");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "two\ne four\n six\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_block_insert_types_down_the_column() {
+        let mut vim = Vim::new("one\ntwo\nthree\n");
+        // `I` on a block one column wide, typed once, on every line.
+        vim.press("<C-b>jjI// <esc>");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "// one\n// two\n// three\n");
+        assert_eq!(vim.editor.mode, Mode::Normal);
+        vim.press("u");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn a_block_yank_puts_back_as_a_rectangle() {
+        let mut vim = Vim::new("ab\ncd\nxx\n");
+        vim.press("<C-b>jy");
+        assert!(vim.editor.registers.get(None).is_block());
+        vim.press("jj$p");
+        assert_eq!(vim.editor.view().doc.text.to_string(), "ab\ncd\nxxa\n  c\n");
     }
 
     #[test]
