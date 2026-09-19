@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::ops::Range;
-use unicode_segmentation::GraphemeCursor;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
+use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::Document;
 use crate::comment::{self, Marker, Toggled};
@@ -1515,13 +1515,34 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-pub fn char_width(ch: char, at: usize) -> usize {
-    if ch == '\t' {
-        TAB_WIDTH - (at % TAB_WIDTH)
-    } else {
-        // TODO: width should be measured per grapheme cluster, not per char;
-        // this is wrong for emoji ZWJ sequences and combining marks.
-        UnicodeWidthChar::width(ch).unwrap_or(0)
+/// Every grapheme cluster of `text`, as the char column it starts at and the
+/// cluster itself. Widths and columns are counted over these rather than over
+/// characters: `e` and a combining acute are one thing on the screen, and a
+/// ZWJ emoji is one thing made of five characters.
+pub fn clusters(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut column = 0;
+    text.graphemes(true).map(move |cluster| {
+        let at = column;
+        column += cluster.chars().count();
+        (at, cluster)
+    })
+}
+
+/// How many cells a grapheme cluster takes, starting at column `at`.
+///
+/// A cluster is measured whole, which is the whole point: per character, a
+/// woman-technologist emoji is a woman, a joiner and a laptop and measures
+/// four, and a heart with a variation selector measures one. Whole, they are
+/// both two, which is what a terminal draws.
+pub fn cluster_width(cluster: &str, at: usize) -> usize {
+    if cluster == "\t" {
+        return TAB_WIDTH - (at % TAB_WIDTH);
+    }
+    // A control character is not drawn and takes nothing, and a cluster led
+    // by one is not a glyph either.
+    match cluster.chars().next() {
+        Some(ch) if ch.is_control() => 0,
+        _ => UnicodeWidthStr::width(cluster),
     }
 }
 
@@ -1583,16 +1604,20 @@ pub struct Hint {
 /// the row. A hint is kept with the character it comes before, and counts.
 pub fn wrap_starts(text: &str, hints: &[(usize, &str)], width: usize) -> Vec<usize> {
     let width = width.max(1);
-    let chars: Vec<char> = text.chars().collect();
+    // Rows break between glyphs, never inside one, so the walk is over
+    // clusters; `i` and `start` index those, and what is recorded is the char
+    // column each row begins at.
+    let cells: Vec<(usize, &str)> = clusters(text).collect();
     let mut starts = vec![0];
     let (mut start, mut col, mut i) = (0, 0, 0);
-    // The column after the last space on this row, where a break can go.
+    // The cluster after the last space on this row, where a break can go.
     let mut after_space = None;
-    while i < chars.len() {
-        let hint: usize = hints.iter().filter(|(at, _)| *at == i).map(|(_, label)| crate::ui::str_width(label)).sum();
-        let cells = hint + char_width(chars[i], col + hint);
-        let space = chars[i] == ' ' || chars[i] == '\t';
-        if col + cells > width && i > start {
+    while i < cells.len() {
+        let (at, cluster) = cells[i];
+        let hint: usize = hints.iter().filter(|(column, _)| *column == at).map(|(_, label)| crate::ui::str_width(label)).sum();
+        let room = hint + cluster_width(cluster, col + hint);
+        let space = cluster == " " || cluster == "\t";
+        if col + room > width && i > start {
             // A space that does not fit hangs off the end of its row rather
             // than starting the next one.
             let next = match (space, after_space) {
@@ -1600,14 +1625,14 @@ pub fn wrap_starts(text: &str, hints: &[(usize, &str)], width: usize) -> Vec<usi
                 (false, Some(after)) if after > start && after <= i => after,
                 _ => i,
             };
-            if next >= chars.len() {
+            if next >= cells.len() {
                 break;
             }
-            starts.push(next);
+            starts.push(cells[next].0);
             (start, col, i, after_space) = (next, 0, next, None);
             continue;
         }
-        col += cells;
+        col += room;
         if space {
             after_space = Some(i + 1);
         }
@@ -1624,41 +1649,56 @@ pub fn hinted_col(line: &str, char_col: usize, hints: &[(usize, &str)]) -> usize
     if hints.is_empty() {
         return display_col(line, char_col);
     }
-    let mut w = 0;
-    let mut chars = line.chars();
-    for column in 0..=char_col {
+    let hints_at = |w: &mut usize, column: usize| {
         for (_, label) in hints.iter().filter(|(at, _)| *at == column) {
-            w += crate::ui::str_width(label);
+            *w += crate::ui::str_width(label);
         }
-        if column == char_col {
+    };
+    let mut w = 0;
+    let mut column = 0;
+    for (at, cluster) in clusters(line) {
+        if at >= char_col {
             break;
         }
-        match chars.next() {
-            Some(ch) => w += char_width(ch, w),
-            None => break,
+        hints_at(&mut w, at);
+        // A column inside a cluster is the column the cluster starts at:
+        // there is nowhere on screen between the two halves of one glyph.
+        if at + cluster.chars().count() > char_col {
+            return w;
         }
+        w += cluster_width(cluster, w);
+        column = at + cluster.chars().count();
+    }
+    // The hints at the column asked for, and past the end of the text: a hint
+    // written after the last character still pushes a cursor along.
+    for at in column..=char_col {
+        hints_at(&mut w, at);
     }
     w
 }
 
 pub fn display_col(line: &str, char_col: usize) -> usize {
     let mut w = 0;
-    for ch in line.chars().take(char_col) {
-        w += char_width(ch, w);
+    for (at, cluster) in clusters(line) {
+        if at >= char_col || at + cluster.chars().count() > char_col {
+            break;
+        }
+        w += cluster_width(cluster, w);
     }
     w
 }
 
-/// Char offset in `line` whose screen column is at or just past `target`.
+/// Char offset in `line` whose screen column is at or just past `target`,
+/// always on a cluster boundary - half of a glyph is not a place to be.
 pub fn char_col_at_display(line: &str, target: usize) -> usize {
     let mut w = 0;
     let mut col = 0;
-    for ch in line.chars() {
+    for (at, cluster) in clusters(line) {
         if w >= target {
             break;
         }
-        w += char_width(ch, w);
-        col += 1;
+        w += cluster_width(cluster, w);
+        col = at + cluster.chars().count();
     }
     col
 }
@@ -1756,6 +1796,51 @@ mod tests {
         assert_eq!(wrap_starts("let x = 1", &[(5, ": i32")], 10), [0, 6]);
         // Wide characters are two cells.
         assert_eq!(wrap_starts("日本語", &[], 4), [0, 2]);
+    }
+
+    #[test]
+    fn a_glyph_is_measured_whole_however_many_characters_it_took() {
+        use super::{char_col_at_display, cluster_width, display_col};
+        // A woman technologist: woman, a zero-width joiner, a laptop. Per
+        // character that is 2 + 0 + 2; whole, it is the two cells a terminal
+        // draws it in.
+        let coder = "\u{1f469}\u{200d}\u{1f4bb}";
+        assert_eq!(coder.chars().count(), 3);
+        assert_eq!(cluster_width(coder, 0), 2);
+        // A heart with a variation selector is the other way round: one cell
+        // per character, but two once the selector is counted with it.
+        assert_eq!(cluster_width("\u{2764}\u{fe0f}", 0), 2);
+        // And a combining mark rides along with the letter it is on.
+        assert_eq!(cluster_width("e\u{301}", 0), 1);
+
+        let line = format!("a{coder}b");
+        assert_eq!(display_col(&line, 0), 0);
+        assert_eq!(display_col(&line, 1), 1, "before the emoji");
+        assert_eq!(display_col(&line, 4), 3, "after it: one cell plus two");
+        // A column inside the glyph is where the glyph starts - there is
+        // nowhere on screen between a joiner and what it joins.
+        assert_eq!(display_col(&line, 2), 1);
+        assert_eq!(display_col(&line, 3), 1);
+
+        // Coming back the other way always lands on a whole glyph.
+        assert_eq!(char_col_at_display(&line, 0), 0);
+        assert_eq!(char_col_at_display(&line, 1), 1);
+        assert_eq!(char_col_at_display(&line, 2), 4);
+        assert_eq!(char_col_at_display(&line, 3), 4);
+    }
+
+    #[test]
+    fn a_row_never_breaks_inside_a_glyph() {
+        use super::wrap_starts;
+        let coder = "\u{1f469}\u{200d}\u{1f4bb}";
+        // Three two-cell glyphs of three characters each, wrapped at five:
+        // two fit on a row, and the break is at a character boundary that is
+        // also a glyph boundary - char 6, not char 4.
+        let line = coder.repeat(3);
+        assert_eq!(wrap_starts(&line, &[], 5), [0, 6]);
+        // Measured per character it would have been four glyphs' worth of
+        // cells on the first row, which is not what is drawn.
+        assert_eq!(wrap_starts(&line, &[], 4), [0, 6]);
     }
 
     /// Two lines of four rows each, wrapped at eight: a page is rows, so half

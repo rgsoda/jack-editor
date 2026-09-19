@@ -395,6 +395,33 @@ Per viewport query, release build:
 | ordinary code | ~240µs |
 | 80 macro calls in 40 lines | ~1.8ms |
 
+## A glyph is not a character
+
+Everything about columns — the cursor's, the wrapping, the inlay hints, the
+gutter, the block selection — is counted a *glyph* at a time rather than a
+character at a time. A glyph is a grapheme cluster: `e` and a combining acute
+are one, a heart and its variation selector are one, and a woman technologist
+is a woman, a zero-width joiner and a laptop, which is three characters and one
+glyph.
+
+Counted per character those come out wrong in both directions. The emoji
+measures four cells and the terminal draws it in two, so everything after it on
+the line sits two columns out; the heart measures one and is drawn in two, so
+everything after it sits one column short. Wrapping could break a row between a
+joiner and what it joins, and the cursor could land there. Now the width of a
+cluster is asked for whole, `unicode-width` answers for the sequence rather
+than summing its parts, and a row can only break where one glyph ends and the
+next begins.
+
+The screen holds it too. A cell used to be a `char`; now it is the first
+character plus, inline, up to 28 bytes of whatever rides along with it — inline
+so a cell stays `Copy` and the screen stays one flat array, and compared whole
+so that changing `é` to `ë` is a change the diff can see. A cluster longer than
+that is cut, which no terminal was going to draw as one glyph anyway.
+
+What this does not fix is terminals disagreeing with each other about emoji
+widths, which no amount of measuring here can settle.
+
 ## Rendering cost
 
 Bytes written per frame, 80x24, debug build:
@@ -1879,5 +1906,3 @@ was at first:
 - More languages. Cross-language injection (JS in HTML, SQL in strings) is the
   same code path; it needs grammars registered in `LANGUAGES`.
 - Caching injected parses so scrolling a macro-heavy file does not reparse.
-- Widths are measured per char, not per grapheme cluster — wrong for emoji ZWJ
-  sequences and combining marks.

@@ -6,7 +6,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::editor::{Completing, Editor, Prompt};
 use crate::view::Diagnostic;
 use crate::window::Rect;
-use crate::view::char_width;
+use crate::view::cluster_width;
+use unicode_segmentation::UnicodeSegmentation;
 use crate::keys::Keys;
 use crate::picker::Picker;
 use crate::complete::{Candidate, Completion};
@@ -523,16 +524,19 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
 
             // Matched characters are tinted; the selected row keeps its own
             // background, so the tint patches over it rather than replacing it.
-            for (i, ch) in item.text.chars().enumerate() {
-                let w = char_width(ch, x).max(1);
+            // A glyph is lit if the query landed on any character in it - the
+            // matcher counts characters, and half a glyph cannot be tinted.
+            for (at, cluster) in crate::view::clusters(&item.text) {
+                let w = cluster_width(cluster, x).max(1);
                 if x + w > room {
                     break;
                 }
-                let style = match m.positions.contains(&i) {
+                let lit = (at..at + cluster.chars().count()).any(|i| m.positions.contains(&i));
+                let style = match lit {
                     true => row_style.patch(matched),
                     false => row_style,
                 };
-                surface.put(x, y, ch, w, style);
+                surface.put_cluster(x, y, cluster, w, style);
                 x += w;
             }
             if tail > 0 {
@@ -619,12 +623,20 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         }
     };
 
-    for (char_idx, (byte_in_line, ch)) in text.char_indices().enumerate() {
+    // A glyph at a time, not a character at a time: a cluster is one thing on
+    // screen and lives in one cell, however many characters went into it.
+    let mut column = 0usize;
+    for (byte_in_line, cluster) in text.grapheme_indices(true) {
+        // The char column this glyph starts at, which is what the highlights,
+        // the matches and the selection are all counted in.
+        let char_idx = column;
+        column += cluster.chars().count();
+        let ch = cluster.chars().next().unwrap_or(' ');
         if !hints.is_empty() {
             draw_hints(surface, &mut col, char_idx);
         }
         let start = col;
-        let end = start + char_width(ch, start);
+        let end = start + cluster_width(cluster, start);
         col = end;
 
         if start >= right {
@@ -655,18 +667,17 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         if sel.is_some_and(|(s, e)| char_idx >= s && char_idx < e) {
             style = style.patch(styling.selection);
         }
-
         let visible_start = start.max(scroll_left);
         let visible_width = end.min(right) - visible_start;
         let x = visible_start - scroll_left + styling.left;
 
         if ch == '\t' || start < scroll_left || end > right {
-            // Tabs, and wide characters straddling an edge, become blanks.
+            // Tabs, and wide glyphs straddling an edge, become blanks.
             for offset in 0..visible_width {
                 surface.put(x + offset, row, ' ', 1, style);
             }
         } else {
-            surface.put(x, row, ch, visible_width, style);
+            surface.put_cluster(x, row, cluster, visible_width, style);
         }
     }
     // The hints after the last character: a type at the end of a line.
@@ -908,19 +919,22 @@ fn run_width(run: &[(String, Style)]) -> usize {
 }
 
 fn put_str(surface: &mut Surface, mut x: usize, row: usize, text: &str, style: Style, width: usize) -> usize {
-    for ch in text.chars() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (_, cluster) in crate::view::clusters(text) {
+        let w = cluster_width(cluster, 0);
         if x + w > width {
             break;
         }
-        surface.put(x, row, ch, w, style);
+        surface.put_cluster(x, row, cluster, w, style);
         x += w;
     }
     x
 }
 
+/// How many cells a string takes, measured a glyph at a time. There are no
+/// tab stops to keep here - these are labels and names, not lines of a file -
+/// so every cluster is measured from column zero.
 pub fn str_width(s: &str) -> usize {
-    s.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum()
+    crate::view::clusters(s).map(|(_, cluster)| crate::view::cluster_width(cluster, 0)).sum()
 }
 
 #[cfg(test)]

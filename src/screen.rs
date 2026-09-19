@@ -39,14 +39,63 @@ impl Style {
     }
 }
 
+/// How many bytes of a grapheme cluster a cell keeps after its first
+/// character. Enough for a family emoji; a cluster longer than this is cut,
+/// and no terminal was going to draw that as one glyph anyway.
+const TAIL: usize = 28;
+
+/// The rest of a grapheme cluster after its first character: combining marks,
+/// a zero-width joiner and what it joins, a variation selector. Held inline
+/// rather than in a `String` so a cell stays `Copy` and a screen stays one
+/// flat array.
+#[derive(Clone, Copy)]
+pub struct Tail {
+    bytes: [u8; TAIL],
+    len: u8,
+}
+
+const NO_TAIL: Tail = Tail { bytes: [0; TAIL], len: 0 };
+
+impl Tail {
+    /// The bytes of `rest`, as many as fit on a character boundary.
+    fn of(rest: &str) -> Tail {
+        let mut end = rest.len().min(TAIL);
+        while end > 0 && !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0; TAIL];
+        bytes[..end].copy_from_slice(&rest.as_bytes()[..end]);
+        Tail { bytes, len: end as u8 }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ever written from a `&str` on a character boundary.
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or_default()
+    }
+}
+
+impl PartialEq for Tail {
+    fn eq(&self, other: &Tail) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
+    /// The first character of what is drawn here, which for all but a handful
+    /// of cells is the whole of it.
     pub ch: char,
+    pub tail: Tail,
     pub style: Style,
 }
 
 const BLANK: Cell = Cell {
     ch: ' ',
+    tail: NO_TAIL,
     style: Style {
         fg: None,
         bg: None,
@@ -91,12 +140,26 @@ impl Surface {
     /// Paint `ch` at (x, y) across `width` columns. Off-surface writes and
     /// zero-width characters are dropped.
     pub fn put(&mut self, x: usize, y: usize, ch: char, width: usize, style: Style) {
+        self.write(x, y, ch, NO_TAIL, width, style);
+    }
+
+    /// One grapheme cluster in one cell: the character, and whatever rides
+    /// along with it. `e` and a combining acute are one cell, not two.
+    pub fn put_cluster(&mut self, x: usize, y: usize, cluster: &str, width: usize, style: Style) {
+        let mut chars = cluster.chars();
+        let Some(ch) = chars.next() else {
+            return;
+        };
+        self.write(x, y, ch, Tail::of(chars.as_str()), width, style);
+    }
+
+    fn write(&mut self, x: usize, y: usize, ch: char, tail: Tail, width: usize, style: Style) {
         if width == 0 || x >= self.width || y >= self.height {
             return;
         }
-        self.cells[y * self.width + x] = Cell { ch, style };
+        self.cells[y * self.width + x] = Cell { ch, tail, style };
         for column in x + 1..(x + width).min(self.width) {
-            self.cells[y * self.width + column] = Cell { ch: CONTINUATION, style };
+            self.cells[y * self.width + column] = Cell { ch: CONTINUATION, tail: NO_TAIL, style };
         }
     }
 }
@@ -177,6 +240,9 @@ impl Screen {
                         style = Some(cell.style);
                     }
                     queue!(out, Print(cell.ch))?;
+                    if !cell.tail.is_empty() {
+                        queue!(out, Print(cell.tail.as_str()))?;
+                    }
                     // Terminals defer the wrap after the last column, so the
                     // cursor's position there is not something we can predict.
                     at = if x + span >= width { None } else { Some((x + span, y)) };
@@ -253,6 +319,33 @@ mod tests {
         for (i, ch) in text.chars().enumerate() {
             surface.put(x + i, y, ch, 1, style);
         }
+    }
+
+    #[test]
+    fn a_glyph_made_of_several_characters_goes_out_whole() {
+        let mut screen = Screen::new();
+        let coder = "\u{1f469}\u{200d}\u{1f4bb}";
+        let sent = frame(&mut screen, 4, 1, |s| {
+            s.put_cluster(0, 0, coder, 2, Style::default());
+            s.put_cluster(2, 0, "e\u{301}", 1, Style::default());
+        });
+        assert_eq!(sent, format!("{coder}{}", "e\u{301}"));
+        // The cell knows the whole cluster, not just its first character.
+        let surface = screen.begin(4, 1);
+        surface.put_cluster(0, 0, coder, 2, Style::default());
+        assert_eq!(surface.get(0, 0).ch, '\u{1f469}');
+        assert_eq!(surface.get(0, 0).tail.as_str(), "\u{200d}\u{1f4bb}");
+        assert_eq!(surface.get(1, 0).ch, CONTINUATION, "and it covers both its columns");
+    }
+
+    #[test]
+    fn a_glyph_that_changed_is_sent_again_although_it_starts_the_same() {
+        // Two clusters that share a first character: the cell has to compare
+        // the whole of what it holds, or the second frame sends nothing.
+        let mut screen = Screen::new();
+        frame(&mut screen, 2, 1, |s| s.put_cluster(0, 0, "e\u{301}", 1, Style::default()));
+        let next = frame(&mut screen, 2, 1, |s| s.put_cluster(0, 0, "e\u{308}", 1, Style::default()));
+        assert_eq!(next, "e\u{308}");
     }
 
     #[test]
