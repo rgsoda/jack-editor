@@ -1047,6 +1047,16 @@ impl Editor {
             return;
         }
 
+        // `:g/pattern/command`, which like `:s` has a pattern in it and so
+        // cannot be looked up by splitting the line on whitespace.
+        if let Some(parsed) = substitute::parse_global(line) {
+            match parsed {
+                Ok(command) => self.global(command),
+                Err(complaint) => self.message = complaint,
+            }
+            return;
+        }
+
         // `:!cmd` - a shell command, with the terminal handed over to it. The
         // whole rest of the line, quotes, pipes and all: it goes to a shell,
         // which is better at reading it than anything here would be.
@@ -1061,6 +1071,17 @@ impl Editor {
         // whether it consumed anything is what says which.
         let (lines, rest) = substitute::range(line);
         let ranged = rest.len() != line.len();
+        if matches!(rest.trim(), "d" | "delete") {
+            let lines = match ranged {
+                true => self.substitute_lines(lines),
+                false => Some((self.view().cursor_coords().0, self.view().cursor_coords().0)),
+            };
+            let Some((first, last)) = lines else {
+                return;
+            };
+            self.delete_line_range(first, last);
+            return;
+        }
         if matches!(rest.trim(), "fmt" | "format") {
             let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
             if ranged && lines.is_none() {
@@ -1382,6 +1403,88 @@ impl Editor {
             (_, true) => format!("{changes} matches on {lines} lines"),
             _ => format!("{changes} substitutions on {lines} lines"),
         };
+    }
+
+    /// `:g/pattern/command`: run the command on every line that matches, and
+    /// `:v` on every line that does not.
+    ///
+    /// Vim marks the lines first and then runs the command over the marks,
+    /// because the command is free to add and remove lines under it. There are
+    /// no marks here, so the lines are collected first and walked backwards
+    /// instead: a line's number cannot be moved by an edit further down.
+    fn global(&mut self, command: substitute::Global) {
+        // A `:g` whose command is another `:g` is a loop over a loop, which
+        // vim refuses too. Refused here, before anything is edited, so the
+        // complaint is not buried under what the first pass had already done.
+        if substitute::parse_global(&command.command).is_some() {
+            self.message = "a :g cannot run another :g".into();
+            return;
+        }
+        let lines = match command.lines {
+            Some(lines) => self.substitute_lines(lines),
+            None => Some((0, self.last_line())),
+        };
+        let Some((first, last)) = lines else {
+            return;
+        };
+
+        let pattern = match command.pattern.is_empty() {
+            true => self.search.pattern.clone(),
+            false => command.pattern.clone(),
+        };
+        if pattern.is_empty() {
+            self.message = "no pattern, and no previous search".into();
+            return;
+        }
+        let insensitive = !pattern.chars().any(char::is_uppercase);
+        let regex = match RegexBuilder::new(&pattern).case_insensitive(insensitive).build() {
+            Ok(regex) => regex,
+            Err(_) => {
+                self.message = format!("not a pattern: {pattern}");
+                return;
+            }
+        };
+
+        let matching: Vec<usize> = (first..=last)
+            .filter(|&line| {
+                let text = self.view().doc.line_str(line).to_string();
+                regex.is_match(text.trim_end_matches('\n')) != command.invert
+            })
+            .collect();
+        if matching.is_empty() {
+            self.message = format!("not found: {pattern}");
+            return;
+        }
+
+        let count = matching.len();
+        self.begin_undo_group();
+        for line in matching.into_iter().rev() {
+            // Backwards or not, a command that took several lines out can
+            // leave a number pointing past the end.
+            if line > self.last_line() {
+                continue;
+            }
+            let at = self.view().doc.line_to_char(line);
+            self.view_mut().sel = Selection::point(at);
+            // Cleared first so that what is left at the end is the last thing
+            // the command itself had to say, and not something from before.
+            self.message.clear();
+            self.run_command(&command.command.clone());
+        }
+        self.end_undo_group();
+        self.clamp_cursor();
+        self.message = match self.message.is_empty() {
+            true => format!("{count} lines"),
+            false => format!("{count} lines: {}", self.message),
+        };
+    }
+
+    /// The lines from `first` to `last`, taken out and put in the register the
+    /// way `dd` does, which is what `:d` and `:g/x/d` both want.
+    fn delete_line_range(&mut self, first: usize, last: usize) {
+        let at = self.view().doc.line_to_char(first);
+        self.view_mut().sel = Selection::point(at);
+        self.delete_lines(None, last - first + 1);
     }
 
     /// The first and last line a range names, zero-based and in order, or a
@@ -4847,6 +4950,89 @@ mod tests {
         let mut e = editor("Foo foo\n");
         e.run_command("s/foo/x/gI");
         assert_eq!(e.view().doc.text.to_string(), "Foo x\n");
+    }
+
+    #[test]
+    fn g_runs_a_command_on_every_matching_line() {
+        let mut e = editor("keep\ndbg!(x);\nkeep\ndbg!(y);\n");
+        e.run_command("g/dbg!/d");
+        assert_eq!(e.view().doc.text.to_string(), "keep\nkeep\n");
+        assert!(e.message.starts_with('2'), "{}", e.message);
+
+        // One `:g` is one undo, however many lines it touched.
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "keep\ndbg!(x);\nkeep\ndbg!(y);\n");
+    }
+
+    #[test]
+    fn v_is_the_lines_that_do_not_match() {
+        let mut e = editor("a one
+b
+a two
+");
+        e.run_command("v/^a/d");
+        assert_eq!(e.view().doc.text.to_string(), "a one\na two\n");
+
+        // `:g!` is the same thing said the other way.
+        let mut e = editor("a\nb\na\n");
+        e.run_command("g!/a/d");
+        assert_eq!(e.view().doc.text.to_string(), "a\na\n");
+    }
+
+    #[test]
+    fn the_command_after_the_pattern_keeps_its_own_delimiters() {
+        // `:g/x/s/a/b/g` is a substitute, not a pattern with stray slashes.
+        let mut e = editor("x aa\ny aa\nx aa\n");
+        e.run_command("g/x/s/a/b/g");
+        assert_eq!(e.view().doc.text.to_string(), "x bb\ny aa\nx bb\n");
+    }
+
+    #[test]
+    fn g_takes_a_range_and_defaults_to_the_whole_buffer() {
+        // `:s` with no range is the current line; `:g` with none is the file,
+        // which is why "no range" has to survive the parse.
+        let mut e = editor("x\nx\nx\n");
+        e.run_command("1,2g/x/d");
+        assert_eq!(e.view().doc.text.to_string(), "x\n");
+
+        let mut e = editor("x\ny\nx\n");
+        e.goto_line(1);
+        e.run_command("g/x/d");
+        assert_eq!(e.view().doc.text.to_string(), "y\n");
+    }
+
+    #[test]
+    fn a_global_that_matches_nothing_says_so_and_changes_nothing() {
+        let mut e = editor("one\n");
+        e.run_command("g/zebra/d");
+        assert_eq!(e.view().doc.text.to_string(), "one\n");
+        assert!(e.message.contains("zebra"), "{}", e.message);
+        assert!(!e.is_modified(), "nothing to save");
+
+        // A `:g` inside a `:g` is a loop over a loop, and is refused.
+        let mut e = editor("one\n");
+        e.run_command("g/one/g/one/d");
+        assert_eq!(e.view().doc.text.to_string(), "one\n");
+        assert!(e.message.contains(":g"), "{}", e.message);
+    }
+
+    #[test]
+    fn delete_is_a_command_of_its_own_with_a_range() {
+        let mut e = editor("a\nb\nc\nd\n");
+        e.run_command("2,3d");
+        assert_eq!(e.view().doc.text.to_string(), "a\nd\n");
+
+        // With no range it is the line the cursor is on, as vim has it, and
+        // the lines go to the register so `p` puts them back.
+        let mut e = editor("a\nb\n");
+        e.goto_line(1);
+        e.run_command("d");
+        assert_eq!(e.view().doc.text.to_string(), "a\n");
+
+        // `:%d` empties the buffer, the way `dd` on every line does.
+        let mut e = editor("a\nb\n");
+        e.run_command("%d");
+        assert_eq!(e.view().doc.text.to_string(), "");
     }
 
     #[test]

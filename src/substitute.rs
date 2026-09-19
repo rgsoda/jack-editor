@@ -102,6 +102,96 @@ pub fn parse(line: &str) -> Option<Result<Substitute, String>> {
     Some(Ok(Substitute { lines, pattern, replacement, flags: parsed }))
 }
 
+/// `:g/pattern/command` - run one command on every line that matches, and
+/// `:v` (or `:g!`) on every line that does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Global {
+    /// No range given means the whole buffer, which is not the same default
+    /// as `:s` has, so "none" has to survive the parse rather than becoming
+    /// `Lines::Current` here.
+    pub lines: Option<Lines>,
+    pub invert: bool,
+    /// Empty means the last search pattern, as it does for `:s`.
+    pub pattern: String,
+    /// The rest of the line, delimiters and all: `:g/x/s/a/b/g` is one
+    /// substitute, not a pattern with two stray slashes in it.
+    pub command: String,
+}
+
+/// Read a `:` line as a global. `None` when it is some other command, `Err`
+/// when it is a global and is wrong.
+pub fn parse_global(line: &str) -> Option<Result<Global, String>> {
+    let line = line.trim();
+    let (lines, rest) = range(line);
+    let lines = (rest.len() != line.len()).then_some(lines);
+
+    let end = rest.find(|c: char| !c.is_alphabetic()).unwrap_or(rest.len());
+    let (name, rest) = rest.split_at(end);
+    // `:g`, `:gl`, `:global`, and `:v`, `:vg`, `:vglobal` - but not `:vsplit`,
+    // which is a longer word than the one that would have to be a prefix of.
+    let mut invert = match name {
+        "" => return None,
+        _ if "global".starts_with(name) => false,
+        _ if "vglobal".starts_with(name) => true,
+        _ => return None,
+    };
+    let rest = match rest.strip_prefix('!') {
+        // `:g!` is `:v`, and `:v!` is a double negative nobody means.
+        Some(rest) if !invert => {
+            invert = true;
+            rest
+        }
+        Some(_) => return Some(Err("v! is g, which is not what you meant".into())),
+        None => rest,
+    };
+
+    let mut chars = rest.chars();
+    let Some(delimiter) = chars.next() else {
+        return Some(Err(needs_command()));
+    };
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() || delimiter == '\\' {
+        return Some(Err(format!("not a delimiter: {delimiter}")));
+    }
+
+    // Only the pattern is split off. Everything after the second delimiter is
+    // a command line of its own and is handed on whole.
+    let (pattern, command) = take_until(chars.as_str(), delimiter);
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return Some(Err(needs_command()));
+    }
+    Some(Ok(Global { lines, invert, pattern, command }))
+}
+
+fn needs_command() -> String {
+    "global needs a pattern and a command: :g/pattern/d".to_string()
+}
+
+/// Up to the first delimiter a backslash is not hiding, and the rest after it.
+fn take_until(text: &str, delimiter: char) -> (String, &str) {
+    let mut taken = String::new();
+    let mut escaped = false;
+    for (at, c) in text.char_indices() {
+        if escaped {
+            if c != delimiter {
+                taken.push('\\');
+            }
+            taken.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == delimiter {
+            return (taken, &text[at + c.len_utf8()..]);
+        } else {
+            taken.push(c);
+        }
+    }
+    if escaped {
+        taken.push('\\');
+    }
+    (taken, "")
+}
+
 fn needs_pattern() -> String {
     "substitute needs a pattern: :s/old/new/".to_string()
 }
@@ -221,6 +311,41 @@ mod tests {
         assert_eq!(ok("s/old/new").replacement, "new");
         assert_eq!(ok("s/old").replacement, "");
         assert_eq!(ok("s/old/").replacement, "");
+    }
+
+    #[test]
+    fn a_global_is_a_pattern_and_a_command() {
+        let g = parse_global("g/x/d").expect("a global").expect("valid");
+        assert_eq!(g.lines, None, "no range is the whole buffer, not this line");
+        assert!(!g.invert);
+        assert_eq!(g.pattern, "x");
+        assert_eq!(g.command, "d");
+
+        // Everything after the second delimiter is the command, whatever is
+        // in it: `:g/x/s/a/b/g` is one substitute.
+        assert_eq!(parse_global("g/x/s/a/b/g").unwrap().unwrap().command, "s/a/b/g");
+
+        // `:v` and `:g!` are the same thing, and a range still comes first.
+        let g = parse_global("1,5v#x#d").expect("a global").expect("valid");
+        assert!(g.invert);
+        assert_eq!(g.lines, Some(Lines::Range(Address::Line(1), Address::Line(5))));
+        assert!(parse_global("g!/x/d").unwrap().unwrap().invert);
+        assert_eq!(parse_global("%global/x/d").unwrap().unwrap().lines, Some(Lines::Whole));
+
+        // An escaped delimiter belongs to the pattern.
+        assert_eq!(parse_global(r"g/a\/b/d").unwrap().unwrap().pattern, "a/b");
+    }
+
+    #[test]
+    fn what_is_not_a_global_is_left_for_someone_else() {
+        // `:vsplit` starts with a v and is not a `:v`, and neither is `:gd`.
+        assert!(parse_global("vsplit foo.rs").is_none());
+        assert!(parse_global("gd").is_none());
+        assert!(parse_global("set number").is_none());
+
+        // A global with no command is a mistake worth naming.
+        assert!(parse_global("g/x/").unwrap().is_err());
+        assert!(parse_global("g").unwrap().is_err());
     }
 
     #[test]

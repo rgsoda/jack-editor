@@ -158,6 +158,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
 | `:s//new/` | an empty pattern means the last search |
+| `:g/pat/cmd` | run a command on every matching line — `:g/dbg!/d`, `:g/TODO/s/TODO/DONE/` |
+| `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
+| `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
 | `:config` | open the config file, writing the documented defaults first |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
@@ -956,6 +959,33 @@ rather than typing the word twice. `n` counts the matches and changes nothing.
 The lines are rewritten from the last up, so replacing text on one line cannot
 move the line below out from under the next edit, and the whole command is one
 undo group: `:%s/a/b/g` across a thousand lines comes back with one `u`.
+
+## Global
+
+`:g/pattern/command` runs one command on every line that matches, and `:v` (or
+`:g!`) on every line that does not. `:g/dbg!/d` takes out the debugging,
+`:v/^#/d` keeps only the comments, `:g/TODO/s/TODO/DONE/` rewrites the ones
+that are done. With no range it is the whole buffer — not the current line,
+which is what `:s` defaults to, so "no range given" has to survive the parse
+rather than being flattened into `Lines::Current` on the way.
+
+Only the pattern is split off the line. Everything after the second delimiter
+is a command line of its own and is handed on whole, so `:g/x/s/a/b/g` is a
+substitute and not a pattern with stray slashes in it. The command is then run
+through the same `run_command` as anything typed at `:`, with the cursor put on
+the matching line first, which is why `:d` exists as a command in its own right
+— `:g/x/d` is `:d` on each line, and `:3,7d` is the same command with a range
+written out.
+
+Vim marks the lines first and runs the command over the marks, because the
+command is free to add and remove lines under it. There are no marks here, so
+the lines are collected in one pass and walked **backwards**: an edit cannot
+move a line number above it. The whole thing is one undo group, so `:g/dbg!/d`
+over forty lines comes back with one `u`.
+
+A `:g` whose command is another `:g` is refused, as it is in vim — a loop over
+a loop. It is caught before the first pass runs, so the complaint is not buried
+under edits that had already happened.
 
 ## One command, one undo
 
@@ -2136,3 +2166,6 @@ was at first:
 
 - LaTeX, which markdown's *inline* query asks for by name and nothing answers —
   the last injection in the tree with no grammar behind it.
+- `:g/pattern/normal {keys}`, which is the half of vim's `:g` that is missing:
+  a command line can be run per line already, but a run of normal-mode keys
+  cannot, and that is what `:g/x/normal A;` is for.
