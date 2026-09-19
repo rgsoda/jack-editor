@@ -98,6 +98,10 @@ pub enum Source {
     /// the query. Live, like grep: every keystroke asks again. `target` is the
     /// path and `id` the line.
     Workspace,
+    /// The quickfix list, as a list to walk with something other than `]q`.
+    /// `target` is the path and `id` the line, zero-based - the list already
+    /// counts lines the way the editor does.
+    Quickfix,
 }
 
 impl Source {
@@ -113,6 +117,7 @@ impl Source {
             Source::Actions => "action",
             Source::Diagnostics => "diagnostic",
             Source::Workspace => "project symbol",
+            Source::Quickfix => "quickfix",
         }
     }
 
@@ -175,6 +180,9 @@ pub enum Outcome {
     Search(String),
     /// `^r` over grep's matches: replace this pattern in every file.
     Replace(String),
+    /// `^q`: send what is in the list to the quickfix list, as Telescope's
+    /// `^q` does. The picker closes; the list stays.
+    Quickfix,
 }
 
 /// The one picker. Four planned sources - buffers, files, lines, matches -
@@ -333,6 +341,9 @@ impl Picker {
             KeyCode::Char('r') if ctrl && self.source == Source::Grep => {
                 return Outcome::Replace(self.query.clone());
             }
+            // What Telescope sends a list to the quickfix list with. Over the
+            // matches, not the items: what is on screen is what you meant.
+            KeyCode::Char('q') if ctrl => return Outcome::Quickfix,
             KeyCode::Char('n') if ctrl => self.step(1),
             KeyCode::Up | KeyCode::BackTab => self.step(-1),
             KeyCode::Char('p') if ctrl => self.step(-1),

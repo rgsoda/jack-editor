@@ -13,6 +13,7 @@ use crate::comment::{self, Marker, Toggled};
 use crate::complete::{self, Completion, Pick};
 use crate::info::{self, Info};
 use crate::jump::{Jump, Jumps};
+use crate::quickfix::{Entry, Quickfix};
 use crate::keys::BINDINGS;
 use crate::object::{self, Object};
 use crate::picker::{Choice, Item, Open, Outcome, Picker, Source};
@@ -400,6 +401,9 @@ pub struct Editor {
     pub last_find: Option<Find>,
     /// Where the cursor was before each jump, for `^o` and `^i`.
     pub jumps: Jumps,
+    /// The quickfix list: places to walk with `]q` and `[q`, filled by `^q`
+    /// in a picker. One list, replaced whole.
+    pub quickfix: Quickfix,
     /// The insert-mode completion popup, while one is open.
     pub completion: Option<Completion>,
     /// The word the popup has nothing more to say about: dismissed with `esc`,
@@ -496,6 +500,7 @@ impl Editor {
             picker: None,
             last_find: None,
             jumps: Jumps::default(),
+            quickfix: Quickfix::default(),
             completion: None,
             info: None,
             actions: None,
@@ -1730,6 +1735,126 @@ impl Editor {
         self.retire()
     }
 
+    // --- the quickfix list --------------------------------------------
+
+    /// `^q` in a picker: what is in the list becomes the quickfix list.
+    ///
+    /// The matches rather than the items, so a query that narrowed the list to
+    /// the nine hits worth looking at sends those nine. Sources that point at
+    /// nothing to go to - the help, a server's code actions - have nothing to
+    /// send, and say so rather than emptying the list you had.
+    fn send_to_quickfix(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let source = picker.source;
+        let entries: Vec<Entry> = picker
+            .matches()
+            .iter()
+            .filter_map(|m| self.quickfix_entry(source, picker.item(m)))
+            .collect();
+        if entries.is_empty() {
+            self.message = format!("nothing in the {} list to send", source.prompt());
+            return;
+        }
+        self.picker = None;
+        self.retire();
+        let count = entries.len();
+        let s = if count == 1 { "" } else { "s" };
+        self.message = format!("{count} place{s} in the quickfix list");
+        self.quickfix.fill(entries);
+    }
+
+    /// One picker item as a place. What `id` and `target` mean is the source's
+    /// business, which is why this is the one function that has to know all of
+    /// them: grep counts lines from one, the line picker from zero, and a
+    /// diagnostic names a character rather than a line at all.
+    fn quickfix_entry(&self, source: Source, item: &crate::picker::Item) -> Option<Entry> {
+        let here = || self.view().doc.path.as_ref().map(|p| p.display().to_string());
+        let (path, line) = match source {
+            Source::Grep | Source::References | Source::Workspace => {
+                (item.target.clone(), item.id.saturating_sub(1))
+            }
+            Source::Quickfix => (item.target.clone(), item.id),
+            Source::Files => (item.target.clone(), 0),
+            Source::Symbols | Source::Lines => (here()?, item.id),
+            Source::Buffers => {
+                let view = self.views.get(item.id)?;
+                (view.doc.path.as_ref()?.display().to_string(), 0)
+            }
+            // A diagnostic names a character of a file that is open, because
+            // that is how it was found. The line is that file's to work out.
+            Source::Diagnostics => {
+                let path = crate::editor::lsp::absolute(Path::new(&item.target));
+                let view = self.views.iter().find(|view| {
+                    view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone())
+                })?;
+                let at = item.id.min(view.doc.text.len_chars());
+                (item.target.clone(), view.doc.text.char_to_line(at))
+            }
+            // A list to read, and a list of things to do: neither is a place.
+            Source::Help | Source::Actions => return None,
+        };
+        Some(Entry { path, line, text: item.text.clone() })
+    }
+
+    /// `]q` and `[q`: the next place in the list, or the one before.
+    pub fn quickfix_step(&mut self, forward: bool, count: usize) {
+        if self.quickfix.is_empty() {
+            self.message = "the quickfix list is empty".into();
+            return;
+        }
+        let Some((entry, step)) = self.quickfix.step(forward, count) else {
+            return;
+        };
+        let origin = self.here();
+        if let Err(err) = self.open_file(&entry.path) {
+            self.message = format!("{err:#}");
+            return;
+        }
+        self.jumps.push(origin);
+        self.goto_line(entry.line.min(self.last_line()));
+        self.clamp_cursor();
+        let (at, len) = step.at;
+        let wrapped = match step.wrapped {
+            true => " (wrapped)",
+            false => "",
+        };
+        self.message = format!("({at}/{len}){wrapped} {}", entry.text.trim());
+    }
+
+    /// `<space>q`: the quickfix list in the picker, to look at rather than
+    /// walk. A source like any other, so the query filters it.
+    pub fn open_quickfix_picker(&mut self) {
+        if self.quickfix.is_empty() {
+            self.message = "the quickfix list is empty".into();
+            return;
+        }
+        let items = self
+            .quickfix
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| crate::picker::Item {
+                text: entry.text.clone(),
+                detail: format!("{}:{}", entry.path, entry.line + 1),
+                target: entry.path.clone(),
+                id: index,
+            })
+            .collect();
+        let mut picker = Picker::new(Source::Quickfix, items);
+        if let Some(current) = self.quickfix.current() {
+            let at = self
+                .quickfix
+                .entries()
+                .iter()
+                .position(|entry| entry == current)
+                .unwrap_or(0);
+            picker.focus(at, self.picker_layout());
+        }
+        self.open_picker(picker);
+    }
+
     /// Invalidate whatever job is running: its results stop being wanted, and
     /// it stops as soon as it notices.
     fn retire(&self) -> u64 {
@@ -1977,6 +2102,7 @@ impl Editor {
             }
             Outcome::Search(pattern) => self.search(pattern),
             Outcome::Replace(pattern) => self.start_project_replace(pattern),
+            Outcome::Quickfix => self.send_to_quickfix(),
             Outcome::Confirm(source, choice, open) => {
                 self.picker = None;
                 self.retire();
@@ -2029,6 +2155,17 @@ impl Editor {
                     }
                     Source::Files => match self.open_file(&choice.target) {
                         Ok(()) => self.jumps.push(origin),
+                        Err(err) => self.message = format!("{err:#}"),
+                    },
+                    // The list already counts lines the way the editor does,
+                    // so this one does not take the line off the id.
+                    Source::Quickfix => match self.open_file(&choice.target) {
+                        Ok(()) => {
+                            self.jumps.push(origin);
+                            self.quickfix.go_to(choice.id);
+                            self.goto_line(self.quickfix.current().map_or(0, |e| e.line));
+                            self.clamp_cursor();
+                        }
                         Err(err) => self.message = format!("{err:#}"),
                     },
                     Source::Grep | Source::References | Source::Workspace => match self.open_file(&choice.target) {
@@ -2315,7 +2452,12 @@ impl Editor {
     fn window_showing(&self, source: Source, choice: &Choice) -> Option<usize> {
         let view = match source {
             Source::Buffers => choice.id,
-            Source::Files | Source::Grep | Source::Diagnostics | Source::References | Source::Workspace => {
+            Source::Files
+            | Source::Grep
+            | Source::Diagnostics
+            | Source::References
+            | Source::Workspace
+            | Source::Quickfix => {
                 let path = crate::editor::lsp::absolute(Path::new(&choice.target));
                 self.views.iter().position(|view| view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone()))?
             }
@@ -4204,6 +4346,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'h' => "what this change was",
         'B' => "who changed this line",
         'e' => "the diagnostics picker",
+        'q' => "the quickfix list",
         '?' => "the help picker",
         'n' => "line numbers",
         'x' => "close this buffer",
@@ -4250,6 +4393,96 @@ mod tests {
         std::fs::write(&b, "x\ny\n").unwrap();
         let editor = Editor::open(&[a.clone(), b.clone()]).unwrap();
         (a, b, editor)
+    }
+
+    #[test]
+    fn ctrl_q_sends_what_a_picker_lists_to_the_quickfix_list() {
+        let (a, b, mut e) = two_files("sendqf");
+        let hits = vec![
+            grep_item(format!("{}:6:needle", a.display())),
+            grep_item(format!("{}:2:y", b.display())),
+        ];
+        e.picker = Some(Picker::new(Source::Grep, hits));
+        e.picker_outcome(Outcome::Quickfix);
+
+        assert!(e.picker.is_none(), "the picker closes; the list stays");
+        assert_eq!(e.quickfix.entries().len(), 2);
+        // Grep counts lines from one and the editor from zero, which is a
+        // detail of grep's and is converted on the way in.
+        assert_eq!(e.quickfix.entries()[0].line, 5);
+        assert_eq!(e.quickfix.entries()[0].text, "needle");
+        assert!(e.message.contains("quickfix"), "{}", e.message);
+    }
+
+    #[test]
+    fn bracket_q_walks_the_list_across_files() {
+        let (a, b, mut e) = two_files("walkqf");
+        let hits = vec![
+            grep_item(format!("{}:6:needle", a.display())),
+            grep_item(format!("{}:2:y", b.display())),
+        ];
+        e.picker = Some(Picker::new(Source::Grep, hits));
+        e.picker_outcome(Outcome::Quickfix);
+
+        // The first step is the first entry, not the second.
+        e.quickfix_step(true, 1);
+        assert_eq!(e.view().doc.path.as_deref(), Some(a.as_path()));
+        assert_eq!(e.cursor_coords().0, 5);
+        assert!(e.message.starts_with("(1/2)"), "{}", e.message);
+
+        // The next one is in another file, which is opened to get there.
+        e.quickfix_step(true, 1);
+        assert_eq!(e.view().doc.path.as_deref(), Some(b.as_path()));
+        assert_eq!(e.cursor_coords().0, 1);
+
+        // And the walk wraps and says so, as search does.
+        e.quickfix_step(true, 1);
+        assert_eq!(e.view().doc.path.as_deref(), Some(a.as_path()));
+        assert!(e.message.contains("wrapped"), "{}", e.message);
+
+        // Walking is a jump, so `^o` has somewhere to go back to.
+        assert!(e.jumps.back(e.here()).is_some());
+    }
+
+    #[test]
+    fn an_empty_quickfix_list_says_so_rather_than_moving() {
+        let mut e = editor("one
+two
+");
+        e.goto_line(1);
+        e.quickfix_step(true, 1);
+        assert_eq!(e.cursor_coords().0, 1, "nothing moved");
+        assert!(e.message.contains("empty"), "{}", e.message);
+
+        // And a picker with nothing to send leaves the list alone.
+        e.picker = Some(Picker::new(Source::Help, Vec::new()));
+        e.picker_outcome(Outcome::Quickfix);
+        assert!(e.quickfix.is_empty());
+        assert!(e.picker.is_some(), "a picker that sent nothing stays open");
+    }
+
+    #[test]
+    fn the_quickfix_list_opens_as_a_picker_on_where_the_walk_is() {
+        let (a, b, mut e) = two_files("qfpicker");
+        let hits = vec![
+            grep_item(format!("{}:6:needle", a.display())),
+            grep_item(format!("{}:2:y", b.display())),
+        ];
+        e.picker = Some(Picker::new(Source::Grep, hits));
+        e.picker_outcome(Outcome::Quickfix);
+        e.quickfix_step(true, 2);
+
+        e.open_quickfix_picker();
+        let picker = e.picker.as_ref().expect("a picker");
+        assert_eq!(picker.source, Source::Quickfix);
+        assert_eq!(picker.cursor(), 1, "on the entry the walk is on");
+
+        // Choosing one is where the walk carries on from.
+        let choice = Choice { id: 0, target: a.to_string_lossy().into() };
+        e.picker_outcome(Outcome::Confirm(Source::Quickfix, choice, Open::Here));
+        assert_eq!(e.cursor_coords().0, 5);
+        e.quickfix_step(true, 1);
+        assert_eq!(e.view().doc.path.as_deref(), Some(b.as_path()));
     }
 
     #[test]

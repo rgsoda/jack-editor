@@ -75,6 +75,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
 | `]c` `[c` | next / previous changed hunk, against what git has staged |
+| `]q` `[q` | next / previous place in the quickfix list, across files |
 | `^o` `^i` | back / forward along the jump list |
 | `:` | a command (see below) |
 | `gn` `gp` `{n}gn` | next buffer / previous / buffer n (the number on its tab) |
@@ -87,6 +88,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>l` | pick a line in this buffer |
 | `<space>S` | pick a symbol anywhere in the project, as the language server finds them |
 | `<space>e` | pick a diagnostic, in any open buffer |
+| `<space>q` | the quickfix list, as a picker |
 | `<space>h` | what the hunk under the cursor was, and is |
 | `<space>B` `:blame` | who last changed this line, when, and the commit's first line |
 | `<space>?` | every key, searchable |
@@ -133,6 +135,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `enter` | choose |
 | `^v` `^s` `^x` | choose, opening it in a split beside / below / below |
 | `^r` | in `<space>s`: replace what the pattern found, in every file |
+| `^q` | send what is listed to the quickfix list |
 | `backspace` `^w` `^u` | delete a character / a word / the query |
 | `esc` `^c` | close |
 
@@ -323,6 +326,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
+- `quickfix.rs` — the quickfix list: the places `]q` walks, and the walk. No
+  document and no files: the arithmetic is the part worth testing on its own.
 - `picker.rs` — the picker: its items, the query, the fuzzy matcher, and what a
   keypress means while it is open. It knows nothing about what an item *is* -
   a `Source` says that, and the editor acts on the chosen item's id.
@@ -2071,6 +2076,41 @@ unsaved changes, not just the visible one.
 
 `<space>b` opens the buffer picker.
 
+## The quickfix list
+
+One list of places, and two keys to walk it: `]q` goes to the next, `[q` back.
+Every list in jack used to be trapped inside the picker that made it — you
+grep, pick one hit, and the other twenty-six are gone unless you grep again.
+
+`^q` in any picker sends what it is listing to the list, which is the key
+Telescope uses for exactly this. The *matches*, not the items, so a query that
+narrowed a hundred hits to the nine worth looking at sends those nine. Grep,
+references, project symbols, diagnostics and the rest all get it at once,
+because it is one key in one place. The help and a server's code actions send
+nothing: a list to read and a list of things to *do* are not places, and
+emptying the list you had would be a poor answer.
+
+An entry is a path, a line and the text of that line. Not anything that points
+into a document: the files in a list are mostly not open, and the ones that are
+go on being edited while the list sits there. A line that has drifted puts you
+near where you meant; a stale char index puts you anywhere at all. The jump
+list is a line and a column for the same reason, and says so.
+
+A fresh list sits *before* its first entry rather than on it, so `]q` goes to
+the first — not the second, which would skip the hit you opened the list to
+find. `[q` from a fresh list is the last, which is the same rule read the other
+way. The walk wraps and says so, as search does, rather than refusing at the
+ends the way vim's `:cnext` does. Each hop is a jump, so `^o` comes back.
+
+`<space>q` opens the list as a picker — a source like any other, so the query
+filters it and `^v` opens one in a split — with the cursor on the entry the
+walk is on. Choosing one is where the walk carries on from.
+
+One list, replaced whole. Vim keeps ten of them and has `:colder` to move
+between them, which is an answer to a question nobody asks twice. There is no
+`errorformat` and no `:make`: what fills the list is a picker, and a picker
+already knows what its items point at.
+
 ## Registers
 
 Deleting, changing and yanking all keep the text. Register `"` holds the last
@@ -2186,3 +2226,6 @@ was at first:
 - `:g/pattern/normal {keys}`, which is the half of vim's `:g` that is missing:
   a command line can be run per line already, but a run of normal-mode keys
   cannot, and that is what `:g/x/normal A;` is for.
+- `:g/pattern/` with no command could fill the quickfix list rather than being
+  the mistake it is now: every line that matches is a place, and the list is
+  the thing that holds places.

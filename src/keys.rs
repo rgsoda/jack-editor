@@ -40,6 +40,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "ga", what: "what the language server can do here: fixes, imports", mode: "normal" },
     Binding { keys: "]d [d", what: "next, previous diagnostic, and what it says", mode: "normal" },
     Binding { keys: "]c [c", what: "next, previous changed hunk (against git)", mode: "normal" },
+    Binding { keys: "]q [q", what: "next, previous place in the quickfix list", mode: "normal" },
     Binding { keys: "^o ^i", what: "back, forward along the jump list", mode: "normal" },
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
@@ -99,11 +100,14 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "r{c} ~", what: "replace every character selected / swap its case", mode: "visual" },
     Binding { keys: "<space>S", what: "pick a symbol anywhere in the project (language server)", mode: "normal" },
     Binding { keys: "<space>e", what: "pick a diagnostic, in any open buffer", mode: "normal" },
+    Binding { keys: "<space>q", what: "the quickfix list, as a picker", mode: "normal" },
     Binding { keys: "<space>h", what: "what this change was: git's lines and yours", mode: "normal" },
     Binding { keys: "<space>B", what: "who last changed this line, when, and why", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
     Binding { keys: "<space>x", what: "close this buffer", mode: "normal" },
+
+    Binding { keys: "^q", what: "in a picker: send what is listed to the quickfix list", mode: "normal" },
 
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste over the selection", mode: "visual" },
     Binding { keys: "any motion", what: "drag the selection", mode: "visual" },
@@ -614,6 +618,7 @@ impl Keys {
                 match key.code {
                     KeyCode::Char('d') => editor.goto_diagnostic(forward),
                     KeyCode::Char('c') => editor.goto_hunk(forward),
+                    KeyCode::Char('q') => editor.quickfix_step(forward, count.unwrap_or(1)),
                     _ => {}
                 }
                 self.finish();
@@ -634,6 +639,7 @@ impl Keys {
                     KeyCode::Char('l') => editor.open_line_picker(),
                     KeyCode::Char('S') => editor.open_workspace_symbol_picker(),
                     KeyCode::Char('e') => editor.open_diagnostics_picker(),
+                    KeyCode::Char('q') => editor.open_quickfix_picker(),
                     KeyCode::Char('h') => editor.preview_hunk(),
                     KeyCode::Char('B') => editor.blame_line(),
                     KeyCode::Char('?') => editor.open_help_picker(),
