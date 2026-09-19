@@ -15,6 +15,9 @@ pub enum Source {
     Grep,
     /// What this buffer defines - functions, types, methods. `id` is the line.
     Symbols,
+    /// Every line of this buffer, to jump to: `/` without leaving the file.
+    /// `id` is the line.
+    Lines,
     /// What the language servers say is wrong, in every open buffer. `target`
     /// is the file and `id` the char offset the problem starts at: the file is
     /// open, so the exact place is known and nothing has to be looked up.
@@ -40,6 +43,7 @@ impl Source {
             Source::Help => "help",
             Source::Grep => "grep",
             Source::Symbols => "symbol",
+            Source::Lines => "line",
             Source::References => "reference",
             Source::Actions => "action",
             Source::Diagnostics => "diagnostic",
@@ -199,6 +203,16 @@ impl Picker {
 
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// Start with the cursor on a particular item rather than the first:
+    /// the line picker opens on the line you are already on, with the list
+    /// scrolled to it rather than waiting for the first keypress to do it.
+    pub fn focus(&mut self, item: usize, text_rows: usize) {
+        if let Some(position) = self.matches.iter().position(|m| m.index == item) {
+            self.cursor = position;
+            self.scroll_to_cursor(text_rows);
+        }
     }
 
     pub fn scroll(&self) -> usize {

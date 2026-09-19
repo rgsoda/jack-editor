@@ -83,6 +83,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^w c` `^w q` `^w o` | close this window / close it, quitting if it is the last / close all the others |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
+| `<space>l` | pick a line in this buffer |
 | `<space>S` | pick a symbol anywhere in the project, as the language server finds them |
 | `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>h` | what the hunk under the cursor was, and is |
@@ -1557,6 +1558,22 @@ gathered once and the query only filters what is already in hand. A buffer with
 no grammar, or one that defines nothing, says so rather than opening an empty
 picker.
 
+## The line picker
+
+`<space>l` lists every line of this buffer, and choosing one jumps to it. It is
+`/` without a pattern to spell and without leaving the file: a fuzzy query over
+the lines you can see, which is the right tool when you know roughly what the
+line said and not exactly. `^o` comes back out of it, as it does from any jump.
+
+It is a fourth source over the same picker, so there was nothing to write but
+how the items are built. Two small things are worth having. The leading
+indentation is stripped out of the text, because matching against it is only a
+way to score the deepest nesting highest, and the line number goes in the
+dimmed column on the right, right-aligned to the width of the last line's, so
+the numbers line up and never enter the ranking. And the picker opens with its
+cursor already on the line you are on, scrolled to it: `<space>l` then enter is
+nothing happening, and the lines either side of you are what you see first.
+
 ## The jump list
 
 `^o` goes back to where the last jump started, `^i` forward again. What counts
@@ -1742,7 +1759,8 @@ ones (`%`, `.`, `:`).
 ## Picker
 
 One component, opened on a source: open buffers, files under the working
-directory, grep hits, this buffer's definitions, and the keymap itself. The source builds the items and
+directory, grep hits, this buffer's definitions, this buffer's lines, and the
+keymap itself. The source builds the items and
 says what confirming one does; everything else — the query, the matching, the ranking,
 the scrolling, the keymap — is shared, so adding the file and grep pickers is
 adding a source, not another picker.
@@ -1810,8 +1828,6 @@ was at first:
 - Indent queries that can *align* rather than step: a continuation line under
   an open paren wants the column, not a tab. That needs `@align`, which needs
   columns, which the walk does not track yet.
-- The line picker: the current buffer's lines, which is `/` without leaving
-  the file. It is a fourth source, nothing more.
 - Opening a hit in a buffer that is already open should keep that buffer's
   cursor, not move it.
 - `^z` to suspend jack itself, which needs `SIGTSTP` and so a `libc` of some

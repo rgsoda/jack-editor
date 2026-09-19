@@ -91,6 +91,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>s", what: "grep the working directory", mode: "normal" },
     Binding { keys: "^c ^x ^v", what: "copy, cut, paste the line (the system clipboard)", mode: "normal" },
     Binding { keys: "<space>d", what: "pick a definition in this buffer", mode: "normal" },
+    Binding { keys: "<space>l", what: "pick a line in this buffer", mode: "normal" },
     Binding { keys: "<space>S", what: "pick a symbol anywhere in the project (language server)", mode: "normal" },
     Binding { keys: "<space>e", what: "pick a diagnostic, in any open buffer", mode: "normal" },
     Binding { keys: "<space>h", what: "what this change was: git's lines and yours", mode: "normal" },
@@ -609,6 +610,7 @@ impl Keys {
                     KeyCode::Char('f') => editor.open_file_picker(),
                     KeyCode::Char('s') => editor.open_grep_picker(),
                     KeyCode::Char('d') => editor.open_symbol_picker(),
+                    KeyCode::Char('l') => editor.open_line_picker(),
                     KeyCode::Char('S') => editor.open_workspace_symbol_picker(),
                     KeyCode::Char('e') => editor.open_diagnostics_picker(),
                     KeyCode::Char('h') => editor.preview_hunk(),
@@ -3264,6 +3266,30 @@ plain
                 || !vim.editor.message.is_empty();
             assert!(did_something, "{} did nothing", binding.keys);
         }
+    }
+
+    #[test]
+    fn the_line_picker_opens_on_this_line_and_jumps_to_the_one_chosen() {
+        let mut vim = Vim::new("alpha\n    beta\ngamma\ndelta\n");
+        vim.press("jj");
+        vim.press("<space>l");
+        let picker = vim.editor.picker.as_ref().expect("a picker");
+        assert_eq!(picker.item_count(), 4);
+        // Indentation is not part of what is matched, and the number is on
+        // the right, right-aligned to the widest one.
+        let second = picker.item(&picker.matches()[1]);
+        assert_eq!((second.text.as_str(), second.detail.as_str()), ("beta", "2"));
+        // It opens on the line the cursor is on, so enter alone changes nothing.
+        assert_eq!(picker.cursor(), 2);
+        vim.press("<cr>");
+        assert!(vim.editor.picker.is_none());
+        assert_eq!(vim.editor.cursor_coords(), (2, 0));
+
+        // And typing filters, then jumps - and the jump is on the jump list.
+        vim.press("<space>ldel<cr>");
+        assert_eq!(vim.editor.cursor_coords(), (3, 0));
+        vim.press("<C-o>");
+        assert_eq!(vim.editor.cursor_coords(), (2, 0));
     }
 
     #[test]

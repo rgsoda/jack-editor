@@ -1633,6 +1633,30 @@ impl Editor {
         self.open_picker(Picker::new(Source::Symbols, items));
     }
 
+    /// `<space>l`: every line of this buffer, to fuzzy-find and jump to -
+    /// which is `/` without leaving the file, and without a pattern to spell.
+    /// It opens on the line the cursor is on, so `<space>l<esc>` is nothing.
+    pub fn open_line_picker(&mut self) {
+        let view = self.view();
+        let last = view.last_line();
+        let width = (last + 1).to_string().len();
+        let items: Vec<Item> = (0..=last)
+            .map(|line| Item {
+                // Indentation is not worth matching against and not worth the
+                // width; the number on the right says where the line is.
+                text: view.doc.line_str(line).trim_end_matches(['\n', '\r']).trim_start().to_string(),
+                detail: format!("{:>width$}", line + 1),
+                target: String::new(),
+                id: line,
+            })
+            .collect();
+        let (line, _) = self.cursor_coords();
+        let rows = self.area_rows();
+        let mut picker = Picker::new(Source::Lines, items);
+        picker.focus(line, rows);
+        self.open_picker(picker);
+    }
+
     /// `<space>e`: everything the language servers say is wrong, in every open
     /// buffer - this one's first, in the order they come in the file, then the
     /// rest. The severity is part of the text, so typing `error` is a way to
@@ -1828,7 +1852,7 @@ impl Editor {
                         }
                         Err(err) => self.message = format!("{err:#}"),
                     },
-                    Source::Symbols => {
+                    Source::Symbols | Source::Lines => {
                         self.jumps.push(origin);
                         self.goto_line(choice.id);
                         self.clamp_cursor();
@@ -3806,6 +3830,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'f' => "the file picker",
         's' => "the search picker",
         'd' => "the symbol picker",
+        'l' => "the line picker",
         'S' => "the project symbol picker",
         'h' => "what this change was",
         'B' => "who changed this line",
