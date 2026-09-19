@@ -50,6 +50,21 @@ pub fn marker_for(path: Option<&Path>) -> Option<Marker> {
     Some(marker)
 }
 
+/// The marker for one of the grammars, by the name the language registry uses
+/// - which is how an injected region gets its own. Only the languages jack
+/// parses are here, because only those can be injected into anything.
+pub fn marker_for_language(name: &str) -> Option<Marker> {
+    let marker = match name {
+        "rust" | "javascript" | "go" | "java" | "c" | "cpp" => SLASHES,
+        "python" | "toml" | "yaml" => HASH,
+        "sql" => DASHES,
+        "html" | "markdown" => MARKUP,
+        "css" => STARS,
+        _ => return None,
+    };
+    Some(marker)
+}
+
 /// One edit to one line: at `column` (in chars), take out `removed` and put
 /// `inserted` there. In line order, and left to right within a line, which is
 /// the order a transaction wants its changes in.

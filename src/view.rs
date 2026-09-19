@@ -426,9 +426,15 @@ impl View {
     /// `<script>`, SQL inside a query string - or `None` when it is in the
     /// file's own language.
     pub fn injected_language(&self, theme: &Theme) -> Option<String> {
-        let syntax = self.syntax.as_ref()?;
         let at = self.doc.text.char_to_byte(self.sel.head);
-        syntax.language_at(&self.doc.text, at, theme)
+        self.injected_language_at(at, theme)
+    }
+
+    /// The same for a byte position that is not the cursor's: which language a
+    /// run of lines is in is a question about the lines, not about where the
+    /// cursor happens to be sitting in them.
+    pub fn injected_language_at(&self, at: usize, theme: &Theme) -> Option<String> {
+        self.syntax.as_ref()?.language_at(&self.doc.text, at, theme)
     }
 
     /// What the grammar says this line's indentation should be. `None` when

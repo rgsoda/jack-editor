@@ -2396,6 +2396,40 @@ mod tests {
     }
 
     #[test]
+    fn gc_uses_the_marker_of_the_language_the_line_is_in() {
+        // Everything else in a `<script>` knows it is JavaScript. `gc` read
+        // the file name, so it wrapped JavaScript in `<!-- -->`, which does
+        // not comment it out - it makes it a syntax error.
+        let html = "<html>\n<style>\na { color: red; }\n</style>\n<script>\nlet x = 1;\n</script>\n</html>\n";
+        let mut vim = Vim::file("page.html", html);
+
+        vim.at(6, 1).press("gcc");
+        assert!(vim.text().contains("// let x = 1;"), "slashes in the script");
+
+        vim.at(3, 1).press("gcc");
+        assert!(vim.text().contains("/* a { color: red; } */"), "stars in the style");
+
+        vim.at(1, 1).press("gcc");
+        assert!(vim.text().contains("<!-- <html> -->"), "and markup for the page");
+
+        // And back out again, each by its own marker.
+        vim.at(6, 1).press("gcc");
+        vim.at(3, 1).press("gcc");
+        vim.at(1, 1).press("gcc");
+        assert_eq!(vim.text(), html, "the same keys bring every one back");
+    }
+
+    #[test]
+    fn a_fenced_code_block_comments_as_what_it_fences() {
+        let mut vim = Vim::file("notes.md", "# hi\n\n```rust\nlet x = 1;\n```\n");
+        vim.at(4, 1).press("gcc");
+        assert!(vim.text().contains("// let x = 1;"), "rust inside the fence");
+
+        vim.at(1, 1).press("gcc");
+        assert!(vim.text().contains("<!-- # hi -->"), "markdown outside it");
+    }
+
+    #[test]
     fn gcc_comments_a_line_and_the_same_keys_bring_it_back() {
         let mut vim = Vim::rust("fn main() {\n    one();\n    two();\n}\n");
         vim.at(2, 7).press("gcc");

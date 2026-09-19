@@ -9,7 +9,7 @@ use std::sync::mpsc::Sender;
 use crate::buffer::Document;
 use crate::clipboard;
 use crate::command;
-use crate::comment::{self, Toggled};
+use crate::comment::{self, Marker, Toggled};
 use crate::complete::{self, Completion, Pick};
 use crate::info::{self, Info};
 use crate::jump::{Jump, Jumps};
@@ -2845,7 +2845,7 @@ impl Editor {
 
     /// `gc`: comment lines out, or back in when they all already are.
     pub fn comment_lines(&mut self, first: usize, last: usize) {
-        let Some(marker) = comment::marker_for(self.view().doc.path.as_deref()) else {
+        let Some(marker) = self.comment_marker(first) else {
             self.message = "no comment marker for this file".into();
             return;
         };
@@ -2855,6 +2855,23 @@ impl Editor {
             Toggled::Uncommented(n) if n > 1 => self.message = format!("{n} lines uncommented"),
             _ => {}
         }
+    }
+
+    /// Which marker a run of lines takes: the injected language's where the
+    /// run starts, and the file's own otherwise. A `<script>` holds
+    /// JavaScript, and wrapping JavaScript in `<!-- -->` does not comment it
+    /// out - it is the last thing in that region still reading the file name
+    /// rather than the tree.
+    ///
+    /// The first line decides rather than the cursor, so the same range always
+    /// comments the same way whichever end you came at it from.
+    fn comment_marker(&self, first: usize) -> Option<Marker> {
+        let view = self.view();
+        let start = view.doc.line_to_char(first) + view.doc.line_indent_len(first);
+        let at = view.doc.text.char_to_byte(start.min(view.doc.text.len_chars()));
+        view.injected_language_at(at, &self.theme)
+            .and_then(|name| comment::marker_for_language(&name))
+            .or_else(|| comment::marker_for(view.doc.path.as_deref()))
     }
 
     /// The lines a selection covers, for visual `gc` and `gcap`.

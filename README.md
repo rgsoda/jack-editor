@@ -368,6 +368,11 @@ follow injections too:
 - `gd` on a name inside an injected region asks that region's language first,
   innermost outwards, and the host after it — the function is JavaScript's, and
   HTML's queries have never heard of it.
+- `gc` comments with the marker of the language the lines are *in*. It used to
+  read the file name, so commenting a line of JavaScript inside a `<script>`
+  wrapped it in `<!-- -->`, which does not comment it out — it makes it a
+  syntax error. The line the run starts on decides, rather than the cursor, so
+  the same range comments the same way whichever end you came at it from.
 
 ### Guessing that a string is a query
 
