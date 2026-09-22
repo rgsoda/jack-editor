@@ -58,6 +58,10 @@ pub enum PromptKind {
 /// wasted, and once a second is quicker than anyone switches panes.
 const DISK_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The narrowest screen `:preview` opens on: two halves of thirty columns,
+/// which is about as narrow as prose stays readable.
+const PREVIEW_NEEDS: usize = 60;
+
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: String,
@@ -404,6 +408,8 @@ pub struct Editor {
     /// The quickfix list: places to walk with `]q` and `[q`, filled by `^q`
     /// in a picker. One list, replaced whole.
     pub quickfix: Quickfix,
+    /// `:preview`: a markdown buffer rendered in a pane down the right.
+    pub preview: Option<crate::preview::Preview>,
     /// The insert-mode completion popup, while one is open.
     pub completion: Option<Completion>,
     /// The word the popup has nothing more to say about: dismissed with `esc`,
@@ -501,6 +507,7 @@ impl Editor {
             last_find: None,
             jumps: Jumps::default(),
             quickfix: Quickfix::default(),
+            preview: None,
             completion: None,
             info: None,
             actions: None,
@@ -1159,6 +1166,7 @@ impl Editor {
             }
             ("set", option) => self.set_option(option),
             ("config", _) => self.open_config(),
+            ("preview", _) => self.toggle_preview(),
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
         }
@@ -2275,7 +2283,47 @@ impl Editor {
     /// Every window's rectangle, and the lines between side-by-side ones.
     pub fn window_rects(&self) -> (Vec<(usize, Rect)>, Vec<Rect>) {
         let (width, height) = self.screen;
+        let width = match self.preview_rect() {
+            // The pane and the line between it and the windows.
+            Some(pane) => width.saturating_sub(pane.width + 1),
+            None => width,
+        };
         self.layout.rects(Rect { x: 0, y: self.top(), width, height })
+    }
+
+    /// Where the `:preview` pane is drawn, if it is open: the right half of
+    /// the screen, beside every window rather than inside one. Its bottom row
+    /// is its own status line, as a window's is.
+    pub fn preview_rect(&self) -> Option<Rect> {
+        self.preview.as_ref()?;
+        let (width, height) = self.screen;
+        let pane = width / 2;
+        Some(Rect { x: width - pane, y: self.top(), width: pane, height })
+    }
+
+    /// `:preview` - open the pane beside the windows, or close it. It shows
+    /// the buffer it was opened on, whichever one you go on to edit, and is
+    /// never focused: it follows the cursor instead of having one.
+    pub fn toggle_preview(&mut self) {
+        if self.preview.take().is_some() {
+            self.message = "preview closed".into();
+            self.fit_focus();
+            return;
+        }
+        let path = self.view().doc.path.clone();
+        let markdown = crate::syntax::language_for_path(path.as_deref())
+            .is_some_and(|language| language.name == "markdown");
+        if !markdown {
+            self.message = "nothing to preview: not a markdown buffer".into();
+            return;
+        }
+        if self.screen.0 < PREVIEW_NEEDS {
+            self.message = format!("too narrow to preview: {} columns of {PREVIEW_NEEDS}", self.screen.0);
+            return;
+        }
+        self.preview = Some(crate::preview::Preview::new(self.current));
+        self.fit_focus();
+        self.scroll_to_cursor();
     }
 
     pub fn window_rect(&self, id: usize) -> Rect {
@@ -2542,6 +2590,20 @@ impl Editor {
         }
 
         self.jumps.forget(closing);
+        // The pane goes with its buffer: previewing whatever took its place
+        // would be showing you something you did not ask to see.
+        match self.preview.as_ref().map(|preview| preview.view) {
+            Some(view) if view == closing => {
+                self.preview = None;
+                self.fit_focus();
+            }
+            Some(view) => {
+                if let Some(preview) = self.preview.as_mut() {
+                    preview.view = shift(view);
+                }
+            }
+            None => {}
+        }
         if !last {
             self.grouped_view = self.grouped_view.filter(|index| *index != closing).map(shift);
         }
@@ -4393,6 +4455,74 @@ mod tests {
         std::fs::write(&b, "x\ny\n").unwrap();
         let editor = Editor::open(&[a.clone(), b.clone()]).unwrap();
         (a, b, editor)
+    }
+
+    /// A markdown file and a code file, open in that order, on a screen wide
+    /// enough to preview on.
+    fn notes_and_code(name: &str) -> Editor {
+        let dir = std::env::temp_dir().join(format!("jack_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (notes, code) = (dir.join("notes.md"), dir.join("main.rs"));
+        std::fs::write(&notes, "# Notes\n\nsome words\n").unwrap();
+        std::fs::write(&code, "fn main() {}\n").unwrap();
+        let mut e = Editor::open(&[notes, code]).unwrap();
+        e.set_viewport(100, 20);
+        e.switch_to(0);
+        e
+    }
+
+    #[test]
+    fn preview_opens_beside_the_windows_and_closes_again() {
+        let mut e = notes_and_code("preview_toggle");
+        e.run_command("preview");
+        let pane = e.preview_rect().expect("a pane");
+        assert_eq!(pane.width, 50);
+        assert_eq!(pane.x, 50);
+        // The windows get what is left, less the line between.
+        let (rects, _) = e.window_rects();
+        assert_eq!(rects[0].1.width, 49);
+        assert_eq!(e.width, 49, "and the focused window is measured in it");
+
+        e.run_command("preview");
+        assert!(e.preview.is_none());
+        assert_eq!(e.window_rects().0[0].1.width, 100);
+        assert_eq!(e.width, 100);
+    }
+
+    #[test]
+    fn preview_is_for_markdown_and_wants_room() {
+        let mut e = notes_and_code("preview_refuses");
+        e.switch_to(1);
+        e.run_command("preview");
+        assert!(e.preview.is_none());
+        assert!(e.message.contains("not a markdown"), "{}", e.message);
+
+        e.switch_to(0);
+        e.set_viewport(50, 20);
+        e.run_command("preview");
+        assert!(e.preview.is_none());
+        assert!(e.message.contains("too narrow"), "{}", e.message);
+    }
+
+    #[test]
+    fn preview_stays_on_its_buffer_and_goes_when_it_is_closed() {
+        let mut e = notes_and_code("preview_close");
+        e.run_command("preview");
+        // Off into the code: the pane still shows the notes.
+        e.switch_to(1);
+        assert_eq!(e.preview.as_ref().map(|p| p.view), Some(0));
+
+        // Closing the code file moves the notes nowhere...
+        e.close_buffer(false);
+        assert_eq!(e.preview.as_ref().map(|p| p.view), Some(0));
+        // ...and closing the notes takes the pane with them.
+        e.switch_to(0);
+        e.run_command("e scratch_other.md");
+        e.switch_to(0);
+        e.close_buffer(false);
+        assert!(e.preview.is_none());
+        assert_eq!(e.width, 100, "the windows have the screen back");
     }
 
     #[test]

@@ -165,6 +165,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
 | `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
 | `:config` | open the config file, writing the documented defaults first |
+| `:preview` | a markdown buffer rendered in a pane down the right, following the cursor; again to close it |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
 | `:set dog` | `nodog`: the dog in the status line |
@@ -328,6 +329,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   crate's. No document anywhere in it, which is why it is its own file.
 - `quickfix.rs` — the quickfix list: the places `]q` walks, and the walk. No
   document and no files: the arithmetic is the part worth testing on its own.
+- `preview.rs` — `:preview`'s renderer: markdown text and a width in, lines of
+  styled words out, each knowing the source line it came from. What a style
+  looks like is the theme's; this says only that a span is a heading or a link.
 - `picker.rs` — the picker: its items, the query, the fuzzy matcher, and what a
   keypress means while it is open. It knows nothing about what an item *is* -
   a `Source` says that, and the editor acts on the chosen item's id.
@@ -2110,6 +2114,36 @@ One list, replaced whole. Vim keeps ten of them and has `:colder` to move
 between them, which is an answer to a question nobody asks twice. There is no
 `errorformat` and no `:make`: what fills the list is a picker, and a picker
 already knows what its items point at.
+
+## Markdown, rendered
+
+`:preview` opens a pane down the right half of the screen with the markdown
+buffer in it as it reads rather than as it is typed: headings as titles, the
+two biggest with a rule under them; lists with bullets and a hanging indent;
+tasks as boxes; quotes with a bar down them; code blocks indented, named, and
+left unwrapped, because wrapped code is not code; tables lined up, their widest
+column giving way first when the pane is too narrow for them. Links keep their
+words and lose their address. `:preview` again closes it.
+
+It renders as you type, and it scrolls itself: the line rendered from the one
+the cursor is on sits level with the cursor, so what you are reading is beside
+what you are writing and the pane never needs focusing. It has no cursor of its
+own, which is why it is drawn beside the windows rather than being one — no
+code path that edits, moves or scrolls ever meets it.
+
+The pane stays on the buffer it was opened on. Jump into a code file from your
+notes and the notes stay beside you; close the notes and the pane goes with
+them. It wants sixty columns to open in, which is thirty a side, and it colours
+with the keys the markdown highlighting already uses — `text.title`,
+`text.literal`, `text.uri` — so the page and its source agree on what a heading
+looks like. With `:set noglyphs` the bullets, boxes and rules are ASCII.
+
+The parsing is `pulldown-cmark`, not the tree-sitter grammar that highlights
+the source. That grammar splits a document between two parsers and is built to
+colour text where it stands; a renderer wants the document as a tree of
+blocks, which is what a CommonMark parser is for. A render is cached against
+the buffer's edit count and the pane's width, so a frame that changed neither
+does not parse again.
 
 ## Registers
 

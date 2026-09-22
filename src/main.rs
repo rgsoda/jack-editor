@@ -15,6 +15,7 @@ mod indent;
 mod object;
 mod picker;
 mod positions;
+mod preview;
 mod quickfix;
 mod undofile;
 mod register;

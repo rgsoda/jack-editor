@@ -37,6 +37,10 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
         }
     }
 
+    if let Some(pane) = editor.preview_rect() {
+        draw_preview(editor, surface, pane);
+    }
+
     if editor.show_tabline() {
         draw_tabline(editor, surface);
     }
@@ -809,6 +813,84 @@ fn draw_prompt(editor: &Editor, prompt: &Prompt, surface: &mut Surface) {
     }
 }
 
+/// The `:preview` pane: a line down its left edge like the one between
+/// windows, the rendered markdown, and a status line saying what it is.
+///
+/// It scrolls itself. While you are in the buffer it shows, the line rendered
+/// from the one the cursor is on sits level with the cursor, so what you are
+/// reading is beside what you are typing; anywhere else it stays put.
+fn draw_preview(editor: &Editor, surface: &mut Surface, pane: Rect) {
+    let Some(preview) = editor.preview.as_ref() else {
+        return;
+    };
+    let Some(view) = editor.views().get(preview.view) else {
+        return;
+    };
+    let separator = editor.theme.style("ui.window.separator");
+    let left = pane.x.saturating_sub(1);
+    for row in pane.y..pane.y + pane.height {
+        surface.put(left, row, '\u{2502}', 1, separator);
+    }
+    let rows = pane.height.saturating_sub(1);
+    // A column of margin either side: text against a line reads as cramped.
+    let (x0, end) = (pane.x + 1, pane.x + pane.width.saturating_sub(1));
+    let width = end.saturating_sub(x0);
+    let lines = preview.lines(&view.doc.text, view.edits(), width, editor.glyphs);
+
+    if preview.view == editor.current_index() {
+        let (line, _) = view.cursor_coords();
+        let (_, row) = view.cursor_screen(editor.wrap_width());
+        let target = crate::preview::Preview::row_for(&lines, line);
+        preview.top.set(target.saturating_sub(row as usize));
+    }
+    let top = preview.top.get().min(lines.len().saturating_sub(1));
+
+    let base = Style::default();
+    for row in 0..rows {
+        let y = pane.y + row;
+        for x in pane.x..pane.x + pane.width {
+            surface.put(x, y, ' ', 1, base);
+        }
+        let Some(line) = lines.get(top + row) else {
+            continue;
+        };
+        let mut x = x0;
+        for span in &line.spans {
+            x = put_str(surface, x, y, &span.text, preview_style(editor, span.look), end);
+        }
+    }
+
+    let style = editor.theme.style("ui.statusline.inactive");
+    let row = pane.y + rows;
+    let label = format!(" preview  {}", view.doc.display_name());
+    let mut x = put_str(surface, pane.x, row, &label, style, pane.x + pane.width);
+    while x < pane.x + pane.width {
+        surface.put(x, row, ' ', 1, style);
+        x += 1;
+    }
+}
+
+/// The theme's colours for what the preview says a span is. The same keys
+/// the markdown highlighting uses, so the rendered page and the source you
+/// type it in agree on what a heading or a piece of code looks like.
+fn preview_style(editor: &Editor, look: crate::preview::Look) -> Style {
+    use crate::preview::Kind;
+    let base = match look.kind {
+        Kind::Text => Style::default(),
+        Kind::Heading => editor.theme.style("text.title"),
+        Kind::Code => editor.theme.style("text.literal"),
+        Kind::Link => editor.theme.style("text.uri"),
+        Kind::Marker => editor.theme.style("punctuation.special"),
+    };
+    base.patch(Style {
+        bold: look.bold,
+        italic: look.italic,
+        underline: look.underline,
+        dim: look.dim,
+        ..Style::default()
+    })
+}
+
 /// The status line of a window that is not the one being typed in: which
 /// file, and where in it, dimmed - enough to tell the windows apart.
 fn draw_inactive_status(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
@@ -1085,6 +1167,44 @@ mod tests {
         let surface = screen.begin(width, height);
         draw(editor, keys, surface);
         (0..width).map(|x| surface.get(x, y).ch).collect()
+    }
+
+    /// A frame of the whole screen, `width` by `height`, as lines of text.
+    fn screen_text(editor: &Editor, width: usize, height: usize) -> Vec<String> {
+        let mut screen = Screen::new();
+        let surface = screen.begin(width, height);
+        draw(editor, &Keys::default(), surface);
+        (0..height).map(|y| (0..width).map(|x| surface.get(x, y).ch).collect()).collect()
+    }
+
+    fn previewing(text: &str) -> Editor {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str(text);
+        editor.view_mut().doc.path = Some("notes.md".into());
+        editor.numbers = Numbers::Off;
+        editor.signs_enabled = false;
+        editor.set_viewport(80, 20);
+        editor.run_command("preview");
+        assert!(editor.preview.is_some(), "{}", editor.message);
+        editor
+    }
+
+    #[test]
+    fn the_preview_is_drawn_beside_the_text_and_level_with_the_cursor() {
+        let mut editor = previewing("# Title\n\n## Section\n\nwords\n");
+        let rows = screen_text(&editor, 80, 21);
+        let pane = |row: &String| row.chars().skip(41).collect::<String>().trim_end().to_string();
+        assert_eq!(pane(&rows[0]), "Title", "{rows:#?}");
+        assert!(rows[0].chars().nth(39) == Some('\u{2502}'), "a line between: {:?}", rows[0]);
+        assert!(pane(&rows[20]).contains("preview"), "{:?}", rows[20]);
+
+        // On the section heading: its rendering comes level with it.
+        editor.goto_line(2);
+        let rows = screen_text(&editor, 80, 21);
+        assert_eq!(pane(&rows[2]), "Section", "{rows:#?}");
+        editor.goto_line(4);
+        let rows = screen_text(&editor, 80, 21);
+        assert_eq!(pane(&rows[4]), "words", "{rows:#?}");
     }
 
     /// The background of every cell on a row, so a tint can be told from what
