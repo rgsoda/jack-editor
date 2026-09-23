@@ -4717,7 +4717,11 @@ plain
         // one line `enter` re-indents is free.
         println!("5000 lines re-indented in {elapsed:?}");
         assert!(vim.text().contains("\tlet x4999"), "the lines moved");
-        assert!(elapsed.as_millis() < 2_000, "{elapsed:?}");
+        // Through the same budget as the other measured tests, rather than a
+        // number of its own: a debug build on a shared runner is several
+        // times slower than the laptop a bound gets written on, and this one
+        // was landing just the wrong side of its own.
+        assert!(elapsed < budget(750), "{elapsed:?}");
     }
 
     #[test]
