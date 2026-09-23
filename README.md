@@ -194,7 +194,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
-| `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` |
+| `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
@@ -2157,8 +2157,12 @@ the same question your terminal asked — so the window comes up in the font the
 rest of the desktop is in, Nerd Font glyphs in the status line and all.
 `:set guifont=JetBrainsMono Nerd Font` and `:set guifontsize=16` name it
 yourself, and both are settings like any other, so they live in the config file
-and take effect as you type them. `ctrl` with `+`, `-` or `0` resizes while
-running; the grid reflows and the text rewraps to whatever fits.
+and take effect as you type them. `:guifonts` lists every font the machine has
+as a picker, and choosing one writes `set guifont=...` into your config as well
+as using it, so the font you picked is the font you get next time; a name no
+font answers to is said so and the window keeps the font it had. `ctrl` with
+`+`, `-` or `0` resizes while running; the grid reflows and the text rewraps to
+whatever fits.
 
 Every cell is shaped on its own and drawn at its own column, which is what
 keeps a grid a grid: an emoji in a comment or a powerline glyph in the status
@@ -2184,7 +2188,10 @@ What you get for it: ligatures and italics from the font rather than from the
 terminal's idea of them, the mouse wheel scrolling the view, a window your
 compositor can put a rule on (its app id is `jack`), and keys a terminal
 cannot even send — `^i` is not `tab` here, and `ctrl-shift` anything arrives
-whole. What you give up: ssh, tmux, and starting instantly.
+whole. On a mac, `cmd-c`, `cmd-x` and `cmd-v` are the clipboard three as well
+as `^c` `^x` `^v`, since that is where a mac keyboard keeps them; every other
+`cmd` chord is left to macOS. What you give up: ssh, tmux, and starting
+instantly.
 
 ## Markdown, rendered
 

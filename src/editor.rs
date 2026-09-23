@@ -133,6 +133,33 @@ pub struct Dog {
     pub running: bool,
 }
 
+/// A config file with `set name=value` in it: replacing the line that sets
+/// it already, or adding one at the end. Commented lines are documentation
+/// and are left alone - the comment above a setting explains it, and a file
+/// that explains itself is the reason to edit in place rather than append.
+fn with_setting(text: &str, name: &str, value: &str) -> String {
+    let setting = format!("set {name}={value}");
+    let sets_it = |line: &str| {
+        let line = line.trim().trim_start_matches(':').trim_start();
+        line.strip_prefix("set ").is_some_and(|rest| {
+            rest.trim_start().split('=').next().is_some_and(|word| word.trim() == name)
+        })
+    };
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    match lines.iter().position(|line| sets_it(line)) {
+        Some(at) => lines[at] = setting,
+        None => {
+            if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(setting);
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 /// The font families to choose from, which without a window frontend is not
 /// an empty machine but a question that cannot be asked.
 #[cfg(feature = "gui")]
@@ -1583,6 +1610,29 @@ impl Editor {
         }
     }
 
+    /// Write a `set name=value` into the config file, so a setting chosen
+    /// rather than typed survives the session that chose it.
+    ///
+    /// The file is a list of commands, and this edits it as a person would:
+    /// the line that sets this already is replaced where it stands, keeping
+    /// the comment above it, and a setting the file has never mentioned goes
+    /// on the end. A file that does not exist yet is written with the
+    /// documented defaults first, exactly as `:config` writes it.
+    fn save_setting(&mut self, name: &str, value: &str) -> std::result::Result<PathBuf, String> {
+        let Some(dir) = crate::theme::config_dir() else {
+            return Err("there is no config directory: $HOME is not set".into());
+        };
+        let path = dir.join("init");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => command::default_config(),
+        };
+        std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+        std::fs::write(&path, with_setting(&text, name, value))
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        Ok(path)
+    }
+
     /// What to indent this buffer with: what the file itself uses, and the
     /// configured default when it uses nothing - or when a `:set` has since
     /// overruled it, which is what typing one is for.
@@ -2200,7 +2250,15 @@ impl Editor {
                     Source::Actions => self.run_code_action(choice.id),
                     Source::Fonts => {
                         self.guifont = choice.target.clone();
-                        self.message = format!("guifont={}", self.guifont);
+                        // A font chosen by pointing at it is the one case
+                        // where "now go and type the name into a file" is a
+                        // poor ending: the name being spelt the way the
+                        // machine spells it is the whole point of the list.
+                        let font = self.guifont.clone();
+                        self.message = match self.save_setting("guifont", &font) {
+                            Ok(path) => format!("guifont={font}, saved to {}", path.display()),
+                            Err(complaint) => format!("guifont={font}, but {complaint}"),
+                        };
                     }
                     Source::Buffers => {
                         self.jumps.push(origin);
@@ -4529,6 +4587,34 @@ mod tests {
         e.set_viewport(100, 20);
         e.switch_to(0);
         e
+    }
+
+    #[test]
+    fn a_saved_setting_replaces_its_line_or_goes_on_the_end() {
+        // The line that sets it already is replaced where it stands, so the
+        // comment above it goes on explaining it.
+        let config = "# the window's font\nset guifont=monospace\nset number\n";
+        let after = with_setting(config, "guifont", "Hack Nerd Font");
+        assert_eq!(after, "# the window's font\nset guifont=Hack Nerd Font\nset number\n");
+
+        // A setting the file has never mentioned goes on the end, after a
+        // blank line rather than jammed against what is there.
+        let after = with_setting("set number\n", "guifont", "Hack Nerd Font");
+        assert_eq!(after, "set number\n\nset guifont=Hack Nerd Font\n");
+        assert_eq!(with_setting("", "guifont", "Iosevka"), "set guifont=Iosevka\n");
+
+        // A commented line is documentation, not a setting: it is left to
+        // explain itself, and the real line goes on the end.
+        let after = with_setting("# set guifont=monospace\n", "guifont", "Iosevka");
+        assert_eq!(after, "# set guifont=monospace\n\nset guifont=Iosevka\n");
+
+        // Settings whose names start the same way are not each other.
+        let after = with_setting("set guifontsize=15\n", "guifont", "Iosevka");
+        assert_eq!(after, "set guifontsize=15\n\nset guifont=Iosevka\n");
+        assert_eq!(with_setting("set guifont=a\n", "guifont", "b"), "set guifont=b\n");
+
+        // And a line written the way it would be typed, with the colon.
+        assert_eq!(with_setting(":set guifont=a\n", "guifont", "b"), "set guifont=b\n");
     }
 
     #[test]

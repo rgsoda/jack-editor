@@ -63,6 +63,17 @@ pub fn key_event(key: &Key, state: ModifiersState) -> Option<KeyEvent> {
             if text.chars().count() > 1 {
                 return None;
             }
+            // macOS keeps the clipboard on `cmd`, which arrives here as
+            // `super`. The editor's clipboard keys are `^c ^x ^v`, and a mac
+            // keyboard has no reason to know that - so cmd's three become
+            // control's three. Only those three: `cmd-q` is the window
+            // manager's business, and turning every cmd into a control would
+            // make it jack's.
+            if state.super_key() && !state.control_key() && matches!(ch, 'c' | 'x' | 'v') {
+                modifiers.remove(KeyModifiers::SUPER);
+                modifiers.insert(KeyModifiers::CONTROL);
+                return Some(KeyEvent::new(KeyCode::Char(ch), modifiers));
+            }
             // With control held, some keyboard layouts hand over the control
             // character itself - `^b` as byte 2. The editor wants the letter
             // and a modifier, which is what a terminal sends.
@@ -127,6 +138,24 @@ mod tests {
         let key = key_event(&Key::Named(NamedKey::ArrowRight), ModifiersState::SHIFT).expect("a key");
         assert_eq!(key.code, KeyCode::Right);
         assert!(key.modifiers.contains(KeyModifiers::SHIFT), "shift-right extends a selection");
+    }
+
+    #[test]
+    fn the_clipboard_is_on_cmd_as_well_as_on_ctrl() {
+        // What a mac keyboard sends for cmd-v, and what the editor listens
+        // for: the paste chord, whichever key the person pressed.
+        for ch in ['c', 'x', 'v'] {
+            let key = character(&ch.to_string(), ModifiersState::SUPER).expect("a key");
+            assert_eq!(key.code, KeyCode::Char(ch));
+            assert!(key.modifiers.contains(KeyModifiers::CONTROL), "cmd-{ch} is ^{ch}");
+            assert!(!key.modifiers.contains(KeyModifiers::SUPER), "and only that");
+        }
+
+        // Every other cmd chord is left alone: `cmd-q` belongs to the window
+        // manager, and `^q` - which quits - is not what was pressed.
+        let key = character("q", ModifiersState::SUPER).expect("a key");
+        assert!(!key.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(key.modifiers.contains(KeyModifiers::SUPER));
     }
 
     #[test]

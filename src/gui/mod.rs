@@ -103,22 +103,49 @@ struct App<'a> {
 }
 
 impl App<'_> {
+    /// The font this frame is drawn in. Normally `guifont`, but while the
+    /// font picker is open it is whatever is under the cursor there: choosing
+    /// a font is choosing how the text looks, and a list of names is a poor
+    /// way to see that. Moving off it, or escaping the picker, puts the
+    /// configured font back - nothing was set, only tried on.
+    fn wanted_font(&self) -> String {
+        match self.trying_on() {
+            true => {
+                let picker = self.editor.picker.as_ref().expect("a picker to be trying one on");
+                let at = picker.matches().get(picker.cursor()).expect("a match under the cursor");
+                picker.item(at).target.clone()
+            }
+            false => self.editor.guifont.clone(),
+        }
+    }
+
+    /// Whether a font is being tried on rather than used: the font picker is
+    /// open and its cursor is on something.
+    fn trying_on(&self) -> bool {
+        self.editor.picker.as_ref().is_some_and(|picker| {
+            picker.source == crate::picker::Source::Fonts && picker.matches().get(picker.cursor()).is_some()
+        })
+    }
+
     /// Draw a frame, having first done everything a frame is due.
     fn frame(&mut self) {
         let Some(window) = self.window.clone() else {
             return;
         };
-        // A `:set guifont` while running is a font to draw the next frame in.
-        let asked = (self.editor.guifont.clone(), self.editor.guifontsize);
+        // A `:set guifont` while running is a font to draw the next frame in,
+        // and so is the font under the cursor in the font picker.
+        let asked = (self.wanted_font(), self.editor.guifontsize);
         if asked != self.configured {
             // A name the machine does not have is answered by the shaper with
             // some other font entirely - often a proportional one, which in a
             // grid is worse than the font you already had. So: keep that, and
-            // say what happened.
+            // say what happened. A font being tried on in the picker came from
+            // the machine's own list, so it needs no such complaint.
             let painter = Painter::new(&asked.0, asked.1 * self.scale as f32);
-            match painter.matched() {
-                true => self.painter = painter,
-                false => self.editor.message = format!("no font called {} - try :guifonts", asked.0),
+            match (painter.matched(), self.trying_on()) {
+                (true, _) => self.painter = painter,
+                (false, true) => {}
+                (false, false) => self.editor.message = format!("no font called {} - try :guifonts", asked.0),
             }
             self.configured = asked;
         }
