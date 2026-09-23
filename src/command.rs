@@ -53,6 +53,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "set", argument: Argument::Option },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
+    Command { name: "guifonts", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
 ];
 

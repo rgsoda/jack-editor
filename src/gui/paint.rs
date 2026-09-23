@@ -29,6 +29,14 @@ pub struct Painter {
     scratch: Buffer,
     glyphs: HashMap<Key, Glyph>,
     family: String,
+    /// Whether that family is one the machine actually has. A shaper answers
+    /// a name it does not know by quietly using something else, which is how
+    /// a misspelt `guifont` becomes a proportional font and a line of boxes.
+    matched: bool,
+    /// Which family covers a character the chosen font has no glyph for,
+    /// worked out once per character. `None` means nothing on the machine
+    /// has it, and a box is the honest answer.
+    covering: HashMap<char, Option<String>>,
     size: f32,
     /// One cell, in pixels: the advance of the font's `M` and its line height.
     pub cell: (usize, usize),
@@ -71,6 +79,7 @@ impl Painter {
     pub fn new(family: &str, size: f32) -> Painter {
         let family = resolve(family);
         let mut fonts = FontSystem::new();
+        let matched = installed(&fonts, &family);
         let metrics = Metrics::new(size, (size * LINE_HEIGHT).round());
         let mut scratch = Buffer::new(&mut fonts, metrics);
         // Room for one cluster and no wrapping: a cell is a cell.
@@ -81,6 +90,8 @@ impl Painter {
             scratch,
             glyphs: HashMap::new(),
             family,
+            matched,
+            covering: HashMap::new(),
             size,
             cell: (1, 1),
             fg: colors::DEFAULT_FG,
@@ -119,6 +130,27 @@ impl Painter {
 
     pub fn size(&self) -> f32 {
         self.size
+    }
+
+    /// The font being drawn with, and whether it is the one that was asked
+    /// for. A window says so when it is not, rather than letting you wonder
+    /// why the glyphs went missing.
+    pub fn matched(&self) -> bool {
+        self.matched
+    }
+
+    /// Every font family on the machine, for `:guifonts` to offer. Sorted,
+    /// and without the duplicates a family with six weights would bring.
+    pub fn families() -> Vec<String> {
+        let fonts = FontSystem::new();
+        let mut families: Vec<String> = fonts
+            .db()
+            .faces()
+            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .collect();
+        families.sort_by_key(|name| name.to_lowercase());
+        families.dedup();
+        families
     }
 
     /// How many cells fit in a window of this many pixels. At least one of
@@ -241,14 +273,25 @@ impl Painter {
     /// Shape and rasterise one cluster, once. The result is in pixels
     /// relative to the top left of the cell it will be drawn in.
     fn rasterise(&mut self, cluster: &str, bold: bool, italic: bool) -> Glyph {
-        let attrs = attrs(&self.family, bold, italic);
-        self.scratch.set_text(&mut self.fonts, cluster, &attrs, Shaping::Advanced);
-        self.scratch.shape_until_scroll(&mut self.fonts, false);
+        let mut family = self.family.clone();
+        self.shape(&family, cluster, bold, italic);
+        // Nothing in the font and nothing the shaper's own fallback list
+        // reached: glyph zero, which is the box. Before drawing that, ask
+        // every font on the machine whether it has the character - which is
+        // how a Nerd Font glyph gets drawn in a window whose text font has
+        // never heard of it.
+        if self.missing() && let Some(character) = cluster.chars().next()
+            && let Some(other) = self.covering(character)
+        {
+            family = other;
+            self.shape(&family, cluster, bold, italic);
+        }
 
         let mut glyph = Glyph::default();
         // White, so that a mask glyph comes back as coverage and a colour
         // glyph as itself: the two are told apart by what arrives.
         let base = TextColor::rgba(255, 255, 255, 255);
+        let _ = &family;
         self.scratch.draw(&mut self.fonts, &mut self.swash, base, |x, y, w, h, color| {
             let (r, g, b, a) = (color.r(), color.g(), color.b(), color.a());
             if a == 0 {
@@ -263,6 +306,76 @@ impl Painter {
         });
         glyph
     }
+}
+
+impl Painter {
+    /// Shape one cluster into the scratch buffer.
+    fn shape(&mut self, family: &str, cluster: &str, bold: bool, italic: bool) {
+        let attrs = attrs(family, bold, italic);
+        self.scratch.set_text(&mut self.fonts, cluster, &attrs, Shaping::Advanced);
+        self.scratch.shape_until_scroll(&mut self.fonts, false);
+    }
+
+    /// Whether what was just shaped came out as the missing-glyph box.
+    fn missing(&self) -> bool {
+        self.scratch
+            .layout_runs()
+            .next()
+            .and_then(|run| run.glyphs.first().map(|glyph| glyph.glyph_id == 0))
+            .unwrap_or(false)
+    }
+
+    /// The first family on the machine with a glyph for `character`, asked
+    /// once per character and remembered. Monospace fonts first, so a status
+    /// line's icons come from a terminal font rather than a decorative one.
+    fn covering(&mut self, character: char) -> Option<String> {
+        if let Some(known) = self.covering.get(&character) {
+            return known.clone();
+        }
+        let mut faces: Vec<(cosmic_text::fontdb::ID, bool)> = self
+            .fonts
+            .db()
+            .faces()
+            .map(|face| (face.id, face.monospaced))
+            .collect();
+        faces.sort_by_key(|(_, monospaced)| !monospaced);
+
+        let mut found = None;
+        for (id, _) in faces {
+            let Some(font) = self.fonts.get_font(id) else {
+                continue;
+            };
+            if font.as_swash().charmap().map(character) != 0 {
+                found = self
+                    .fonts
+                    .db()
+                    .face(id)
+                    .and_then(|face| face.families.first().map(|(name, _)| name.clone()));
+                break;
+            }
+        }
+        self.covering.insert(character, found.clone());
+        found
+    }
+}
+
+/// Whether the machine has a family by this name. Matched the way a person
+/// would: case and spaces are not the difference between two fonts.
+fn installed(fonts: &FontSystem, family: &str) -> bool {
+    if matches!(family, "monospace" | "") {
+        // Not a family but a request for whatever is default, which always
+        // resolves to something.
+        return true;
+    }
+    let wanted = simplified(family);
+    fonts
+        .db()
+        .faces()
+        .any(|face| face.families.iter().any(|(name, _)| simplified(name) == wanted))
+}
+
+fn simplified(name: &str) -> String {
+    name.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
 }
 
 /// What `monospace` means on this machine.
@@ -326,6 +439,51 @@ mod tests {
         let mut pixels = vec![0; size.0 * size.1];
         painter.paint(surface, &mut pixels, size, cursor, bar);
         (pixels, size)
+    }
+
+    #[test]
+    fn a_font_the_machine_does_not_have_is_said_so_rather_than_swapped() {
+        let painter = Painter::new("No Such Font At All", 16.0);
+        assert!(!painter.matched(), "a name nothing answers to");
+
+        // `monospace` is not a family but a request, and always resolves.
+        assert!(Painter::new("monospace", 16.0).matched());
+
+        // And a real one is matched however it is spelt and cased: a font is
+        // not two fonts because someone typed a space.
+        let known = Painter::families().into_iter().next().expect("some font");
+        assert!(Painter::new(&known, 16.0).matched(), "{known:?}");
+        assert!(Painter::new(&known.to_lowercase().replace(' ', ""), 16.0).matched(), "{known:?}");
+    }
+
+    #[test]
+    fn the_machines_fonts_are_a_list_to_choose_from() {
+        let families = Painter::families();
+        assert!(!families.is_empty(), "a machine with a display has fonts");
+        let mut sorted = families.clone();
+        sorted.sort_by_key(|name| name.to_lowercase());
+        assert_eq!(families, sorted, "sorted, for a picker to show");
+        let mut once = families.clone();
+        once.dedup();
+        assert_eq!(families, once, "a family with six weights is one entry");
+    }
+
+    #[test]
+    fn a_glyph_the_font_lacks_comes_from_a_font_that_has_it() {
+        // A plain text font, and a character no text font has: the powerline
+        // separator and the dog are both in this private-use range, which is
+        // what a Nerd Font is for.
+        let mut painter = Painter::new("Liberation Mono", 16.0);
+        let dog = painter.rasterise("\u{f0a44}", false, false);
+        let missing = painter.covering('\u{f0a44}');
+        if missing.is_none() {
+            // Nothing on this machine has it; a box is then the honest answer
+            // and there is nothing to assert.
+            return;
+        }
+        assert!(dog.dots.len() > 20, "it is drawn: {} pixels", dog.dots.len());
+        // And the answer is remembered rather than worked out per frame.
+        assert!(painter.covering.contains_key(&'\u{f0a44}'));
     }
 
     #[test]

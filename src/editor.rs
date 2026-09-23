@@ -133,6 +133,18 @@ pub struct Dog {
     pub running: bool,
 }
 
+/// The font families to choose from, which without a window frontend is not
+/// an empty machine but a question that cannot be asked.
+#[cfg(feature = "gui")]
+fn font_families() -> Vec<String> {
+    crate::gui::families()
+}
+
+#[cfg(not(feature = "gui"))]
+fn font_families() -> Vec<String> {
+    Vec::new()
+}
+
 /// A case conversion that stays one character long. `ß` upper-cases to `SS`,
 /// which is two, and `~` would rather leave it alone than move every column
 /// after it.
@@ -1174,6 +1186,7 @@ impl Editor {
             ("set", option) => self.set_option(option),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
+            ("guifonts", _) => self.open_font_picker(),
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
         }
@@ -1817,7 +1830,7 @@ impl Editor {
                 (item.target.clone(), view.doc.text.char_to_line(at))
             }
             // A list to read, and a list of things to do: neither is a place.
-            Source::Help | Source::Actions => return None,
+            Source::Help | Source::Actions | Source::Fonts => return None,
         };
         Some(Entry { path, line, text: item.text.clone() })
     }
@@ -2032,6 +2045,30 @@ impl Editor {
         self.open_picker(Picker::new(Source::Help, items));
     }
 
+    /// `:guifonts` - every font family the window can see, as a picker.
+    /// Choosing one is a `:set guifont=` with a name that is certainly
+    /// spelt the way the machine spells it, which is most of what goes wrong
+    /// when a window comes up in the wrong font.
+    pub fn open_font_picker(&mut self) {
+        let items: Vec<Item> = font_families()
+            .into_iter()
+            .map(|family| Item {
+                detail: String::new(),
+                id: 0,
+                target: family.clone(),
+                text: family,
+            })
+            .collect();
+        if items.is_empty() {
+            self.message = match cfg!(feature = "gui") {
+                true => "no fonts found on this machine".into(),
+                false => "built without the window frontend".into(),
+            };
+            return;
+        }
+        self.open_picker(Picker::new(Source::Fonts, items));
+    }
+
     /// Lines matching a pattern, anywhere under the working directory. Nothing
     /// runs until something is typed: the pattern *is* the query.
     pub fn open_grep_picker(&mut self) {
@@ -2140,7 +2177,7 @@ impl Editor {
                 // the same way it would have gone to this one. No room for
                 // one is said and nothing opens: landing in the old window
                 // instead would look like the key had been ignored.
-                if open != Open::Here && !matches!(source, Source::Help | Source::Actions) {
+                if open != Open::Here && !matches!(source, Source::Help | Source::Actions | Source::Fonts) {
                     let before = self.windows.len();
                     self.split_window(open == Open::Beside, None);
                     if self.windows.len() == before {
@@ -2161,6 +2198,10 @@ impl Editor {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
                     Source::Actions => self.run_code_action(choice.id),
+                    Source::Fonts => {
+                        self.guifont = choice.target.clone();
+                        self.message = format!("guifont={}", self.guifont);
+                    }
                     Source::Buffers => {
                         self.jumps.push(origin);
                         self.switch_to(choice.id);
@@ -2527,7 +2568,7 @@ impl Editor {
                 let path = crate::editor::lsp::absolute(Path::new(&choice.target));
                 self.views.iter().position(|view| view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone()))?
             }
-            Source::Help | Source::Actions | Source::Symbols | Source::Lines => return None,
+            Source::Help | Source::Actions | Source::Fonts | Source::Symbols | Source::Lines => return None,
         };
         (0..self.windows.len()).find(|&id| id != self.focus && self.windows[id].view == view)
     }

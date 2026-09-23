@@ -194,6 +194,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
+| `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |

@@ -10,6 +10,11 @@ mod colors;
 mod input;
 mod paint;
 
+/// Every font family on this machine, for `:guifonts`.
+pub fn families() -> Vec<String> {
+    Painter::families()
+}
+
 use std::num::NonZeroU32;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -106,7 +111,15 @@ impl App<'_> {
         // A `:set guifont` while running is a font to draw the next frame in.
         let asked = (self.editor.guifont.clone(), self.editor.guifontsize);
         if asked != self.configured {
-            self.painter = Painter::new(&asked.0, asked.1 * self.scale as f32);
+            // A name the machine does not have is answered by the shaper with
+            // some other font entirely - often a proportional one, which in a
+            // grid is worse than the font you already had. So: keep that, and
+            // say what happened.
+            let painter = Painter::new(&asked.0, asked.1 * self.scale as f32);
+            match painter.matched() {
+                true => self.painter = painter,
+                false => self.editor.message = format!("no font called {} - try :guifonts", asked.0),
+            }
             self.configured = asked;
         }
         self.hand_over();

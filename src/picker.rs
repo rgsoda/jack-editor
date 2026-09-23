@@ -102,6 +102,10 @@ pub enum Source {
     /// `target` is the path and `id` the line, zero-based - the list already
     /// counts lines the way the editor does.
     Quickfix,
+    /// The font families the window frontend can see. `target` is the family
+    /// name, and choosing one is `:set guifont=` with it - which is the point:
+    /// a font you picked off a list is a font that exists and is spelt right.
+    Fonts,
 }
 
 impl Source {
@@ -118,6 +122,7 @@ impl Source {
             Source::Diagnostics => "diagnostic",
             Source::Workspace => "project symbol",
             Source::Quickfix => "quickfix",
+            Source::Fonts => "font",
         }
     }
 
