@@ -60,7 +60,11 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          # Static, for a distro older than the runner's glibc.
+            features: gui
+          # Static, for a distro older than the runner's glibc - and so the
+          # one build with no window in it: a statically linked binary cannot
+          # `dlopen` a display library, which is how the windowing crates
+          # reach Wayland and X11.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             packages: musl-tools
@@ -69,8 +73,10 @@ jobs:
             os: ubuntu-latest
             packages: gcc-aarch64-linux-gnu
             cc: aarch64-linux-gnu-gcc
+            features: gui
           - target: aarch64-apple-darwin
             os: macos-latest
+            features: gui
           # Both Apple targets on the same arm64 runner: macos-13 was the last
           # Intel one and GitHub retired it, so a job asking for it queues for
           # ever and takes the formula job down with it. Clang on macOS builds
@@ -78,6 +84,7 @@ jobs:
           # the grammars cross-compile without a toolchain to install.
           - target: x86_64-apple-darwin
             os: macos-latest
+            features: gui
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -96,13 +103,20 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           CC_FOR_TARGET: ${{ matrix.cc }}
+          FEATURES: ${{ matrix.features }}
         run: |
           if [ -n "$CC_FOR_TARGET" ]; then
             underscored=$(echo "$TARGET" | tr 'a-z-' 'A-Z_')
             export "CC_${TARGET//-/_}=$CC_FOR_TARGET"
             export "CARGO_TARGET_${underscored}_LINKER=$CC_FOR_TARGET"
           fi
-          cargo build --release --locked --target "$TARGET"
+          # `--gui` where a window can exist. Not a default feature: building
+          # jack for a server should not build a font stack.
+          features=""
+          if [ -n "$FEATURES" ]; then
+            features="--features $FEATURES"
+          fi
+          cargo build --release --locked --target "$TARGET" $features
 
       - name: Package
         env:

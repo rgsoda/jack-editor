@@ -28,6 +28,13 @@ source needs a Rust toolchain of 1.88 or newer (let-chains) and a C compiler,
 because the tree-sitter grammars are C; the Homebrew formula installs a
 prebuilt binary and needs neither.
 
+The released binaries have the window frontend in them - `jack --gui` - on
+macOS and on the two glibc Linux targets. The static musl build does not, and
+cannot: a statically linked binary has no `dlopen` to reach Wayland or X11
+with. From source it is a feature rather than a default, because building jack
+for a server should not build a font stack:
+`cargo install --path . --features gui`.
+
 Releases are cut by tagging: `git tag v0.1.0 && git push --tags` builds five
 targets — glibc and static musl x86-64 Linux, arm64 Linux, and both macOS
 architectures — attaches a tarball and a checksum for each to a GitHub release,
@@ -45,8 +52,8 @@ that is the half worth keeping.
 The config directory is `~/.config/jack` — `init` and `theme.toml` — and
 `:config` writes the first one for you.
 
-`--gui` opens a window instead of taking over the terminal, where the build
-has the window frontend in it: `cargo install --path . --features gui`. See
+`--gui` opens a window instead of taking over the terminal, where the build has
+the window frontend in it - the released binaries do, but for musl. See
 [A window, when you want one](#a-window-when-you-want-one).
 
 Starts in normal mode, like vim. `jack --help` is the one-screen version of
@@ -2134,10 +2141,12 @@ has always filled a grid of cells and left someone else to show it, so the
 window is a second way of showing it — pixels instead of escape codes — and
 nothing below `session.rs` can tell which one it is drawing for.
 
-It is off by default, because a terminal editor has no business carrying a
-windowing library and a font stack it never opens, and because a machine with
-no display should still build one. `cargo install --path . --features gui`
-puts it in; without it `--gui` says so rather than failing strangely.
+It is a feature rather than a default, because a terminal editor has no
+business carrying a windowing library and a font stack it never opens, and
+because a machine with no display should still build one.
+`cargo install --path . --features gui` puts it in, and the release builds it
+for macOS and glibc Linux; without it `--gui` says so rather than failing
+strangely.
 
 Three things were the terminal's rather than the editor's, and those are what
 a window has to answer for itself:
