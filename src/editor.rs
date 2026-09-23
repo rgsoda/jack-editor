@@ -1869,7 +1869,9 @@ impl Editor {
         self.token.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    fn token(&self) -> u64 {
+    /// The token a running job's results must carry to be wanted. Public for
+    /// a run loop's tests, which have to speak for a job that is not running.
+    pub fn token(&self) -> u64 {
         self.token.load(Ordering::Relaxed)
     }
 

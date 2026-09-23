@@ -21,6 +21,7 @@ mod undofile;
 mod register;
 mod screen;
 mod search;
+mod session;
 mod status;
 mod stream;
 mod substitute;
@@ -39,7 +40,6 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use std::io::{self, Write};
 
 use editor::{Editor, Mode};
-use keys::{Action, Keys};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 use stream::Message;
@@ -183,9 +183,7 @@ const DOG_REST: Duration = Duration::from_millis(700);
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
-    let mut keys = Keys::default();
-    // Set once a quit is attempted with unsaved changes; any other key clears it.
-    let mut quit_armed = false;
+    let mut session = session::Session::default();
     let mut shown_mode = None;
 
     loop {
@@ -208,26 +206,15 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
             shown_mode = None;
         }
 
-        // A stat per buffer, at most once a second - and first, so that what
-        // it reloads is scrolled to, synced and drawn in this same frame.
-        editor.watch_disk();
-
         let (cols, rows) = terminal::size()?;
         let (cols, rows) = (cols.max(1) as usize, rows.max(2) as usize);
         // One row goes to the status line, and one to the buffer list when it
         // is showing. The tabline depends on how many buffers are open, not on
         // the size, so this is safe to ask before setting the size.
         let chrome = 1 + editor.top();
-        editor.set_viewport(cols, rows.saturating_sub(chrome));
-        editor.scroll_to_cursor();
-        // Cheap when nothing has changed: it compares a revision first.
-        editor.refresh_signs();
-        // Cheap too: an edit count per buffer.
-        editor.lsp_sync();
-        // And hints for whatever was just synced, outside insert mode.
-        editor.lsp_hints();
+        session.before_frame(editor, cols, rows.saturating_sub(chrome));
 
-        ui::draw(editor, &keys, screen.begin(cols, rows));
+        ui::draw(editor, &session.keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
 
         // Anything the editor wants said to the terminal itself rather than
@@ -266,67 +253,16 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             },
         };
-        // Batches waiting behind each other are merged, so a fast walk costs
-        // one update rather than one per 512 paths.
-        let mut streamed: Vec<String> = Vec::new();
-        let mut streamed_token = 0;
-        let mut streamed_done = false;
         loop {
-            if let Message::Key(key) = message {
-                editor.message.clear();
-                // The box from a `K` is read and gone, the same as a message.
-                editor.dismiss_hover();
-                let was_armed = std::mem::take(&mut quit_armed);
-                // The dog runs on the cursor, not on the keyboard: a key that
-                // moves nothing - `esc`, a `:w`, `l` at the end of a line -
-                // is not a step, and neither is a leant-on key that has run
-                // out of line to move along.
-                let was_at = editor.cursor_mark();
-
-                match keys.handle(editor, key) {
-                    Action::Continue => {}
-                    Action::Quit { force } => {
-                        if force || was_armed || !editor.any_modified() {
-                            return Ok(());
-                        }
-                        editor.message = "unsaved changes - press ^Q again to quit".into();
-                        quit_armed = true;
-                    }
-                }
-                if editor.cursor_mark() != was_at {
-                    editor.dog_runs();
-                }
-            } else if let Message::Paste(text) = message {
-                editor.message.clear();
-                editor.dismiss_hover();
-                editor.paste(&text);
-                editor.dog_runs();
-            } else if let Message::Focus = message {
-                editor.focus_gained();
-            } else if let Message::Items { token, items, done } = message {
-                if token != streamed_token {
-                    editor.stream_items(streamed_token, std::mem::take(&mut streamed), streamed_done);
-                    streamed_token = token;
-                }
-                streamed.extend(items);
-                streamed_done = done;
-            } else if let Message::Failed { token, error } = message {
-                editor.job_failed(token, error);
-            } else if let Message::Signs { token, signs, hunks } = message {
-                editor.set_signs(token, signs, hunks);
-            } else if let Message::Lsp { server, message } = message {
-                editor.lsp_message(server, message);
+            if session.deliver(editor, message) == session::Flow::Quit {
+                return Ok(());
             }
-            // Resize needs nothing: the next frame re-reads the terminal size.
-
             match rx.try_recv() {
                 Ok(next) => message = next,
                 Err(_) => break,
             }
         }
-        if !streamed.is_empty() || streamed_done {
-            editor.stream_items(streamed_token, streamed, streamed_done);
-        }
+        session.flush_stream(editor);
     }
 }
 
