@@ -45,6 +45,12 @@ jobs:
       # editor is actually quick, and it costs a minute.
       - run: cargo test --locked --release
 
+      # The window is a feature, so none of it - the painter, the keyboard,
+      # the mouse - is built by the run above. Only the release builds used
+      # to compile it, which is late to hear about a broken one.
+      - run: cargo test --locked --features gui
+
       # Warnings fail it. A lint that is allowed to accumulate is a lint
       # nobody reads, and the count was zero when this was written.
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --features gui -- -D warnings

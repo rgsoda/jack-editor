@@ -14,6 +14,8 @@ mod lsp;
 mod indent;
 mod object;
 mod picker;
+#[cfg(feature = "gui")]
+mod mouse;
 mod positions;
 mod preview;
 mod quickfix;

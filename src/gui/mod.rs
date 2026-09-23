@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState};
 use winit::window::{Window, WindowId};
@@ -36,6 +36,13 @@ use paint::Painter;
 
 /// The window's size when it has no better idea, in cells. Eighty columns
 /// because that is what a line of code is, and enough rows to see a function.
+/// How close together two clicks are a double click. What every toolkit
+/// calls the double-click time; nothing here can ask the desktop for its own.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How often a drag held past the edge of its window scrolls it by a line.
+const DRAG_SCROLL: std::time::Duration = std::time::Duration::from_millis(60);
+
 const COLUMNS: u32 = 100;
 const ROWS: u32 = 30;
 
@@ -68,6 +75,9 @@ pub fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
         title: String::new(),
         configured,
         scale: 1.0,
+        pointer: (0, 0),
+        clicked: None,
+        scrolled: None,
         resting: None,
         failed: None,
     };
@@ -93,6 +103,14 @@ struct App<'a> {
     /// running - the size it draws at is this one scaled to the display.
     configured: (String, f32),
     scale: f64,
+    /// Where the pointer is, in cells, and the click it is part of: a window
+    /// reports presses one at a time, so a double click is two of them close
+    /// together in time and in the same cell, counted here.
+    pointer: (usize, usize),
+    clicked: Option<(Instant, (usize, usize), u8)>,
+    /// When a drag held past the edge last scrolled: a redraw brings the loop
+    /// straight back here, so the clock has to be kept rather than waited on.
+    scrolled: Option<Instant>,
     /// When the editor last went quiet, for the dog: it sits down when
     /// nothing has arrived for a while, and nothing arriving is not an event
     /// anything else here would wake for.
@@ -250,6 +268,27 @@ impl App<'_> {
         true
     }
 
+    /// How many clicks this press is part of: two in the same cell within the
+    /// time a double click takes is a double click, and a third a triple.
+    fn clicks(&mut self) -> u8 {
+        let count = match self.clicked {
+            Some((when, cell, count)) if cell == self.pointer && when.elapsed() < DOUBLE_CLICK => count % 3 + 1,
+            _ => 1,
+        };
+        self.clicked = Some((Instant::now(), self.pointer, count));
+        count
+    }
+
+    /// What a mouse event owes the frame: the dog is awake, and what changed
+    /// wants drawing. The view following the cursor is `before_frame`'s, as
+    /// it is for a key press.
+    fn after_mouse(&mut self) {
+        self.resting = None;
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
     fn deliver(&mut self, event_loop: &ActiveEventLoop, message: Message) {
         self.resting = None;
         if self.session.deliver(self.editor, message) == Flow::Quit {
@@ -341,6 +380,32 @@ impl ApplicationHandler<Message> for App<'_> {
                     self.deliver(event_loop, Message::Key(key));
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let (cell_w, cell_h) = self.painter.cell;
+                let cell = (position.x as usize / cell_w.max(1), position.y as usize / cell_h.max(1));
+                if cell == self.pointer {
+                    return;
+                }
+                self.pointer = cell;
+                if self.editor.drag.is_some() {
+                    self.editor.mouse_drag(cell.0, cell.1);
+                    self.after_mouse();
+                }
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                let (x, y) = self.pointer;
+                match state {
+                    ElementState::Pressed => {
+                        let clicks = self.clicks();
+                        self.editor.mouse_press(x, y, clicks);
+                        self.after_mouse();
+                    }
+                    ElementState::Released => {
+                        self.editor.mouse_release();
+                        self.after_mouse();
+                    }
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // The wheel is `^e` and `^y`, which is what scrolling the view
                 // without moving the cursor already is.
@@ -364,6 +429,23 @@ impl ApplicationHandler<Message> for App<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A drag pointing past the top or bottom of its window scrolls for as
+        // long as it is held there, and a pointer held still sends nothing.
+        // So the scrolling is on a clock of its own.
+        if self.editor.dragging_away(self.pointer.1) {
+            let due = self.scrolled.is_none_or(|last| last.elapsed() >= DRAG_SCROLL);
+            if due {
+                self.scrolled = Some(Instant::now());
+                self.editor.mouse_drag(self.pointer.0, self.pointer.1);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            let next = self.scrolled.unwrap_or_else(Instant::now) + DRAG_SCROLL;
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            return;
+        }
+        self.scrolled = None;
         // The dog is the one thing here that needs a clock: it stops running
         // when nothing has arrived for a while, and nothing arriving is not
         // an event anything else would wake up for.

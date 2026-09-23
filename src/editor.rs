@@ -439,6 +439,9 @@ pub struct Editor {
     pub message: String,
     /// The picker, when one is open. While it is, it owns the keyboard.
     pub picker: Option<Picker>,
+    /// The drag in progress, when the mouse button is down in a window.
+    #[cfg(feature = "gui")]
+    pub(crate) drag: Option<crate::mouse::Drag>,
     /// The last `f`, `F`, `t` or `T`, which is what `;` and `,` repeat. Shared
     /// across buffers, as the search is.
     pub last_find: Option<Find>,
@@ -548,6 +551,8 @@ impl Editor {
             theme,
             message: warning.unwrap_or_default(),
             picker: None,
+            #[cfg(feature = "gui")]
+            drag: None,
             last_find: None,
             jumps: Jumps::default(),
             quickfix: Quickfix::default(),

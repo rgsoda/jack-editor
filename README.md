@@ -348,6 +348,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `gui/` — `--gui`: the window. `paint.rs` turns the same cell grid into
   pixels, `input.rs` says a window's keys the way the editor already listens,
   `colors.rs` is the palette a terminal would otherwise have supplied.
+- `mouse.rs` — the window's mouse: a screen cell back into a place in the
+  text, and clicks and drags into a cursor and a selection. Only the window
+  has one, so only the window builds it.
 - `preview.rs` — `:preview`'s renderer: markdown text and a width in, lines of
   styled words out, each knowing the source line it came from. What a style
   looks like is the theme's; this says only that a span is a heading or a link.
@@ -2149,7 +2152,7 @@ because a machine with no display should still build one.
 for macOS and glibc Linux; without it `--gui` says so rather than failing
 strangely.
 
-Three things were the terminal's rather than the editor's, and those are what
+Four things were the terminal's rather than the editor's, and those are what
 a window has to answer for itself:
 
 **The font.** With nothing configured it asks fontconfig what `monospace` is —
@@ -2176,6 +2179,21 @@ sixteen names and 256 indices — in Dracula's values, which is the palette the
 theme jack ships was written against. A theme that spells its colours out gets
 exactly what it asked for either way.
 
+**The mouse.** A terminal's mouse belongs to the terminal: dragging in one
+selects a rectangle of the screen, line numbers and all, and jack never asks
+for the events. A window has no such fallback, so the pointing is done here -
+and done in the buffer rather than on the screen, which is why the gutter, the
+status line and the preview pane cannot end up in what you selected.
+
+Click to put the cursor there, in whichever split you clicked; drag to select,
+which is visual mode with its far end under the pointer, so `^c`, `y`, `d`,
+`gc` and everything else that works on a selection works on this one. Twice is
+the word, three times the line, and a click on a line number is that line.
+Clicking while you are typing moves the caret and leaves you typing. Holding a
+drag above or below the window scrolls it a line at a time, so a selection can
+be longer than the screen. The wheel scrolls the view without moving the
+cursor, which is `^e` and `^y`.
+
 **`:!cmd`, `:sh` and `^z`.** These hand the terminal to another program, and a
 window has no terminal to hand over. `:!` and `:sh` start one instead — what
 `$TERMINAL` says, or the first emulator it finds installed — so `:!lazygit`
@@ -2185,8 +2203,8 @@ is genuinely worse than the terminal, and it is worth knowing before you
 switch.
 
 What you get for it: ligatures and italics from the font rather than from the
-terminal's idea of them, the mouse wheel scrolling the view, a window your
-compositor can put a rule on (its app id is `jack`), and keys a terminal
+terminal's idea of them, the mouse selecting text rather than screen, a window
+your compositor can put a rule on (its app id is `jack`), and keys a terminal
 cannot even send — `^i` is not `tab` here, and `ctrl-shift` anything arrives
 whole. On a mac, `cmd-c`, `cmd-x` and `cmd-v` are the clipboard three as well
 as `^c` `^x` `^v`, since that is where a mac keyboard keeps them; every other
