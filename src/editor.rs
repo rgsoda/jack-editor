@@ -408,6 +408,11 @@ pub struct Editor {
     /// The quickfix list: places to walk with `]q` and `[q`, filled by `^q`
     /// in a picker. One list, replaced whole.
     pub quickfix: Quickfix,
+    /// The window frontend's font and its size in pixels. Settings like any
+    /// other, so they live in the config file and can be changed while jack
+    /// is running; the terminal frontend simply has no use for them.
+    pub guifont: String,
+    pub guifontsize: f32,
     /// `:preview`: a markdown buffer rendered in a pane down the right.
     pub preview: Option<crate::preview::Preview>,
     /// The insert-mode completion popup, while one is open.
@@ -507,6 +512,8 @@ impl Editor {
             last_find: None,
             jumps: Jumps::default(),
             quickfix: Quickfix::default(),
+            guifont: "monospace".into(),
+            guifontsize: 15.0,
             preview: None,
             completion: None,
             info: None,
@@ -1596,6 +1603,13 @@ impl Editor {
                 ("autocomplete" | "ac", _) => {
                     self.message = format!("autocomplete wants 0 to 16, not {value:?}");
                 }
+                ("guifont", _) if !value.trim().is_empty() => {
+                    self.guifont = value.trim().to_string();
+                }
+                ("guifontsize", _) => match value.trim().parse::<f32>() {
+                    Ok(size) if (6.0..=72.0).contains(&size) => self.guifontsize = size,
+                    _ => self.message = format!("guifontsize wants 6 to 72, not {value:?}"),
+                },
                 ("semicolon", _) => match Semicolon::parse(value) {
                     Some(semicolon) => self.semicolon = semicolon,
                     None => self.message = "semicolon wants find or command".into(),
@@ -1675,7 +1689,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1693,7 +1707,9 @@ impl Editor {
                     self.lsp_enabled,
                     self.tabline.name(),
                     self.autocomplete,
-                    self.semicolon.name()
+                    self.semicolon.name(),
+                    self.guifont,
+                    self.guifontsize
                 );
             }
             other => self.message = format!("not an option: {other}"),

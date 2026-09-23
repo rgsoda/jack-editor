@@ -45,6 +45,10 @@ that is the half worth keeping.
 The config directory is `~/.config/jack` — `init` and `theme.toml` — and
 `:config` writes the first one for you.
 
+`--gui` opens a window instead of taking over the terminal, where the build
+has the window frontend in it: `cargo install --path . --features gui`. See
+[A window, when you want one](#a-window-when-you-want-one).
+
 Starts in normal mode, like vim. `jack --help` is the one-screen version of
 that; `<space>?` inside is the searchable keymap.
 
@@ -182,6 +186,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
+| `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
 | `:noh` | stop highlighting matches |
@@ -329,6 +334,12 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   crate's. No document anywhere in it, which is why it is its own file.
 - `quickfix.rs` — the quickfix list: the places `]q` walks, and the walk. No
   document and no files: the arithmetic is the part worth testing on its own.
+- `session.rs` — what happens between one frame and the next: the work due
+  before a frame, and what each message means. It is what the terminal and the
+  window share, so a frontend is a keyboard and a painter and decides nothing.
+- `gui/` — `--gui`: the window. `paint.rs` turns the same cell grid into
+  pixels, `input.rs` says a window's keys the way the editor already listens,
+  `colors.rs` is the palette a terminal would otherwise have supplied.
 - `preview.rs` — `:preview`'s renderer: markdown text and a width in, lines of
   styled words out, each knowing the source line it came from. What a style
   looks like is the theme's; this says only that a span is a heading or a link.
@@ -2114,6 +2125,56 @@ One list, replaced whole. Vim keeps ten of them and has `:colder` to move
 between them, which is an answer to a question nobody asks twice. There is no
 `errorformat` and no `:make`: what fills the list is a picker, and a picker
 already knows what its items point at.
+
+## A window, when you want one
+
+`jack --gui` opens the editor in a window of its own. Not a different editor
+and not a port: the same buffers, the same keys, the same frame. `ui::draw`
+has always filled a grid of cells and left someone else to show it, so the
+window is a second way of showing it — pixels instead of escape codes — and
+nothing below `session.rs` can tell which one it is drawing for.
+
+It is off by default, because a terminal editor has no business carrying a
+windowing library and a font stack it never opens, and because a machine with
+no display should still build one. `cargo install --path . --features gui`
+puts it in; without it `--gui` says so rather than failing strangely.
+
+Three things were the terminal's rather than the editor's, and those are what
+a window has to answer for itself:
+
+**The font.** With nothing configured it asks fontconfig what `monospace` is —
+the same question your terminal asked — so the window comes up in the font the
+rest of the desktop is in, Nerd Font glyphs in the status line and all.
+`:set guifont=JetBrainsMono Nerd Font` and `:set guifontsize=16` name it
+yourself, and both are settings like any other, so they live in the config file
+and take effect as you type them. `ctrl` with `+`, `-` or `0` resizes while
+running; the grid reflows and the text rewraps to whatever fits.
+
+Every cell is shaped on its own and drawn at its own column, which is what
+keeps a grid a grid: an emoji in a comment or a powerline glyph in the status
+line cannot push the rest of its line sideways. Shaping is the expensive part,
+so each distinct cluster and style is rasterised once and kept; after a second
+of typing, a frame is blending bytes.
+
+**The colours.** A theme that says `"blue"` or `"117"` is asking the terminal
+emulator a question, and there isn't one. So the window ships the palette —
+sixteen names and 256 indices — in Dracula's values, which is the palette the
+theme jack ships was written against. A theme that spells its colours out gets
+exactly what it asked for either way.
+
+**`:!cmd`, `:sh` and `^z`.** These hand the terminal to another program, and a
+window has no terminal to hand over. `:!` and `:sh` start one instead — what
+`$TERMINAL` says, or the first emulator it finds installed — so `:!lazygit`
+opens lazygit in its own window. `^z` has nothing to be suspended into and
+says so rather than appearing to work. This is the one place where the window
+is genuinely worse than the terminal, and it is worth knowing before you
+switch.
+
+What you get for it: ligatures and italics from the font rather than from the
+terminal's idea of them, the mouse wheel scrolling the view, a window your
+compositor can put a rule on (its app id is `jack`), and keys a terminal
+cannot even send — `^i` is not `tab` here, and `ctrl-shift` anything arrives
+whole. What you give up: ssh, tmux, and starting instantly.
 
 ## Markdown, rendered
 

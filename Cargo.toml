@@ -16,6 +16,12 @@ categories = ["text-editors", "command-line-utilities"]
 name = "jack"
 path = "src/main.rs"
 
+[features]
+# The window frontend: `jack --gui`. Off by default, because the terminal
+# binary has no business carrying a windowing library and a font stack it
+# never opens - and because a machine without a display should still build.
+gui = ["dep:winit", "dep:softbuffer", "dep:cosmic-text"]
+
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
@@ -27,6 +33,11 @@ ignore = "0.4.33"
 # document between two grammars and is built for highlighting, not reading.
 pulldown-cmark = { version = "0.13.4", default-features = false }
 regex = "1.13.1"
+# `--gui`, all three optional: a window, its pixels, and the shaping and
+# rasterising of text into them.
+winit = { version = "0.30.12", optional = true }
+softbuffer = { version = "0.4.6", optional = true }
+cosmic-text = { version = "0.14.2", optional = true }
 ropey = "1.6.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

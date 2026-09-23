@@ -19,6 +19,8 @@ mod preview;
 mod quickfix;
 mod undofile;
 mod register;
+#[cfg(feature = "gui")]
+mod gui;
 mod screen;
 mod search;
 mod session;
@@ -102,6 +104,7 @@ Usage:
   jack              an empty buffer
 
 Options:
+  --gui             open a window instead of using this terminal
   -h, --help        this
   -V, --version     the version
 
@@ -112,6 +115,8 @@ Inside: :help is <space>?, and :config writes a config file of every default.
 /// what to print and leave.
 fn flag(paths: &[String]) -> Option<String> {
     match paths.iter().find(|arg| arg.starts_with('-')).map(String::as_str) {
+        Some("--gui") if cfg!(feature = "gui") => None,
+        Some("--gui") => Some("jack: built without the window frontend (cargo install jack-editor --features gui)\n".to_string()),
         Some("-h" | "--help") => Some(USAGE.to_string()),
         Some("-V" | "--version") => {
             Some(format!("jack {}\n", env!("CARGO_PKG_VERSION")))
@@ -124,12 +129,17 @@ fn flag(paths: &[String]) -> Option<String> {
 }
 
 fn main() -> Result<()> {
-    let paths: Vec<String> = std::env::args().skip(1).collect();
+    let mut paths: Vec<String> = std::env::args().skip(1).collect();
 
     if let Some(text) = flag(&paths) {
         print!("{text}");
         return Ok(());
     }
+
+    // `--gui` is not a file, and everything after it is read the same way it
+    // would have been without it.
+    let gui = paths.iter().any(|argument| argument == "--gui");
+    paths.retain(|argument| argument != "--gui");
 
     // A directory is not a buffer: it means start in that project with the
     // file picker open. Nothing here is a mode - the picker already walks the
@@ -164,15 +174,35 @@ fn main() -> Result<()> {
         editor.open_file_picker();
     }
 
-    let guard = TerminalGuard::enter()?;
-    let input = stream::Input::new();
-    stream::spawn_input(tx, input.clone());
-    let result = run(&mut editor, rx, &input);
-    // The terminal back first, so that a complaint about the list is printed
-    // somewhere it can be read.
-    drop(guard);
+    let result = match gui {
+        true => in_a_window(&mut editor, rx),
+        false => {
+            let guard = TerminalGuard::enter()?;
+            let input = stream::Input::new();
+            stream::spawn_input(tx, input.clone());
+            let result = run(&mut editor, rx, &input);
+            // The terminal back first, so that a complaint about the list is
+            // printed somewhere it can be read.
+            drop(guard);
+            result
+        }
+    };
     editor.save_positions();
     result
+}
+
+/// `--gui`, where there is a window frontend built in. The terminal is left
+/// alone: no raw mode, no alternate screen, and nothing reading stdin - jack
+/// is a program that opened a window, and the shell it was started from goes
+/// on being a shell.
+#[cfg(feature = "gui")]
+fn in_a_window(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
+    gui::run(editor, rx)
+}
+
+#[cfg(not(feature = "gui"))]
+fn in_a_window(_editor: &mut Editor, _rx: Receiver<Message>) -> Result<()> {
+    anyhow::bail!("built without the window frontend")
 }
 
 /// How long a pause in typing means the dog has stopped running. Long enough

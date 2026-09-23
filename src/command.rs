@@ -189,6 +189,18 @@ pub static SETTINGS: &[Setting] = &[
         about: "Start a language server for files that have one installed: diagnostics, and gd across files.",
     },
     Setting {
+        name: "guifont",
+        kind: Kind::Value(&["monospace"], "monospace"),
+        about: "The window's font, as fontconfig names it - `monospace`, or \
+                `JetBrainsMono Nerd Font`. Only `jack --gui` reads it.",
+    },
+    Setting {
+        name: "guifontsize",
+        kind: Kind::Value(&["12", "14", "16", "18"], "15"),
+        about: "How big the window's text is, in pixels. `ctrl` with `+`, `-` \
+                or the wheel changes it while running; this is where it starts.",
+    },
+    Setting {
         name: "semicolon",
         kind: Kind::Value(&["find", "command"], "find"),
         about: "What ; does: repeat the last f/t, or open the command line the \
