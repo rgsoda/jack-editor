@@ -2245,12 +2245,14 @@ instantly.
 
 ## The icon
 
-`packaging/icon/jack.svg` is four shapes — a rounded square in the background
-the editor draws on, the letter in Dracula's pink, and the block cursor after
-it in its purple. Four, because an icon is mostly seen at sixteen pixels in a
-taskbar, and anything finer than this turns to mush there. `render.sh` draws
-everything else from it: the eight sizes an icon theme keeps, the `.icns`
-macOS wants, and the raw RGBA blob the binary carries.
+`packaging/icon/jack.svg` is jack the dog, who shares his name with this: a
+rounded square in the background the editor draws on, his white head and tall
+ears, the pink inside them and on his nose, his pale blue eyes, and the tongue
+he never quite puts away. Five shapes and five colours, all from the same
+palette the editor draws itself in, because an icon is mostly seen at sixteen
+pixels in a taskbar and anything finer than that turns to mush there.
+`render.sh` draws everything else from it: the eight sizes an icon theme keeps,
+the `.icns` macOS wants, and the raw RGBA blob the binary carries.
 
 Three platforms, three ways of asking, which is why there are three answers
 rather than one file:

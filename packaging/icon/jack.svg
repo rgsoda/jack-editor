@@ -1,11 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- jack's icon: the letter and the cursor after it, in the colours the
-     editor draws itself in. Kept to four shapes so that it is still legible
-     at sixteen pixels, where anything finer turns to mush. -->
+<!-- jack's icon: jack the dog, who is white, has ears like that, eyes like
+     that, and never quite puts his tongue away. Flat shapes in the colours
+     the editor draws itself in, and few enough of them that the face still
+     reads at sixteen pixels, where anything finer turns to mush. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#282a36"/>
-  <circle cx="262" cy="122" r="32" fill="#ff79c6"/>
-  <path d="M 262 186 L 262 318 A 62 62 0 0 1 138 318"
-        fill="none" stroke="#ff79c6" stroke-width="58" stroke-linecap="round"/>
-  <rect x="326" y="186" width="84" height="222" rx="8" fill="#bd93f9"/>
+  <g transform="translate(256 268) scale(1.07) translate(-256 -268)">
+
+  <!-- ears: broad at the base, curved outer edge, pointed tip -->
+  <path d="M 172 240 Q 116 150 124 56 Q 192 116 254 184 Z" fill="#f8f8f2" stroke="#f8f8f2" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M 340 240 Q 396 150 388 56 Q 320 116 258 184 Z" fill="#f8f8f2" stroke="#f8f8f2" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M 184 222 Q 146 156 152 96 Q 198 138 238 186 Z" fill="#ff79c6" stroke="#ff79c6" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M 328 222 Q 366 156 360 96 Q 314 138 274 186 Z" fill="#ff79c6" stroke="#ff79c6" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- head: flat between the ears, long muzzle, rounded chin -->
+  <path d="M 150 286
+           C 150 206, 196 172, 256 172
+           C 316 172, 362 206, 362 286
+           C 362 324, 344 346, 320 360
+           C 312 384, 308 396, 306 406
+           Q 296 452, 256 452
+           Q 216 452, 206 406
+           C 204 396, 200 384, 192 360
+           C 168 346, 150 324, 150 286 Z" fill="#f8f8f2"/>
+
+  <!-- eyes -->
+  <circle cx="207" cy="290" r="24" fill="#8be9fd"/>
+  <circle cx="305" cy="290" r="24" fill="#8be9fd"/>
+  <circle cx="207" cy="290" r="10" fill="#282a36"/>
+  <circle cx="305" cy="290" r="10" fill="#282a36"/>
+
+  <!-- nose, and the tongue he never quite puts away -->
+  <path d="M 222 388 Q 256 376 290 388 Q 294 412 256 432 Q 218 412 222 388 Z" fill="#ff79c6"/>
+  <path d="M 232 428 H 280 V 448 Q 280 476 256 476 Q 232 476 232 448 Z" fill="#ff9ed5"/>
+  </g>
 </svg>
