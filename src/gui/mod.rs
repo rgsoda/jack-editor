@@ -54,6 +54,10 @@ const ROWS: u32 = 30;
 /// same way they reach the terminal frontend - one channel - forwarded into
 /// the window's own event queue by a thread that does nothing else.
 pub fn run(editor: &mut Editor, rx: Receiver<Message>) -> Result<()> {
+    // Before the event loop, not after the window: a file dropped on a jack
+    // that is not running launches it, and the event asking for that file
+    // arrives while the window is still being made.
+    watch_for_opened_files();
     let events = EventLoop::<Message>::with_user_event()
         .build()
         .context("opening a window (is there a display to open it on?)")?;
@@ -362,7 +366,6 @@ impl ApplicationHandler<Message> for App<'_> {
         }
         window.request_redraw();
         dock_icon();
-        watch_for_opened_files();
         self.window = Some(window);
     }
 

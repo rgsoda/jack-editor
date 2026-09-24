@@ -74,3 +74,14 @@ jobs:
 
       - run: cargo test --locked --features gui
       - run: cargo clippy --locked --all-targets --features gui -- -D warnings
+
+      # The bundle is a shell script writing a plist, and a plist that does
+      # not parse is an application macOS will not open a file with. Built
+      # here around the binary that was just compiled, and read back.
+      - name: jack.app
+        run: |
+          cargo build --locked --features gui
+          PATH="$PWD/target/debug:$PATH" packaging/macos/bundle.sh "$RUNNER_TEMP"
+          plutil -lint "$RUNNER_TEMP/jack.app/Contents/Info.plist"
+          defaults read "$RUNNER_TEMP/jack.app/Contents/Info.plist" CFBundleDocumentTypes
+          test -f "$RUNNER_TEMP/jack.app/Contents/Resources/jack.icns"

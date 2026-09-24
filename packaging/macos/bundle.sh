@@ -70,9 +70,15 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <!-- What jack will open. macOS hands a document to an application by
          sending it an event rather than by putting it on a command line, so
          this half only says what may be dropped on the icon or opened with
-         jack; the editor listens for the event itself. `Alternate` rather
-         than `Owner`: jack will open your text, but it does not claim to be
-         what every text file belongs to. -->
+         jack; the editor listens for the event itself.
+         Two entries, because macOS matches on both spellings and a drop is
+         refused by whichever it consults: the text types it knows by name,
+         and everything else. `public.item` is the root every file and folder
+         conforms to, and `*` is the same claim in the older spelling - which
+         is the truth about a text editor, since a file that is not text is a
+         file you find that out about by opening it.
+         `Alternate` throughout: jack will open your text without claiming to
+         be what a text file belongs to. -->
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -91,10 +97,34 @@ cat > "$app/Contents/Info.plist" <<PLIST
                 <string>public.folder</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Any file</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.item</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>*</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>
 PLIST
+
+# An ad-hoc signature: no certificate and no notarisation, just enough that
+# the bundle has an identity of its own. macOS is steadily less willing to
+# treat an unsigned bundle as a real application, and a Dock item that is not
+# quite an application is one that refuses what you drop on it.
+if command -v codesign > /dev/null; then
+    codesign --force --sign - "$app" > /dev/null 2>&1 || true
+fi
 
 # Launch Services caches an app's icon by path, so a rebuilt app in the same
 # place can go on showing the old one - or the generic executable icon it had
@@ -106,5 +136,7 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Versions/A/Framewor
 
 echo "$app"
 echo "drop a file on it, or open one with it - jack takes both."
+echo "what it says it opens:"
+echo "  defaults read $app/Contents/Info.plist CFBundleDocumentTypes"
 echo "if the Dock or Finder still shows the old icon, it is their cache:"
 echo "  killall Dock; killall Finder"
