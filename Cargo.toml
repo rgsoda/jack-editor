@@ -20,7 +20,7 @@ path = "src/main.rs"
 # The window frontend: `jack --gui`. Off by default, because the terminal
 # binary has no business carrying a windowing library and a font stack it
 # never opens - and because a machine without a display should still build.
-gui = ["dep:winit", "dep:softbuffer", "dep:cosmic-text"]
+gui = ["dep:winit", "dep:softbuffer", "dep:cosmic-text", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -64,3 +64,12 @@ unicode-width = "0.2.2"
 # `^z`: raising SIGTSTP is the whole of it, and there is no other way to ask.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# macOS draws the Dock icon from an application bundle, and a binary started
+# from a terminal has none. These are what let the running program hand macOS
+# an icon itself; winit already brings them in on this platform, so they cost
+# the build nothing. Only the pieces used are asked for.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }

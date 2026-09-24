@@ -360,7 +360,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `gui/` — `--gui`: the window. `paint.rs` turns the same cell grid into
   pixels, `input.rs` says a window's keys the way the editor already listens,
   `colors.rs` is the palette a terminal would otherwise have supplied, and
-  `icon.rgba` is the icon it carries for the platforms that take one.
+  `icon.rgba` and `icon.png` are the icon it carries for the platforms that
+  take one from the program.
 - `mouse.rs` — the window's mouse: a screen cell back into a place in the
   text, and clicks and drags into a cursor and a selection. Only the window
   has one, so only the window builds it.
@@ -2263,12 +2264,19 @@ rather than one file:
   application, so `packaging/macos/bundle.sh` builds `jack.app` around
   whichever `jack` is on the path: an icon, a name in the menu bar, and a
   launcher that runs `jack --gui`. It wraps rather than copies, so upgrading
-  the formula upgrades the app. An `.icns` is a run of tagged pictures where
-  each tag stands for one size and only that size — `ic13` is 128 points at
-  two pixels each, so 256 — and a picture filed under the wrong tag does not
-  come out smaller, it makes macOS throw the file out and draw the generic
-  executable icon instead. A test walks the tags and checks the sizes, since
-  this is otherwise a mistake that can only be seen on a mac.
+  the formula upgrades the app. An `.icns` is a run of tagged pictures, and a
+  tag stands for one size and one encoding: `ic13` is 128 points at two pixels
+  each, so 256, and `ic04` is not a PNG at all. A picture under the wrong tag
+  is not scaled — macOS throws the file out and draws the generic executable
+  icon — so the tags are the ones `iconutil` itself writes, and a test walks
+  them and checks the sizes.
+
+  A bundle only answers for a program started as an application. `jack --gui`
+  run from a shell is a bare binary, and macOS gives it the generic icon
+  whatever `jack.app` says. So the program hands macOS an icon itself when it
+  starts — `setApplicationIconImage`, with the same drawing as a PNG — and the
+  Dock shows it either way. That is the only Objective-C in jack, which is why
+  CI builds and tests the window on a mac as well.
 
 ## Markdown, rendered
 

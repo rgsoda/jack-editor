@@ -54,3 +54,23 @@ jobs:
       # nobody reads, and the count was zero when this was written.
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo clippy --locked --all-targets --features gui -- -D warnings
+
+  # The window on a mac, which is the one platform with code in it that no
+  # Linux build compiles: the Dock icon is Objective-C, and a mistake there is
+  # otherwise heard about from the mac rather than from CI.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - run: cargo test --locked --features gui
+      - run: cargo clippy --locked --all-targets --features gui -- -D warnings

@@ -338,6 +338,7 @@ impl ApplicationHandler<Message> for App<'_> {
             return;
         }
         window.request_redraw();
+        dock_icon();
         self.window = Some(window);
     }
 
@@ -493,6 +494,39 @@ fn icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(ICON.to_vec(), ICON_SIDE, ICON_SIDE).ok()
 }
 
+/// The same icon as a PNG, which is what macOS reads.
+#[cfg(target_os = "macos")]
+const ICON_PNG: &[u8] = include_bytes!("icon.png");
+
+/// macOS takes the Dock icon from the application bundle, and a `jack --gui`
+/// started from a terminal is a binary with no bundle around it - which is
+/// the generic executable icon people see. The running application can be
+/// handed one directly, though, and that covers both ways of starting it:
+/// from `jack.app`, where the bundle's icon is this same drawing anyway, and
+/// from a shell, where there is nothing else to go on.
+#[cfg(target_os = "macos")]
+fn dock_icon() {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    let Some(main) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(ICON_PNG);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    // SAFETY: the main thread, which the marker is the proof of, and an image
+    // that was made here and is handed over whole.
+    unsafe { NSApplication::sharedApplication(main).setApplicationIconImage(Some(&image)) };
+}
+
+/// Every other platform takes its icon from the window or from a desktop
+/// entry, both of which are settled by the time this would be called.
+#[cfg(not(target_os = "macos"))]
+fn dock_icon() {}
+
 /// The window's name to the desktop - `app_id` on Wayland, the class on X11 -
 /// which is what a window rule, a taskbar and an icon theme all look for. Not
 /// the title: that changes with the file, and a rule that follows the file is
@@ -570,15 +604,17 @@ mod tests {
         assert_eq!(&icns[..4], b"icns");
         assert_eq!(word(4), icns.len(), "the length in the header is the file's");
 
+        // The tags `iconutil` itself writes, and nothing else: `ic04` and
+        // `ic05` hold raw ARGB rather than a PNG, and a PNG filed under one
+        // of those is enough for macOS to reject the file.
         let sizes = [
-            (b"ic04", 16),
-            (b"ic05", 32),
+            (b"icp4", 16),
+            (b"icp5", 32),
+            (b"icp6", 64),
             (b"ic07", 128),
             (b"ic08", 256),
             (b"ic09", 512),
             (b"ic10", 1024),
-            (b"ic11", 32),
-            (b"ic12", 64),
             (b"ic13", 256),
             (b"ic14", 512),
         ];

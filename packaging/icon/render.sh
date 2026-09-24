@@ -22,27 +22,25 @@ done
 # winit takes and the one that needs no decoder to read back.
 magick "hicolor/64x64/apps/jack.png" -depth 8 RGBA:../../src/gui/icon.rgba
 
-# macOS's icon set. Its format is a header and a run of tagged PNGs, so it is
-# built here rather than only on a mac with `iconutil`. Each tag holds one
-# size and only that size; the builder checks what it is putting in.
+# macOS's icon set: a header and a run of tagged PNGs, built here rather than
+# only on a mac with `iconutil`. The tags are exactly the ones `iconutil`
+# itself writes from an iconset, and each holds one size and only that size -
+# a picture filed under a tag that means another size is not scaled, it makes
+# macOS throw the file out and draw the generic icon instead.
 rsvg-convert -w 1024 -h 1024 jack.svg -o jack-1024.png
 python3 - <<'PYTHON'
 import struct
 
-# What each tag means to macOS: a four-letter type and the one size of PNG it
-# is allowed to hold. The @2x tags are the pixel size, not the point size -
-# `ic13` is 128 points at two pixels each, so 256 - and a file whose picture
-# is the wrong size for its tag is not read as a smaller icon, it is thrown
-# out whole and the app shows the generic one.
+# Type, and the pixels it holds. `icp4 icp5 icp6` are 16, 32 and 64; the rest
+# are points at one or two pixels each - `ic13` is 128 points at two, so 256.
 wanted = [
-    (b"ic04", 16),
-    (b"ic05", 32),
+    (b"icp4", 16),
+    (b"icp5", 32),
+    (b"icp6", 64),
     (b"ic07", 128),
     (b"ic08", 256),
     (b"ic09", 512),
     (b"ic10", 1024),
-    (b"ic11", 32),
-    (b"ic12", 64),
     (b"ic13", 256),
     (b"ic14", 512),
 ]
@@ -65,6 +63,10 @@ with open("jack.icns", "wb") as icns:
     icns.write(b"icns" + struct.pack(">I", len(blocks) + 8) + blocks)
 PYTHON
 rm -f jack-1024.png
+
+# What the binary hands to macOS at runtime, for a `jack --gui` started from a
+# terminal: that has no bundle to take a Dock icon from, so it sets one.
+cp "hicolor/256x256/apps/jack.png" ../../src/gui/icon.png
 
 if command -v iconutil > /dev/null; then
     rm -rf jack.iconset
