@@ -149,7 +149,7 @@ fn register(handler: &OpenDocuments) {
     // selector, and the two codes are the event it is written for.
     unsafe {
         manager.setEventHandler_andSelector_forEventClass_andEventID(
-            &***handler,
+            handler,
             sel!(handleOpenDocuments:withReplyEvent:),
             CORE_EVENT_CLASS,
             OPEN_DOCUMENTS,
@@ -174,13 +174,13 @@ pub fn watch_for_opened_files() {
     // selector, and both names are AppKit's own.
     unsafe {
         centre.addObserver_selector_name_object(
-            &***handler,
+            &handler,
             sel!(appLaunching:),
             Some(NSApplicationWillFinishLaunchingNotification),
             None,
         );
         centre.addObserver_selector_name_object(
-            &***handler,
+            &handler,
             sel!(appLaunching:),
             Some(NSApplicationDidFinishLaunchingNotification),
             None,
