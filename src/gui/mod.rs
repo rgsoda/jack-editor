@@ -8,6 +8,10 @@
 
 mod colors;
 mod input;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+use mac::{dock_icon, opened_files, watch_for_opened_files};
 mod paint;
 
 /// Every font family on this machine, for `:guifonts`.
@@ -302,6 +306,25 @@ impl App<'_> {
     }
 }
 
+impl App<'_> {
+    /// Open what the desktop has handed over - dropped on the window, dropped
+    /// on the Dock icon, or opened with jack from a file manager. A directory
+    /// is listed, the same as it would be on the command line.
+    fn open_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            if let Err(err) = self.editor.open_path(&path) {
+                self.editor.message = format!("{err:#}");
+            }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+}
+
 impl ApplicationHandler<Message> for App<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -339,6 +362,7 @@ impl ApplicationHandler<Message> for App<'_> {
         }
         window.request_redraw();
         dock_icon();
+        watch_for_opened_files();
         self.window = Some(window);
     }
 
@@ -356,6 +380,9 @@ impl ApplicationHandler<Message> for App<'_> {
                     crossterm::event::KeyModifiers::CONTROL,
                 )));
             }
+            // A file dragged onto the window, which every desktop has its
+            // own way of offering and winit has one way of reporting.
+            WindowEvent::DroppedFile(path) => self.open_files(vec![path]),
             WindowEvent::RedrawRequested => self.frame(),
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
@@ -432,6 +459,10 @@ impl ApplicationHandler<Message> for App<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Files the desktop has asked for since the last time round: a drop
+        // on the Dock icon, or a double-click in Finder. They arrive from
+        // outside the loop, so this is where they are picked up.
+        self.open_files(opened_files());
         // A drag pointing past the top or bottom of its window scrolls for as
         // long as it is held there, and a pointer held still sends nothing.
         // So the scrolling is on a clock of its own.
@@ -494,38 +525,17 @@ fn icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(ICON.to_vec(), ICON_SIDE, ICON_SIDE).ok()
 }
 
-/// The same icon as a PNG, which is what macOS reads.
-#[cfg(target_os = "macos")]
-const ICON_PNG: &[u8] = include_bytes!("icon.png");
-
-/// macOS takes the Dock icon from the application bundle, and a `jack --gui`
-/// started from a terminal is a binary with no bundle around it - which is
-/// the generic executable icon people see. The running application can be
-/// handed one directly, though, and that covers both ways of starting it:
-/// from `jack.app`, where the bundle's icon is this same drawing anyway, and
-/// from a shell, where there is nothing else to go on.
-#[cfg(target_os = "macos")]
-fn dock_icon() {
-    use objc2::AnyThread;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::{MainThreadMarker, NSData};
-
-    let Some(main) = MainThreadMarker::new() else {
-        return;
-    };
-    let data = NSData::with_bytes(ICON_PNG);
-    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
-        return;
-    };
-    // SAFETY: the main thread, which the marker is the proof of, and an image
-    // that was made here and is handed over whole.
-    unsafe { NSApplication::sharedApplication(main).setApplicationIconImage(Some(&image)) };
-}
-
 /// Every other platform takes its icon from the window or from a desktop
-/// entry, both of which are settled by the time this would be called.
+/// entry, both of which are settled by the time this would be called, and
+/// hands a program its files on the command line like anything else.
 #[cfg(not(target_os = "macos"))]
 fn dock_icon() {}
+#[cfg(not(target_os = "macos"))]
+fn watch_for_opened_files() {}
+#[cfg(not(target_os = "macos"))]
+fn opened_files() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
 
 /// The window's name to the desktop - `app_id` on Wayland, the class on X11 -
 /// which is what a window rule, a taskbar and an icon theme all look for. Not

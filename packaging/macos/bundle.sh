@@ -67,6 +67,31 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>$version</string>
     <key>CFBundleVersion</key>
     <string>$version</string>
+    <!-- What jack will open. macOS hands a document to an application by
+         sending it an event rather than by putting it on a command line, so
+         this half only says what may be dropped on the icon or opened with
+         jack; the editor listens for the event itself. `Alternate` rather
+         than `Owner`: jack will open your text, but it does not claim to be
+         what every text file belongs to. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Text</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.text</string>
+                <string>public.plain-text</string>
+                <string>public.source-code</string>
+                <string>public.script</string>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
@@ -80,5 +105,6 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Versions/A/Framewor
 [ -x "$lsregister" ] && "$lsregister" -f "$app" || true
 
 echo "$app"
+echo "drop a file on it, or open one with it - jack takes both."
 echo "if the Dock or Finder still shows the old icon, it is their cache:"
 echo "  killall Dock; killall Finder"

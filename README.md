@@ -304,6 +304,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   plain event. No buffers in it.
 - `editor/lsp.rs` — the editor's side: opening buffers in servers, sending
   their text when it changes, putting diagnostics on their text, and `gd`.
+- `gui/mac.rs` — what macOS does differently: the Dock icon handed to the
+  running application, and the Apple Event that is how a mac gives a program
+  a file to open. The only Objective-C there is.
 - `editor/listing.rs` — a directory as a buffer: what is in it, in the order it
   is read in, and what `enter` and `-` do with the line under the cursor.
 - `window.rs` — how the screen is divided: a tree of splits with window ids at
@@ -2296,8 +2299,23 @@ rather than one file:
   run from a shell is a bare binary, and macOS gives it the generic icon
   whatever `jack.app` says. So the program hands macOS an icon itself when it
   starts — `setApplicationIconImage`, with the same drawing as a PNG — and the
-  Dock shows it either way. That is the only Objective-C in jack, which is why
-  CI builds and tests the window on a mac as well.
+  Dock shows it either way.
+
+  The other thing macOS does its own way is opening a file. Everywhere else a
+  file manager runs your program with the file on the command line; macOS
+  launches the application and *sends* it the file, as an Apple Event, and a
+  program that does not listen for that opens nothing when you drop something
+  on its Dock icon. So jack listens: an `NSAppleEventManager` handler for
+  `'aevt'`/`'odoc'` puts the paths in a queue, and the run loop opens them at
+  the top of the next turn. The bundle's `CFBundleDocumentTypes` is the other
+  half — it says text, source and folders may be dropped, ranked `Alternate`
+  because jack will open your text without claiming to own it. Both live in
+  `src/gui/mac.rs`, which is all the Objective-C in jack, and is why CI builds
+  and tests the window on a mac as well.
+
+  A file dragged onto the window itself is winit's business rather than ours
+  — `WindowEvent::DroppedFile`, which winit answers on macOS, Windows and X11,
+  but not on Wayland.
 
 ## Markdown, rendered
 
