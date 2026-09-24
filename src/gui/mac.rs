@@ -66,27 +66,26 @@ fn path_of(item: &NSAppleEventDescriptor) -> Option<PathBuf> {
 
 /// `%20` back into a space, and so on for anything else a URL escaped.
 fn percent_decoded(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut bytes = text.bytes();
-    let mut pending: Vec<u8> = Vec::new();
-    while let Some(byte) = bytes.next() {
-        if byte == b'%' {
-            let digits: String = bytes.by_ref().take(2).map(char::from).collect();
-            if let Ok(decoded) = u8::from_str_radix(&digits, 16) {
-                pending.push(decoded);
-                continue;
-            }
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        // Three bytes make one, but only if the two after the percent really
+        // are hex: `100%/x` is a percent with a path after it, and reading it
+        // as an escape eats the path.
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(digits) = std::str::from_utf8(&bytes[index + 1..index + 3])
+            && let Ok(byte) = u8::from_str_radix(digits, 16)
+        {
+            out.push(byte);
+            index += 3;
+            continue;
         }
-        if !pending.is_empty() {
-            out.push_str(&String::from_utf8_lossy(&pending));
-            pending.clear();
-        }
-        out.push(char::from(byte));
+        out.push(bytes[index]);
+        index += 1;
     }
-    if !pending.is_empty() {
-        out.push_str(&String::from_utf8_lossy(&pending));
-    }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 define_class!(
@@ -230,8 +229,11 @@ mod tests {
         assert_eq!(percent_decoded("/Users/soda/a%20file.md"), "/Users/soda/a file.md");
         assert_eq!(percent_decoded("/plain/path.rs"), "/plain/path.rs");
         // Several bytes of one character, which is one escape each.
-        assert_eq!(percent_decoded("/z%C5%BAd%C5%BAb%C5%82o.txt"), "/źdźbło.txt");
-        // A stray percent is a percent, not the start of anything.
+        assert_eq!(percent_decoded("/%C5%BAd%C5%BAb%C5%82o.txt"), "/źdźbło.txt");
+        // A stray percent is a percent, not the start of anything, and what
+        // follows it is not to be eaten.
         assert_eq!(percent_decoded("/100%/x"), "/100%/x");
+        assert_eq!(percent_decoded("/ends/with%"), "/ends/with%");
+        assert_eq!(percent_decoded("/a%2"), "/a%2");
     }
 }
