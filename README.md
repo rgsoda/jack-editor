@@ -35,6 +35,14 @@ with. From source it is a feature rather than a default, because building jack
 for a server should not build a font stack:
 `cargo install --path . --features gui`.
 
+`jack-gui` is the same binary under a second name, and a name with `gui` in it
+opens a window without being told to — `gvim`'s old trick. A launcher entry, a
+Dock item or a file association names a program and has nowhere to put a flag,
+which is what the second name is for. Homebrew installs it as a symlink beside
+`jack`; `packaging/linux/install.sh` makes one next to whichever `jack` is on
+the path, which is what a `cargo install` wants. `ln -sfn "$(command -v jack)"
+~/.local/bin/jack-gui` is the whole of it by hand.
+
 A window wants a launcher entry as well as a binary, so `packaging/` carries
 the icon and what installs it:
 
@@ -2182,7 +2190,14 @@ business carrying a windowing library and a font stack it never opens, and
 because a machine with no display should still build one.
 `cargo install --path . --features gui` puts it in, and the release builds it
 for macOS and glibc Linux; without it `--gui` says so rather than failing
-strangely.
+strangely — and says the same when the binary was run under a windowed name.
+
+The flag is not the only way to ask. A `jack` whose name has `gui` in it —
+`jack-gui`, a symlink beside the binary — opens a window without being told
+to, which is how `gvim` has always done it and what launchers need: a desktop
+entry can carry a flag, but a macOS Dock item or a file association cannot.
+The name is read from argv[0]'s last component, so a `jack` living in a
+directory called `gui` is still the terminal one.
 
 Four things were the terminal's rather than the editor's, and those are what
 a window has to answer for itself:

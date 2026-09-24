@@ -19,6 +19,21 @@ for size in 16 24 32 48 64 128 256 512; do
         "$into/icons/hicolor/${size}x${size}/apps/jack.png"
 done
 
+# `jack-gui` is the same binary under a name that opens a window - what the
+# desktop entry could do with a flag, but a Dock item or a file association
+# cannot. Beside whichever jack is on the path, since that is the one the
+# launcher will find.
+jack="$(command -v jack || true)"
+if [ -n "$jack" ]; then
+    jack="$(readlink -f "$jack")"
+    if ln -sfn "$jack" "$(dirname "$jack")/jack-gui" 2> /dev/null; then
+        echo "jack-gui is beside $jack"
+    else
+        echo "could not write beside $jack - for a windowed name, run:"
+        echo "  sudo ln -sfn $jack $(dirname "$jack")/jack-gui"
+    fi
+fi
+
 # Both caches are hints rather than requirements: a desktop that has neither
 # tool reads the directories itself.
 command -v gtk-update-icon-cache > /dev/null && gtk-update-icon-cache -q -f -t "$into/icons/hicolor" || true

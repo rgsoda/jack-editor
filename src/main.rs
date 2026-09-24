@@ -94,6 +94,22 @@ fn start_directory(paths: &[String]) -> Option<&String> {
     }
 }
 
+/// Whether to open a window: because `--gui` says so, or because the name the
+/// program was run under has `gui` in it. A second name for the one binary -
+/// `jack-gui`, a symlink beside it - is how `gvim` has always done this, and
+/// it is what a launcher wants: a desktop entry, a Dock item or a file
+/// association names a program, and has nowhere to put a flag.
+fn wants_a_window(program: Option<&str>, paths: &[String]) -> bool {
+    if paths.iter().any(|argument| argument == "--gui") {
+        return true;
+    }
+    // The file name only: a jack in ~/gui/bin is not a windowed jack.
+    program
+        .map(|name| std::path::Path::new(name).file_name().unwrap_or(name.as_ref()))
+        .map(|name| name.to_string_lossy().to_lowercase().contains("gui"))
+        .unwrap_or(false)
+}
+
 /// What `--version` and `--help` say. Every packaging recipe reaches for one
 /// of these to check the thing it just installed actually runs, and a text
 /// editor that has to be opened to answer is no use to a build script.
@@ -104,6 +120,7 @@ Usage:
   jack [file ...]   open files
   jack <dir>        start in that directory with the file picker open
   jack              an empty buffer
+  jack-gui [...]    the same, in a window - a second name for this binary
 
 Options:
   --gui             open a window instead of using this terminal
@@ -131,7 +148,9 @@ fn flag(paths: &[String]) -> Option<String> {
 }
 
 fn main() -> Result<()> {
-    let mut paths: Vec<String> = std::env::args().skip(1).collect();
+    let mut arguments = std::env::args();
+    let program = arguments.next();
+    let mut paths: Vec<String> = arguments.collect();
 
     if let Some(text) = flag(&paths) {
         print!("{text}");
@@ -140,8 +159,12 @@ fn main() -> Result<()> {
 
     // `--gui` is not a file, and everything after it is read the same way it
     // would have been without it.
-    let gui = paths.iter().any(|argument| argument == "--gui");
+    let gui = wants_a_window(program.as_deref(), &paths);
     paths.retain(|argument| argument != "--gui");
+    if gui && !cfg!(feature = "gui") {
+        println!("jack: built without the window frontend (cargo install jack-editor --features gui)");
+        return Ok(());
+    }
 
     // A directory is not a buffer: it means start in that project with the
     // file picker open. Nothing here is a mode - the picker already walks the
@@ -394,7 +417,7 @@ fn cursor_style(mode: Mode) -> SetCursorStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::{flag, start_directory};
+    use super::{flag, start_directory, wants_a_window};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -417,6 +440,17 @@ mod tests {
         // Files are not flags, whatever they are called.
         assert_eq!(flag(&args(&["src/main.rs", "README.md"])), None);
         assert_eq!(flag(&[]), None);
+    }
+
+    #[test]
+    fn a_name_with_gui_in_it_opens_a_window_without_being_told_to() {
+        assert!(wants_a_window(Some("/usr/local/bin/jack-gui"), &[]));
+        assert!(wants_a_window(Some("gui-jack"), &args(&["README.md"])));
+        assert!(!wants_a_window(Some("/opt/homebrew/bin/jack"), &args(&["README.md"])));
+        // The flag still says it, whatever the program is called.
+        assert!(wants_a_window(Some("jack"), &args(&["--gui"])));
+        // And a directory in the path is not a name.
+        assert!(!wants_a_window(Some("/home/gui/bin/jack"), &[]));
     }
 
     #[test]

@@ -38,6 +38,7 @@ class Jack < Formula
 
   def install
     system "cargo", "install", *std_cargo_args
+    bin.install_symlink bin/"jack" => "jack-gui"
   end
 
   test do
@@ -107,6 +108,10 @@ $linux_intel
 
   def install
     bin.install "jack"
+    # A second name for the same binary, which opens a window without being
+    # asked: a launcher or a Dock item names a program and has nowhere to put
+    # a flag.
+    bin.install_symlink bin/"jack" => "jack-gui"
     # The icon, the desktop entry and the two scripts that install them: a
     # windowed editor wants a launcher entry as well as a binary, and a
     # bottled install has nowhere else to get them from.
