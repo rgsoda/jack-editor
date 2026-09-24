@@ -91,6 +91,10 @@
 "ui.cursorline" = { bg = "#44475a" }
 "ui.linenr" = { fg = "#6272a4" }
 "ui.linenr.selected" = { fg = "#f8f8f2", bold = true }
+# A directory opened as a buffer: the entries that can be gone into, and the
+# way back out at the top of it.
+"ui.listing.directory" = { fg = "#8be9fd", bold = true }
+"ui.listing.parent" = { fg = "#6272a4", bold = true }
 "ui.search.match" = { fg = "#282a36", bg = "#f1fa8c" }
 "ui.bracket.match" = { fg = "#ff79c6", bold = true, underline = true }
 "ui.gutter.added" = { fg = "#50fa7b" }

@@ -27,6 +27,7 @@ use crate::window::{self, Direction, Layout, Rect, Window};
 
 mod block;
 mod git;
+pub(crate) mod listing;
 mod lsp;
 mod replace;
 mod surround;
@@ -494,10 +495,21 @@ impl Editor {
             return Ok(Editor::scratch());
         }
 
+        // A directory among the arguments is listed rather than read as a
+        // file, which reading it would fail at anyway.
+        if paths[0].as_ref().is_dir() {
+            let mut editor = Editor::scratch();
+            for path in paths {
+                editor.open_path(path)?;
+            }
+            editor.switch_to(0);
+            return Ok(editor);
+        }
+
         let mut editor = Editor::with_views(vec![View::new(Document::open(&paths[0])?)]);
         editor.attach_syntax(0);
         for path in &paths[1..] {
-            editor.open_file(path)?;
+            editor.open_path(path)?;
         }
         editor.switch_to(0);
         Ok(editor)
@@ -1209,7 +1221,7 @@ impl Editor {
             ("unmap", argument) => self.unmap_leader(argument),
             ("e" | "edit", "") => self.reload(force),
             ("e" | "edit", path) => {
-                if let Err(err) = self.open_file(path) {
+                if let Err(err) = self.open_path(path) {
                     self.message = format!("{err:#}");
                 }
             }
@@ -1316,6 +1328,12 @@ impl Editor {
     pub fn reload_changed_files(&mut self) {
         let (mut reloaded, mut conflicts) = (Vec::new(), Vec::new());
         for index in 0..self.views.len() {
+            // A listing's path is a directory, which no amount of stamping
+            // makes into a file to reload. It is read again when it is
+            // opened again, which is when anyone is looking at it.
+            if self.views[index].listing {
+                continue;
+            }
             if !self.views[index].doc.changed_on_disk() {
                 continue;
             }
@@ -3080,6 +3098,11 @@ impl Editor {
     /// Note where the cursor is in a buffer that is about to go.
     fn remember_position(&mut self, index: usize) {
         let view = &self.views[index];
+        // A listing's path is a directory, and the list of where a cursor was
+        // left is short: it is for files you were reading.
+        if view.listing {
+            return;
+        }
         if let Some(path) = view.doc.path.as_deref() {
             let (line, column) = view.cursor_coords();
             self.positions.set(path, line, column);
@@ -3853,6 +3876,16 @@ impl Editor {
     /// Write the buffer, optionally to a new path. `force` overrides the guard
     /// against overwriting a file that has changed behind our back.
     pub fn write(&mut self, path: Option<PathBuf>, force: bool) {
+        // A listing is a picture of a directory, not the directory: writing
+        // it would mean renaming and deleting what it names, which is a
+        // feature this does not have yet.
+        if self.view().listing && path.is_none() {
+            self.message = format!(
+                "{} is a directory - a listing is not written back",
+                self.view().doc.display_name()
+            );
+            return;
+        }
         if let Some(path) = path {
             self.view_mut().doc.set_path(path);
         }

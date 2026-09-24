@@ -105,6 +105,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^w h` `^w j` `^w k` `^w l` | go to the window left / below / above / right (arrows too) |
 | `^w w` `^w W` | next / previous window |
 | `^w c` `^w q` `^w o` | close this window / close it, quitting if it is the last / close all the others |
+| `-` | open the directory this file is in, as a buffer, and again to go up |
+| `enter` `^v` `^s` | in a listing: open what the cursor is on / beside / below |
 | `<space>b` `<space>f` `<space>s` | pick a buffer / a file / a search hit |
 | `<space>d` | pick a definition in this buffer |
 | `<space>l` | pick a line in this buffer |
@@ -179,7 +181,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:sh` | a shell; `exit` comes back |
 | `^z` `:suspend` | stop jack and go back to the shell; `fg` comes back |
 | `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
-| `:e path` `:e!` | open a file, reload this one from disk |
+| `:e path` `:e!` | open a file or list a directory, reload this one from disk |
 | `:s/old/new/` | substitute on this line (`g` every match, `i`/`I` case, `n` count only) |
 | `:%s/old/new/g` | over the whole file — `:3,7s`, `:.,$s` and `:'<,'>s` name other lines |
 | `:s//new/` | an empty pattern means the last search |
@@ -294,6 +296,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   plain event. No buffers in it.
 - `editor/lsp.rs` — the editor's side: opening buffers in servers, sending
   their text when it changes, putting diagnostics on their text, and `gd`.
+- `editor/listing.rs` — a directory as a buffer: what is in it, in the order it
+  is read in, and what `enter` and `-` do with the line under the cursor.
 - `window.rs` — how the screen is divided: a tree of splits with window ids at
   the leaves, the rectangles it works out to, and which window is beside which.
   Arithmetic only; what a window shows is the editor's.
@@ -2333,6 +2337,43 @@ only reads, does not copy back out what it has just pasted.
 
 The numbered registers `1`-`9` are not implemented, nor are the read-only
 ones (`%`, `.`, `:`).
+
+## A directory as a buffer
+
+A picker answers "where is the file called something like this". It is the
+wrong tool for the other question — what is in here — which is the one you have
+when you are new to a project, or looking for something whose name you never
+knew. `dired` and `oil.nvim` answer it by making a directory a buffer, and so
+does this.
+
+`-` opens the directory the current file is in, with the cursor on the file you
+came from; `-` again goes up a level, cursor on the directory you just left.
+`enter` opens what the cursor is on — into a directory, or a file in this
+window. `^v` and `^s` open it in a split beside or below, which is what those
+keys do in the picker. `:e src/` lists a directory too, and so does a directory
+named on the command line alongside files.
+
+The listing is text, and that is the whole point: `j` and `k` walk it, `/`
+searches it, `*` finds the name under the cursor further down, `^o` walks back
+out of wherever you went, a split shows two directories at once, and none of
+the keys are new. The way up is first, then the directories with a trailing
+slash, then the files, each sorted without regard to case. Dotfiles are shown —
+a listing that hides half the directory is the wrong answer to "what is in
+here", and `/` narrows it down anyway.
+
+A listing buffer is marked as one, which is what keeps the rest of the editor
+from treating a directory as a file: it is not highlighted as source, not
+written back (`:w` says so rather than trying), not reloaded from disk behind
+the cursor, and not remembered in the list of where a cursor was left. Coming
+back to a directory reads it again, in the buffer it already had, so it is
+never a stale picture and never a second tab of the same place. Its colours are
+its own: `ui.listing.directory` and `ui.listing.parent`, handed to the drawing
+code in the same shape a grammar's highlights arrive in, so nothing below knows
+the difference.
+
+What is deliberately not here yet is oil's editable listing — renaming a file
+by editing its line, deleting one by deleting it, and `:w` to mean it. That is
+a good idea and a separate change; looking around comes first.
 
 ## Picker
 

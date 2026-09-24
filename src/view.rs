@@ -139,6 +139,10 @@ pub enum Screen {
 /// there is exactly one view per open file, and `Editor` holds the list.
 pub struct View {
     pub doc: Document,
+    /// Whether this buffer is a directory listing rather than a file. A
+    /// listing is text like any other, but it is not highlighted as source,
+    /// not written back, and not reloaded from disk behind the cursor.
+    pub listing: bool,
     pub sel: Selection,
     /// Put the cursor's line in the middle of the screen at the next frame,
     /// rather than scrolling only as far as it takes to see it. Set when a
@@ -254,6 +258,7 @@ impl View {
             hints_failed: None,
             edits: 0,
             lsp: Lsp::Untried,
+            listing: false,
             doc,
             sel: Selection::point(0),
             goal_col: None,
@@ -267,6 +272,11 @@ impl View {
             signs_revision: None,
             centre: false,
         }
+    }
+
+    /// A view over a directory listing: the same buffer, marked as one.
+    pub fn listing(doc: Document) -> Self {
+        View { listing: true, ..View::new(doc) }
     }
 
     /// Set up highlighting for the document's language, if we know it. Returns

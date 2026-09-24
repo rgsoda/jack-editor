@@ -1296,6 +1296,12 @@ impl Highlights {
         Highlights { start: 0, styles: Vec::new() }
     }
 
+    /// Styles worked out by something other than a grammar - a directory
+    /// listing - in the form the drawing code already reads.
+    pub fn painted(start: usize, styles: Vec<Option<Style>>) -> Self {
+        Highlights { start, styles }
+    }
+
     pub fn style_at(&self, byte: usize) -> Option<Style> {
         self.styles.get(byte.checked_sub(self.start)?).copied().flatten()
     }

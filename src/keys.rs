@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::{Editor, Mode};
+use crate::picker::Open;
 use crate::object;
 use crate::register::SYSTEM;
 use crate::view::{Find, Move, Reveal, Screen, Selection};
@@ -299,6 +300,12 @@ impl Keys {
         if ctrl {
             match key.code {
                 KeyCode::Char('q') => return Action::Quit { force: false },
+                // A listing has nothing to save, and `^s` is what the picker
+                // opens a horizontal split with - so on one it does that.
+                KeyCode::Char('s') if editor.in_listing() => {
+                    editor.listing_enter(Open::Below);
+                    return Action::Continue;
+                }
                 KeyCode::Char('s') => {
                     editor.save();
                     return Action::Continue;
@@ -1044,6 +1051,15 @@ impl Keys {
             //
             // `^i` and `tab` are the same byte in a terminal, so they are the
             // same key here whether you think of it as vim's or not.
+            // In a directory listing, enter opens what the cursor is on and
+            // the picker's split chords open it in a window - before `^v`,
+            // which is the paste everywhere else and means nothing here.
+            KeyCode::Enter if editor.in_listing() => editor.listing_enter(Open::Here),
+            KeyCode::Char('v') if ctrl && editor.in_listing() => editor.listing_enter(Open::Beside),
+            // `-` is the way out of a file into the directory it is in, and
+            // out of a directory into the one above it.
+            KeyCode::Char('-') if !ctrl => editor.listing_up(),
+
             KeyCode::Char('c') if ctrl => editor.clip_copy(),
             KeyCode::Char('x') if ctrl => editor.clip_cut(),
             KeyCode::Char('v') if ctrl => editor.clip_paste(),

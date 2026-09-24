@@ -82,7 +82,12 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     } else {
         view.doc.line_to_byte(last_row)
     };
-    let highlights = view.highlights(first_byte..last_byte, &editor.theme);
+    let highlights = match view.listing {
+        // A listing's colours come from what the lines name, not from a
+        // grammar - but they arrive in the same shape.
+        true => crate::editor::listing::highlights(view, first_byte..last_byte, &editor.theme),
+        false => view.highlights(first_byte..last_byte, &editor.theme),
+    };
 
     let gutter = editor.gutter_width_for(view);
     let signs = editor.sign_width();
