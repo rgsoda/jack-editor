@@ -72,4 +72,4 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSString", "NSURL", "NSAppleEventDescriptor", "NSAppleEventManager", "objc2-core-services"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSString", "NSURL", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "objc2-core-services"] }

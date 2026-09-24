@@ -11,7 +11,7 @@ mod input;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
-use mac::{dock_icon, opened_files, watch_for_opened_files};
+use mac::{dock_icon, opened_files, opening_notes, watch_for_opened_files};
 mod paint;
 
 /// Every font family on this machine, for `:guifonts`.
@@ -466,6 +466,14 @@ impl ApplicationHandler<Message> for App<'_> {
         // on the Dock icon, or a double-click in Finder. They arrive from
         // outside the loop, so this is where they are picked up.
         self.open_files(opened_files());
+        // And anything the desktop asked for that jack could not make sense
+        // of, which is worth saying rather than looking like it was ignored.
+        if let Some(note) = opening_notes().pop() {
+            self.editor.message = note;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
         // A drag pointing past the top or bottom of its window scrolls for as
         // long as it is held there, and a pointer held still sends nothing.
         // So the scrolling is on a clock of its own.
@@ -537,6 +545,10 @@ fn dock_icon() {}
 fn watch_for_opened_files() {}
 #[cfg(not(target_os = "macos"))]
 fn opened_files() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+#[cfg(not(target_os = "macos"))]
+fn opening_notes() -> Vec<String> {
     Vec::new()
 }
 
