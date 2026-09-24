@@ -73,12 +73,15 @@ cat > "$app/Contents/Info.plist" <<PLIST
          jack; the editor listens for the event itself.
          Two entries, because macOS matches on both spellings and a drop is
          refused by whichever it consults: the text types it knows by name,
-         and everything else. `public.item` is the root every file and folder
-         conforms to, and `*` is the same claim in the older spelling - which
-         is the truth about a text editor, since a file that is not text is a
-         file you find that out about by opening it.
-         `Alternate` throughout: jack will open your text without claiming to
-         be what a text file belongs to. -->
+         and everything else. public.item is the root every file and folder
+         conforms to, and the star is the same claim in the older spelling -
+         which is the truth about a text editor, since a file that is not
+         text is a file you find that out about by opening it.
+         Alternate rank throughout: jack will open your text without claiming
+         to be what a text file belongs to.
+         No backticks in here, and nothing that looks like a variable: this
+         is a heredoc that the version number is substituted into, so the
+         shell reads it before macOS does. -->
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
