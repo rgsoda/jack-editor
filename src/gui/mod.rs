@@ -309,7 +309,9 @@ impl ApplicationHandler<Message> for App<'_> {
         }
         let (cell_w, cell_h) = self.painter.cell;
         let size = winit::dpi::PhysicalSize::new(COLUMNS * cell_w as u32, ROWS * cell_h as u32);
-        let attributes = named(Window::default_attributes().with_title("jack").with_inner_size(size));
+        let attributes = named(
+            Window::default_attributes().with_title("jack").with_inner_size(size).with_window_icon(icon()),
+        );
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(err) => {
@@ -476,6 +478,21 @@ impl ApplicationHandler<Message> for App<'_> {
     }
 }
 
+/// The icon the window carries, 64 square of raw RGBA - the one shape winit
+/// takes, and the one that needs no decoder to read back. `packaging/icon`
+/// draws it from `jack.svg`.
+///
+/// This is X11's and Windows' way of asking. Wayland does not take an icon
+/// from the program at all: it looks up the desktop entry that matches the
+/// app id, which is why `packaging/jack.desktop` exists, and macOS takes it
+/// from the bundle that `packaging/macos/bundle.sh` builds.
+const ICON: &[u8] = include_bytes!("icon.rgba");
+const ICON_SIDE: u32 = 64;
+
+fn icon() -> Option<winit::window::Icon> {
+    winit::window::Icon::from_rgba(ICON.to_vec(), ICON_SIDE, ICON_SIDE).ok()
+}
+
 /// The window's name to the desktop - `app_id` on Wayland, the class on X11 -
 /// which is what a window rule, a taskbar and an icon theme all look for. Not
 /// the title: that changes with the file, and a rule that follows the file is
@@ -529,6 +546,15 @@ fn which(program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_icon_is_the_shape_winit_asks_for() {
+        // Raw RGBA, so the size is the only thing that can be wrong with it -
+        // and a redrawn icon that came out the wrong size would otherwise be
+        // a window with no icon and nothing said about it.
+        assert_eq!(ICON.len(), (ICON_SIDE * ICON_SIDE * 4) as usize);
+        assert!(icon().is_some(), "winit took it");
+    }
 
     #[test]
     fn the_title_says_the_file_and_whether_it_has_been_changed() {

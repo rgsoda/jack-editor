@@ -35,6 +35,17 @@ with. From source it is a feature rather than a default, because building jack
 for a server should not build a font stack:
 `cargo install --path . --features gui`.
 
+A window wants a launcher entry as well as a binary, so `packaging/` carries
+the icon and what installs it:
+
+```sh
+./packaging/linux/install.sh          # the desktop entry and its icons
+./packaging/macos/bundle.sh           # jack.app, in /Applications
+```
+
+Both are in the released tarballs and in `$(brew --prefix)/share/jack`, so a
+binary install has them too. See [The icon](#the-icon).
+
 Releases are cut by tagging: `git tag v0.1.0 && git push --tags` builds five
 targets — glibc and static musl x86-64 Linux, arm64 Linux, and both macOS
 architectures — attaches a tarball and a checksum for each to a GitHub release,
@@ -348,7 +359,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   window share, so a frontend is a keyboard and a painter and decides nothing.
 - `gui/` — `--gui`: the window. `paint.rs` turns the same cell grid into
   pixels, `input.rs` says a window's keys the way the editor already listens,
-  `colors.rs` is the palette a terminal would otherwise have supplied.
+  `colors.rs` is the palette a terminal would otherwise have supplied, and
+  `icon.rgba` is the icon it carries for the platforms that take one.
 - `mouse.rs` — the window's mouse: a screen cell back into a place in the
   text, and clicks and drags into a cursor and a selection. Only the window
   has one, so only the window builds it.
@@ -367,6 +379,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   too.
 - `ui.rs` — draws the visible rows and the status line onto a `Surface`.
   Nothing here talks to the terminal.
+- `packaging/` — what is not the program: the Homebrew formula renderer, the
+  icon and everything drawn from it, the desktop entry, and the scripts that
+  install those where each platform looks.
 
 Edits flow one way: `View::edit` builds a `Transaction`, `Transaction::apply`
 mutates the rope and hands back the `Edit`s it performed in byte and
@@ -2222,6 +2237,33 @@ whole. On a mac, `cmd-c`, `cmd-x` and `cmd-v` are the clipboard three as well
 as `^c` `^x` `^v`, since that is where a mac keyboard keeps them; every other
 `cmd` chord is left to macOS. What you give up: ssh, tmux, and starting
 instantly.
+
+## The icon
+
+`packaging/icon/jack.svg` is four shapes — a rounded square in the background
+the editor draws on, the letter in Dracula's pink, and the block cursor after
+it in its purple. Four, because an icon is mostly seen at sixteen pixels in a
+taskbar, and anything finer than this turns to mush there. `render.sh` draws
+everything else from it: the eight sizes an icon theme keeps, the `.icns`
+macOS wants, and the raw RGBA blob the binary carries.
+
+Three platforms, three ways of asking, which is why there are three answers
+rather than one file:
+
+- **X11 and Windows** take the icon from the program, so the binary carries
+  one: 64 square of raw RGBA in `src/gui/icon.rgba`, handed to winit when the
+  window is made. Raw, because it is the one format winit takes and the only
+  one that needs no decoder to read back — a PNG would mean a dependency for
+  an icon.
+- **Wayland** takes no icon from the program at all. It looks up the desktop
+  entry whose name matches the window's app id, which is why the window sets
+  `jack` as its app id and `packaging/jack.desktop` is named `jack.desktop`.
+  `packaging/linux/install.sh` puts it and the icons where the spec says.
+- **macOS** takes it from the bundle. Homebrew installs a command, not an
+  application, so `packaging/macos/bundle.sh` builds `jack.app` around
+  whichever `jack` is on the path: an icon, a name in the menu bar, and a
+  launcher that runs `jack --gui`. It wraps rather than copies, so upgrading
+  the formula upgrades the app.
 
 ## Markdown, rendered
 

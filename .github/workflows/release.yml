@@ -126,6 +126,9 @@ jobs:
           name="jack-$VERSION-$TARGET"
           mkdir "$name"
           cp "target/$TARGET/release/jack" README.md LICENSE "$name/"
+          # The desktop entry and the icons, so a tarball is enough to put
+          # jack in a launcher rather than only on the path.
+          cp -r packaging "$name/"
           strip "$name/jack" || true
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"

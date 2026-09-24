@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- jack's icon: the letter and the cursor after it, in the colours the
+     editor draws itself in. Kept to four shapes so that it is still legible
+     at sixteen pixels, where anything finer turns to mush. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#282a36"/>
+  <circle cx="262" cy="122" r="32" fill="#ff79c6"/>
+  <path d="M 262 186 L 262 318 A 62 62 0 0 1 138 318"
+        fill="none" stroke="#ff79c6" stroke-width="58" stroke-linecap="round"/>
+  <rect x="326" y="186" width="84" height="222" rx="8" fill="#bd93f9"/>
+</svg>

@@ -107,6 +107,10 @@ $linux_intel
 
   def install
     bin.install "jack"
+    # The icon, the desktop entry and the two scripts that install them: a
+    # windowed editor wants a launcher entry as well as a binary, and a
+    # bottled install has nowhere else to get them from.
+    pkgshare.install "packaging/icon", "packaging/jack.desktop", "packaging/linux", "packaging/macos"
   end
 
   test do
