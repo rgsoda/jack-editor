@@ -137,22 +137,20 @@ pub struct Dog {
 /// it already, or adding one at the end. Commented lines are documentation
 /// and are left alone - the comment above a setting explains it, and a file
 /// that explains itself is the reason to edit in place rather than append.
-fn with_setting(text: &str, name: &str, value: &str) -> String {
-    let setting = format!("set {name}={value}");
+fn with_line(text: &str, setting: &str) -> String {
+    let name = command::setting_name(setting.trim().strip_prefix("set ").unwrap_or(setting));
     let sets_it = |line: &str| {
         let line = line.trim().trim_start_matches(':').trim_start();
-        line.strip_prefix("set ").is_some_and(|rest| {
-            rest.trim_start().split('=').next().is_some_and(|word| word.trim() == name)
-        })
+        line.strip_prefix("set ").is_some_and(|rest| command::setting_name(rest) == name)
     };
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     match lines.iter().position(|line| sets_it(line)) {
-        Some(at) => lines[at] = setting,
+        Some(at) => lines[at] = setting.to_string(),
         None => {
             if lines.last().is_some_and(|line| !line.trim().is_empty()) {
                 lines.push(String::new());
             }
-            lines.push(setting);
+            lines.push(setting.to_string());
         }
     }
     let mut out = lines.join("\n");
@@ -1216,6 +1214,7 @@ impl Editor {
                 }
             }
             ("set", option) => self.set_option(option),
+            ("setw", option) => self.set_and_save(option),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
             ("guifonts", _) => self.open_font_picker(),
@@ -1615,6 +1614,30 @@ impl Editor {
         }
     }
 
+    /// `:setw` - set, and write it down. The setting takes effect the moment
+    /// you type it, as `:set` does, and the line you typed goes into the
+    /// config file, so it is still true tomorrow. `:set` is the one for
+    /// trying something out; this is the one for keeping it.
+    ///
+    /// A setting the editor did not accept is not written: the file is for
+    /// what is true, and `:set` has already said what was wrong with it.
+    fn set_and_save(&mut self, option: &str) {
+        let option = option.trim();
+        if option.is_empty() {
+            self.message = "setw wants a setting: :setw number".into();
+            return;
+        }
+        self.message.clear();
+        self.set_option(option);
+        if !self.message.is_empty() {
+            return;
+        }
+        self.message = match self.save_line(&format!("set {option}")) {
+            Ok(path) => format!("set {option}, saved to {}", path.display()),
+            Err(complaint) => format!("set {option}, but {complaint}"),
+        };
+    }
+
     /// Write a `set name=value` into the config file, so a setting chosen
     /// rather than typed survives the session that chose it.
     ///
@@ -1624,6 +1647,12 @@ impl Editor {
     /// on the end. A file that does not exist yet is written with the
     /// documented defaults first, exactly as `:config` writes it.
     fn save_setting(&mut self, name: &str, value: &str) -> std::result::Result<PathBuf, String> {
+        self.save_line(&format!("set {name}={value}"))
+    }
+
+    /// One `set ...` line into the config file, replacing whatever set the
+    /// same option before it.
+    fn save_line(&mut self, line: &str) -> std::result::Result<PathBuf, String> {
         let Some(dir) = crate::theme::config_dir() else {
             return Err("there is no config directory: $HOME is not set".into());
         };
@@ -1633,7 +1662,7 @@ impl Editor {
             Err(_) => command::default_config(),
         };
         std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-        std::fs::write(&path, with_setting(&text, name, value))
+        std::fs::write(&path, with_line(&text, line))
             .map_err(|err| format!("{}: {err}", path.display()))?;
         Ok(path)
     }
@@ -4595,31 +4624,54 @@ mod tests {
     }
 
     #[test]
+    fn setw_writes_down_only_what_the_editor_understood() {
+        let mut e = editor("");
+        e.run_command("setw");
+        assert!(e.message.contains("wants a setting"), "{}", e.message);
+
+        // A setting that did not take is not a setting to keep: `:set` has
+        // already said what was wrong, and the config file is for what is
+        // true. Nothing here reaches the disk.
+        e.run_command("setw nosuchthing");
+        assert_eq!(e.message, "not an option: nosuchthing");
+        e.run_command("setw shiftwidth=99");
+        assert!(e.message.contains("wants 1 to 16"), "{}", e.message);
+        assert_eq!(e.indent.width, 4, "and it did not take");
+    }
+
+    #[test]
     fn a_saved_setting_replaces_its_line_or_goes_on_the_end() {
         // The line that sets it already is replaced where it stands, so the
         // comment above it goes on explaining it.
         let config = "# the window's font\nset guifont=monospace\nset number\n";
-        let after = with_setting(config, "guifont", "Hack Nerd Font");
+        let after = with_line(config, "set guifont=Hack Nerd Font");
         assert_eq!(after, "# the window's font\nset guifont=Hack Nerd Font\nset number\n");
 
         // A setting the file has never mentioned goes on the end, after a
         // blank line rather than jammed against what is there.
-        let after = with_setting("set number\n", "guifont", "Hack Nerd Font");
+        let after = with_line("set number\n", "set guifont=Hack Nerd Font");
         assert_eq!(after, "set number\n\nset guifont=Hack Nerd Font\n");
-        assert_eq!(with_setting("", "guifont", "Iosevka"), "set guifont=Iosevka\n");
+        assert_eq!(with_line("", "set guifont=Iosevka"), "set guifont=Iosevka\n");
 
         // A commented line is documentation, not a setting: it is left to
         // explain itself, and the real line goes on the end.
-        let after = with_setting("# set guifont=monospace\n", "guifont", "Iosevka");
+        let after = with_line("# set guifont=monospace\n", "set guifont=Iosevka");
         assert_eq!(after, "# set guifont=monospace\n\nset guifont=Iosevka\n");
 
         // Settings whose names start the same way are not each other.
-        let after = with_setting("set guifontsize=15\n", "guifont", "Iosevka");
+        let after = with_line("set guifontsize=15\n", "set guifont=Iosevka");
         assert_eq!(after, "set guifontsize=15\n\nset guifont=Iosevka\n");
-        assert_eq!(with_setting("set guifont=a\n", "guifont", "b"), "set guifont=b\n");
+        assert_eq!(with_line("set guifont=a\n", "set guifont=b"), "set guifont=b\n");
+
+        // A flag is the same setting whichever way round it is written, so
+        // turning one on replaces the line that turned it off rather than
+        // leaving the file saying both.
+        assert_eq!(with_line("set nonumber\n", "set number"), "set number\n");
+        assert_eq!(with_line("set number\n", "set nonumber"), "set nonumber\n");
+        assert_eq!(with_line("set number\n", "set relativenumber"), "set relativenumber\n");
 
         // And a line written the way it would be typed, with the colon.
-        assert_eq!(with_setting(":set guifont=a\n", "guifont", "b"), "set guifont=b\n");
+        assert_eq!(with_line(":set guifont=a\n", "set guifont=b"), "set guifont=b\n");
     }
 
     #[test]

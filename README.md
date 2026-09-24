@@ -197,6 +197,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
+| `:setw number` | set, and write it into the config file: the same options as `:set`, kept |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
 
@@ -645,6 +646,17 @@ walk, because this is a path being written, not a file being looked for, and a
 The list of commands `tab` offers and the `match` that runs them are two lists
 that have to agree, so a test walks the first through the second and fails if a
 name in one is not a command in the other. The same for `:set` and its options.
+
+`:set` is for trying something out and `:setw` is for keeping it: the same
+options, applied the same way, and then the line you typed is written into the
+config file. It edits that file the way a person would — the line that sets the
+same option is replaced where it stands, so the comment above it goes on
+explaining it, and an option the file has never mentioned goes on the end.
+`set nonumber` and `set number` are one setting written two ways, so turning
+something on replaces the line that turned it off rather than leaving the file
+saying both. A setting the editor did not accept is not written down: `:set`
+has already said what was wrong with it, and the file is for what is true.
+Choosing a font from `:guifonts` writes itself down the same way.
 
 `:w` refuses to write a file that has changed on disk since it was read, and
 `:e` refuses to throw away unsaved changes. Both take `!` to mean "I know".

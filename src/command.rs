@@ -51,11 +51,33 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "map", argument: Argument::None },
     Command { name: "unmap", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
+    Command { name: "setw", argument: Argument::Option },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
 ];
+
+/// Which setting an argument to `:set` is about, so a config file can be
+/// asked whether it already sets that one. `number`, `nonumber` and
+/// `relativenumber` are three ways to write one setting, and `shiftwidth=2`
+/// is that setting whatever the number is. A short form, or a name no table
+/// knows, is taken at its word: it is still the same setting as itself.
+pub fn setting_name(option: &str) -> &str {
+    let option = option.trim();
+    let word = option.split('=').next().unwrap_or(option).trim();
+    for setting in SETTINGS {
+        let hit = match setting.kind {
+            Kind::Flag(_) => word == setting.name || word.strip_prefix("no") == Some(setting.name),
+            Kind::Word(words) => words.contains(&word),
+            Kind::Value(..) => word == setting.name,
+        };
+        if hit {
+            return setting.name;
+        }
+    }
+    word.strip_prefix("no").unwrap_or(word)
+}
 
 /// What one `:set` option takes.
 pub enum Kind {
@@ -499,6 +521,29 @@ mod tests {
     fn a_command_that_takes_nothing_offers_nothing() {
         assert!(names("quit ").is_empty());
         assert!(names("nohlsearch any").is_empty());
+    }
+
+    #[test]
+    fn every_way_of_writing_a_setting_names_the_same_setting() {
+        // What `:setw` asks the config file: is there already a line about
+        // this? The three spellings of the line numbers are one setting.
+        assert_eq!(setting_name("number"), "number");
+        assert_eq!(setting_name("nonumber"), "number");
+        assert_eq!(setting_name("relativenumber"), "number");
+        assert_eq!(setting_name("hybrid"), "number");
+        assert_eq!(setting_name("shiftwidth=2"), "shiftwidth");
+        assert_eq!(setting_name("notabline"), "tabline");
+        // Settings whose names start the same way are not each other.
+        assert_ne!(setting_name("guifontsize=15"), setting_name("guifont=Iosevka"));
+        // A short form, or a name no table knows, is taken at its word.
+        assert_eq!(setting_name("sw=2"), "sw");
+        assert_eq!(setting_name("nosuchthing"), "suchthing");
+    }
+
+    #[test]
+    fn setw_takes_the_same_options_as_set() {
+        assert_eq!(names("setw auto"), names("set auto"));
+        assert_eq!(names("setw tabline="), names("set tabline="));
     }
 
     #[test]
