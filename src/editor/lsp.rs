@@ -1526,6 +1526,11 @@ va");
         let dir = std::env::temp_dir().join(format!("jack_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Opening a file resolves its path, and on macOS the temporary
+        // directory is under `/var`, which is a symlink to `/private/var`. So
+        // the directory the test compares against has to be the resolved one,
+        // or it is comparing two spellings of the same place.
+        let dir = dir.canonicalize().unwrap_or(dir);
         for (file, text) in files {
             std::fs::write(dir.join(file), text).unwrap();
         }
