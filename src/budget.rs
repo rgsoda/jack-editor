@@ -11,11 +11,15 @@
 //! multiplied. That still catches what these tests are for - work that has
 //! gone quadratic, or a cache that stopped being used - because those miss by
 //! an order of magnitude, not by a fifth.
+//!
+//! The multiplier is what a shared macOS runner needs rather than what this
+//! laptop wants: the same debug test that takes under a second here came in
+//! at 2.3 seconds there, which a smaller multiplier fails on a busy morning.
 
 use std::time::Duration;
 
 /// A budget of `millis`, stretched for a debug build.
 pub fn budget(millis: u64) -> Duration {
-    let slack = if cfg!(debug_assertions) { 4 } else { 1 };
+    let slack = if cfg!(debug_assertions) { 8 } else { 1 };
     Duration::from_millis(millis * slack)
 }
