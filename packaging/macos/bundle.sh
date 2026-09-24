@@ -13,6 +13,15 @@ here="$(cd "$(dirname "$0")" && pwd)"
 into="${1:-/Applications}"
 app="$into/jack.app"
 
+# A directory that is not there is a mistake rather than somewhere to build:
+# `bundle.sh # with a comment after it` is one argument in zsh, which does not
+# treat `#` as a comment when you type it, and an app in ~/#/jack.app is one
+# macOS will happily register and answer with.
+if [ -n "${1:-}" ] && [ ! -d "$1" ]; then
+    echo "no directory called $1 - pass one that exists, or nothing for /Applications" >&2
+    exit 1
+fi
+
 jack="$(command -v jack || true)"
 if [ -z "$jack" ]; then
     echo "no jack on the path: brew install rgsoda/tap/jack, or cargo install --path . --features gui" >&2
