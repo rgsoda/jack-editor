@@ -557,6 +557,50 @@ mod tests {
     }
 
     #[test]
+    fn the_mac_icon_holds_the_size_each_tag_promises() {
+        // An icns is a header and a run of tagged PNGs, and each tag stands
+        // for exactly one size: `ic13` is 128 points at two pixels each, so
+        // 256. macOS does not scale a picture that came in under the wrong
+        // tag - it throws the whole file out and draws the generic icon - so
+        // this is a mistake that can only be seen on a mac, which is reason
+        // enough to check it here.
+        let icns = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/icon/jack.icns"))
+            .expect("packaging/icon/jack.icns");
+        let word = |at: usize| u32::from_be_bytes(icns[at..at + 4].try_into().unwrap()) as usize;
+        assert_eq!(&icns[..4], b"icns");
+        assert_eq!(word(4), icns.len(), "the length in the header is the file's");
+
+        let sizes = [
+            (b"ic04", 16),
+            (b"ic05", 32),
+            (b"ic07", 128),
+            (b"ic08", 256),
+            (b"ic09", 512),
+            (b"ic10", 1024),
+            (b"ic11", 32),
+            (b"ic12", 64),
+            (b"ic13", 256),
+            (b"ic14", 512),
+        ];
+        let mut at = 8;
+        let mut seen = Vec::new();
+        while at < icns.len() {
+            let tag: [u8; 4] = icns[at..at + 4].try_into().unwrap();
+            let length = word(at + 4);
+            // The picture is a PNG, and its width and height are the first
+            // two words of the IHDR chunk.
+            assert_eq!(&icns[at + 8..at + 12], b"\x89PNG".as_slice(), "{:?} is a PNG", tag);
+            let (width, height) = (word(at + 8 + 16), word(at + 8 + 20));
+            let (_, size) = sizes.iter().find(|(name, _)| *name == &tag).expect("a tag macOS knows");
+            assert_eq!((width, height), (*size, *size), "{:?}", std::str::from_utf8(&tag));
+            seen.push(tag);
+            at += length;
+        }
+        assert_eq!(seen.len(), sizes.len(), "every size is in it");
+        assert_eq!(at, icns.len(), "and the blocks end where the file does");
+    }
+
+    #[test]
     fn the_title_says_the_file_and_whether_it_has_been_changed() {
         let mut editor = Editor::scratch();
         assert!(window_title(&editor).ends_with(" - jack"), "{}", window_title(&editor));

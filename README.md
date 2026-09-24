@@ -2263,7 +2263,12 @@ rather than one file:
   application, so `packaging/macos/bundle.sh` builds `jack.app` around
   whichever `jack` is on the path: an icon, a name in the menu bar, and a
   launcher that runs `jack --gui`. It wraps rather than copies, so upgrading
-  the formula upgrades the app.
+  the formula upgrades the app. An `.icns` is a run of tagged pictures where
+  each tag stands for one size and only that size — `ic13` is 128 points at
+  two pixels each, so 256 — and a picture filed under the wrong tag does not
+  come out smaller, it makes macOS throw the file out and draw the generic
+  executable icon instead. A test walks the tags and checks the sizes, since
+  this is otherwise a mistake that can only be seen on a mac.
 
 ## Markdown, rendered
 

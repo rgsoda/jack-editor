@@ -23,30 +23,43 @@ done
 magick "hicolor/64x64/apps/jack.png" -depth 8 RGBA:../../src/gui/icon.rgba
 
 # macOS's icon set. Its format is a header and a run of tagged PNGs, so it is
-# built here rather than only on a mac with `iconutil`.
-for size in 1024; do
-    rsvg-convert -w "$size" -h "$size" jack.svg -o "jack-${size}.png"
-done
+# built here rather than only on a mac with `iconutil`. Each tag holds one
+# size and only that size; the builder checks what it is putting in.
+rsvg-convert -w 1024 -h 1024 jack.svg -o jack-1024.png
 python3 - <<'PYTHON'
 import struct
 
-# Which tag holds which size, as macOS reads them: the plain sizes, then the
-# retina ones, which are the same PNGs at twice the size.
+# What each tag means to macOS: a four-letter type and the one size of PNG it
+# is allowed to hold. The @2x tags are the pixel size, not the point size -
+# `ic13` is 128 points at two pixels each, so 256 - and a file whose picture
+# is the wrong size for its tag is not read as a smaller icon, it is thrown
+# out whole and the app shows the generic one.
 wanted = [
-    (b"ic04", "hicolor/16x16/apps/jack.png"),
-    (b"ic05", "hicolor/32x32/apps/jack.png"),
-    (b"ic07", "hicolor/128x128/apps/jack.png"),
-    (b"ic08", "hicolor/256x256/apps/jack.png"),
-    (b"ic09", "hicolor/512x512/apps/jack.png"),
-    (b"ic11", "hicolor/32x32/apps/jack.png"),
-    (b"ic12", "hicolor/64x64/apps/jack.png"),
-    (b"ic13", "hicolor/512x512/apps/jack.png"),
-    (b"ic14", "jack-1024.png"),
+    (b"ic04", 16),
+    (b"ic05", 32),
+    (b"ic07", 128),
+    (b"ic08", 256),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+    (b"ic11", 32),
+    (b"ic12", 64),
+    (b"ic13", 256),
+    (b"ic14", 512),
 ]
+
+def png(size):
+    path = f"jack-{size}.png" if size == 1024 else f"hicolor/{size}x{size}/apps/jack.png"
+    with open(path, "rb") as file:
+        data = file.read()
+    # The width and height are the first two words of the IHDR, which is the
+    # first chunk: eight bytes of signature, then the chunk header.
+    width, height = struct.unpack(">II", data[16:24])
+    assert (width, height) == (size, size), f"{path} is {width}x{height}, not {size}"
+    return data
+
 blocks = b""
-for tag, path in wanted:
-    with open(path, "rb") as png:
-        data = png.read()
+for tag, size in wanted:
+    data = png(size)
     blocks += tag + struct.pack(">I", len(data) + 8) + data
 with open("jack.icns", "wb") as icns:
     icns.write(b"icns" + struct.pack(">I", len(blocks) + 8) + blocks)

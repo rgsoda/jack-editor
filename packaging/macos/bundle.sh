@@ -35,7 +35,12 @@ exec jack --gui "$@"
 LAUNCHER
 chmod +x "$app/Contents/MacOS/jack"
 
-cat > "$app/Contents/Info.plist" <<'PLIST'
+# The version goes in the plist as well as being true: Launch Services keys
+# its icon cache on the bundle, and a version that never changes is a cache
+# that never notices a new icon.
+version="$("$jack" --version | awk '{print $2}')"
+
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -58,11 +63,22 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$version</string>
+    <key>CFBundleVersion</key>
+    <string>$version</string>
 </dict>
 </plist>
 PLIST
 
-# The icon is cached by path, so a rebuilt app in the same place can keep
-# showing the old one until the bundle's date changes.
+# Launch Services caches an app's icon by path, so a rebuilt app in the same
+# place can go on showing the old one - or the generic executable icon it had
+# before there was an icon at all. Re-registering and touching the bundle is
+# what clears it short of logging out.
 touch "$app"
+lsregister=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+[ -x "$lsregister" ] && "$lsregister" -f "$app" || true
+
 echo "$app"
+echo "if the Dock or Finder still shows the old icon, it is their cache:"
+echo "  killall Dock; killall Finder"
