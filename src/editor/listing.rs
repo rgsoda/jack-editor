@@ -101,10 +101,17 @@ impl Editor {
     /// is opened as a file.
     pub fn open_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
-        match path.is_dir() {
+        let opened = match path.is_dir() {
             true => self.open_listing(path, None),
             false => self.open_file(path),
+        };
+        // A window opened from a launcher has no directory anyone chose, and
+        // this is the first thing it has been told about the work: take it.
+        // After the first, `:cd`.
+        if opened.is_ok() {
+            self.settle_near(path);
         }
+        opened
     }
 
     /// Show `dir` in the focused window, with the cursor on `on` if that is

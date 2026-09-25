@@ -52,6 +52,8 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "unmap", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
     Command { name: "setw", argument: Argument::Option },
+    Command { name: "cd", argument: Argument::Path },
+    Command { name: "pwd", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },

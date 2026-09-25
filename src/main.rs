@@ -34,6 +34,7 @@ mod theme;
 mod ui;
 mod view;
 mod window;
+mod workdir;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{SetCursorStyle, Show};
@@ -175,11 +176,31 @@ fn main() -> Result<()> {
             .with_context(|| format!("entering {directory}"))?;
     }
 
+    // A launcher does not start a program anywhere in particular: the Dock,
+    // Finder and a desktop entry all hand it the root of the filesystem, where
+    // the file picker has the whole machine to walk and nothing anyone wanted
+    // in it. So a window that began there settles somewhere of its own: the
+    // project the file it was given belongs to, or home when it was given
+    // none - and then the first file opened says where the work is instead.
+    let adrift = directory.is_none() && workdir::adrift();
+    if adrift {
+        // Spelled out first: the paths were written against the directory we
+        // are about to leave, root though it is.
+        if let Ok(here) = std::env::current_dir() {
+            paths = paths.iter().map(|path| here.join(path).display().to_string()).collect();
+        }
+        let project = paths.iter().find_map(|path| workdir::project_root(std::path::Path::new(path)));
+        if let Some(dir) = project.or_else(workdir::home) {
+            let _ = workdir::enter(&dir);
+        }
+    }
+
     let files: &[String] = match directory {
         Some(_) => &[],
         None => &paths,
     };
     let mut editor = Editor::open(files)?;
+    editor.set_adrift(adrift && files.is_empty());
     editor.load_config();
     editor.set_positions(positions::Positions::load(positions::store_path()));
     editor.set_undo_dir(undofile::store_dir());

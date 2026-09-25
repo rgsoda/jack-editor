@@ -196,6 +196,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:g/pat/cmd` | run a command on every matching line — `:g/dbg!/d`, `:g/TODO/s/TODO/DONE/` |
 | `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
 | `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
+| `:cd [dir]` `:pwd` | where the pickers look and grep runs; bare `:cd` is the project the file in front of you belongs to |
 | `:config` | open the config file, writing the documented defaults first |
 | `:preview` | a markdown buffer rendered in a pane down the right, following the cursor; again to close it |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
@@ -307,6 +308,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `gui/mac.rs` — what macOS does differently: the Dock icon handed to the
   running application, and the Apple Event that is how a mac gives a program
   a file to open. The only Objective-C there is.
+- `workdir.rs` — the one directory jack works from: whether the one it was
+  started in was anybody's choice, the project a file belongs to, and `~` both
+  ways. Paths only; the moving is `:cd`'s.
 - `editor/listing.rs` — a directory as a buffer: what is in it, in the order it
   is read in, and what `enter` and `-` do with the line under the cursor.
 - `window.rs` — how the screen is divided: a tree of splits with window ids at
@@ -2260,6 +2264,31 @@ whole. On a mac, `cmd-c`, `cmd-x` and `cmd-v` are the clipboard three as well
 as `^c` `^x` `^v`, since that is where a mac keyboard keeps them; every other
 `cmd` chord is left to macOS. What you give up: ssh, tmux, and starting
 instantly.
+
+## Where jack is working
+
+The file picker walks a directory, `:grep` searches one, and a relative path
+after `:e` is counted from one. That directory is the process's own — the shell
+was standing somewhere when it started jack, and jack works where you were
+standing. One place, which every background job and every subprocess already
+agrees on, rather than a root threaded through each of them.
+
+A launcher does not start a program anywhere. The Dock, Finder and a desktop
+entry all hand it the root of the filesystem, and a file picker opened there
+has the whole machine to walk and nothing you wanted in it. So a window that
+began at `/` settles somewhere itself: the project of the file it was given —
+the nearest directory above it with a `.git`, else the directory it is in — or
+home, when it was given no file. A window opened with nothing and then handed
+a file, which is what dropping one on the Dock icon is, takes that first file
+as saying where the work is, and says so in the status line. After the first,
+it stays put.
+
+`:cd {dir}` moves, `~` and all, and `:pwd` says where that is. Bare `:cd` is
+the project the file in front of you belongs to, which is the one thing worth
+reaching for from a window that opened with no directory in mind — and failing
+that, home. Every open buffer's path is spelled out in full before the ground
+moves, so a file opened by a relative name is still written back to the file
+you opened.
 
 ## The icon
 

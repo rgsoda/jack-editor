@@ -481,6 +481,11 @@ pub struct Editor {
     /// Where background jobs send their results. `None` outside a run loop,
     /// which is how the tests drive a picker without spawning threads.
     jobs: Option<Sender<Message>>,
+    /// True when nobody has said which directory jack is working in - a
+    /// window opened from a launcher, which starts at the root of the
+    /// filesystem. The first file opened settles it, and then this is false
+    /// for the rest of the run.
+    adrift: bool,
 }
 
 impl Editor {
@@ -588,6 +593,7 @@ impl Editor {
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
             jobs: None,
+            adrift: false,
         }
     }
 
@@ -1227,6 +1233,8 @@ impl Editor {
             }
             ("set", option) => self.set_option(option),
             ("setw", option) => self.set_and_save(option),
+            ("cd", dir) => self.change_directory(dir),
+            ("pwd", _) => self.print_working_directory(),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
             ("guifonts", _) => self.open_font_picker(),
@@ -2187,6 +2195,84 @@ impl Editor {
         match std::env::current_dir() {
             Ok(root) => stream::spawn_walk(root, token, Arc::clone(&self.token), jobs),
             Err(err) => self.message = format!("{err:#}"),
+        }
+    }
+
+    /// Nothing has said which directory jack is working in yet: the first file
+    /// opened will. Only a window started from a launcher is in this position,
+    /// and `main` is what knows that.
+    pub fn set_adrift(&mut self, adrift: bool) {
+        self.adrift = adrift;
+    }
+
+    /// The first file of a run that began nowhere says where the work is. A
+    /// file dropped on the Dock icon is usually the only thing anyone tells a
+    /// windowed editor about their project, so it is taken as saying it.
+    pub(crate) fn settle_near(&mut self, path: &Path) {
+        if !self.adrift {
+            return;
+        }
+        self.adrift = false;
+        let Some(root) = crate::workdir::project_root(path) else {
+            return;
+        };
+        if crate::workdir::enter(&root).is_ok() {
+            self.message = format!("working in {}", crate::workdir::shortened(&root));
+        }
+    }
+
+    /// `:cd {dir}` - where the file picker walks, the grep runs, and a
+    /// relative path after `:e` is counted from. Bare `:cd` is the project the
+    /// file in front of you belongs to, which is the one worth reaching for
+    /// from a window that was opened with no directory in mind; failing that,
+    /// home.
+    pub fn change_directory(&mut self, argument: &str) {
+        let dir = match argument.is_empty() {
+            false => crate::workdir::expanded(argument),
+            true => {
+                let here = self.view().doc.path.clone();
+                let project = here.as_deref().and_then(crate::workdir::project_root);
+                match project.or_else(crate::workdir::home) {
+                    Some(dir) => dir,
+                    None => {
+                        self.message = "nowhere to go: $HOME is not set".into();
+                        return;
+                    }
+                }
+            }
+        };
+        // Every open file is written by the path it was opened by, and half of
+        // those are relative to where jack was started. They are spelled out in
+        // full before the ground moves under them.
+        self.absolute_paths();
+        match crate::workdir::enter(&dir) {
+            Ok(dir) => {
+                self.adrift = false;
+                self.message = format!("working in {}", crate::workdir::shortened(&dir));
+            }
+            Err(err) => self.message = format!("{}: {err}", dir.display()),
+        }
+    }
+
+    /// `:pwd` - which directory that is.
+    pub fn print_working_directory(&mut self) {
+        self.message = match std::env::current_dir() {
+            Ok(dir) => crate::workdir::shortened(&dir),
+            Err(err) => format!("{err}"),
+        };
+    }
+
+    /// Give every buffer a path that does not depend on where jack is standing.
+    fn absolute_paths(&mut self) {
+        let Ok(here) = std::env::current_dir() else {
+            return;
+        };
+        for view in &mut self.views {
+            let relative = view.doc.path.as_ref().is_some_and(|path| path.is_relative());
+            if relative {
+                let path = view.doc.path.take().expect("just looked at it");
+                view.doc.path = Some(here.join(path));
+            }
         }
     }
 
@@ -5314,12 +5400,43 @@ two
     }
 
     #[test]
+    fn cd_moves_where_the_pickers_look_and_pwd_says_where_that_is() {
+        let here = std::env::current_dir().expect("a working directory");
+        let elsewhere = std::env::temp_dir().canonicalize().expect("a temp directory");
+        let mut e = Editor::scratch();
+
+        e.change_directory(&elsewhere.display().to_string());
+        assert_eq!(std::env::current_dir().ok().as_deref(), Some(elsewhere.as_path()));
+        e.print_working_directory();
+        assert_eq!(e.message, crate::workdir::shortened(&elsewhere));
+
+        // A file opened by a relative path keeps meaning the same file.
+        std::env::set_current_dir(&here).expect("back where we started");
+        let mut e = Editor::scratch();
+        e.views[0].doc.path = Some(PathBuf::from("src/editor.rs"));
+        e.change_directory(&elsewhere.display().to_string());
+        assert_eq!(e.views[0].doc.path.as_deref(), Some(here.join("src/editor.rs").as_path()));
+
+        // Bare `:cd` is the project the file in front of you belongs to.
+        e.change_directory("");
+        assert_eq!(std::env::current_dir().ok().as_deref(), Some(here.as_path()));
+
+        e.change_directory("/no/such/directory");
+        assert!(e.message.starts_with("/no/such/directory:"), "{}", e.message);
+        std::env::set_current_dir(&here).expect("back where we started");
+    }
+
+    #[test]
     fn every_command_the_completion_offers_is_a_command() {
         // The two lists have to agree: one is what `tab` offers, the other is
         // what `:` runs.
+        // `:cd` really does move the process, and the rest of the suite is
+        // standing in the directory it would move out of.
+        let here = std::env::current_dir().expect("a working directory");
         for command in crate::command::COMMANDS {
             let mut e = Editor::scratch();
             e.run_command(command.name);
+            std::env::set_current_dir(&here).expect("back where we started");
             assert!(
                 !e.message.starts_with("not a command"),
                 "{}: {}",
