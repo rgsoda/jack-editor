@@ -102,6 +102,10 @@ pub enum Source {
     /// `target` is the path and `id` the line, zero-based - the list already
     /// counts lines the way the editor does.
     Quickfix,
+    /// What git says is not committed: `target` is the file, whole, and the
+    /// detail is what happened to it in words. A list already in hand, like
+    /// references - git was asked once, and typing filters what it said.
+    Changed,
     /// The font families the window frontend can see. `target` is the family
     /// name, and choosing one is `:set guifont=` with it - which is the point:
     /// a font you picked off a list is a font that exists and is spelt right.
@@ -122,6 +126,7 @@ impl Source {
             Source::Diagnostics => "diagnostic",
             Source::Workspace => "project symbol",
             Source::Quickfix => "quickfix",
+            Source::Changed => "changed",
             Source::Fonts => "font",
         }
     }

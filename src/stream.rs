@@ -394,6 +394,83 @@ pub fn diff_hunks(before: &str, after: &str) -> Vec<Hunk> {
     hunks
 }
 
+/// What git says is not committed, as the two-letter status and the file it
+/// is about. The paths come back whole - relative to the top of the
+/// repository is how git says them, and that is not where you are standing.
+///
+/// `-z`, so a name with a space or a quote in it is a name rather than
+/// something to unescape, and so a rename arrives as its two paths in a row.
+pub fn git_changes(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let top = Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !top.status.success() {
+        return Err("not in a git repository".into());
+    }
+    let top = PathBuf::from(String::from_utf8_lossy(&top.stdout).trim().to_string());
+    let status = Command::new("git")
+        .current_dir(dir)
+        .args(["status", "--porcelain", "-z"])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !status.status.success() {
+        return Err(brief(&String::from_utf8_lossy(&status.stderr)));
+    }
+    Ok(changed(&String::from_utf8_lossy(&status.stdout))
+        .into_iter()
+        .map(|(status, path)| (status, top.join(path)))
+        .collect())
+}
+
+/// `git status --porcelain -z`, read: two letters, a space, the path, and a
+/// NUL. A rename is followed by a second path, the name it had, which is one
+/// more record to step over and nothing to show - the file worth opening is
+/// the one that is there now.
+fn changed(output: &str) -> Vec<(String, String)> {
+    let mut changes = Vec::new();
+    let mut records = output.split('\0').filter(|record| !record.is_empty());
+    while let Some(record) = records.next() {
+        let Some((status, path)) = record.split_at_checked(2) else {
+            continue;
+        };
+        if status.starts_with(['R', 'C']) {
+            records.next();
+        }
+        changes.push((status.to_string(), path.trim_start().to_string()));
+    }
+    changes
+}
+
+/// What a status means, in words rather than in git's two letters. The left
+/// letter is the index and the right one the working tree, which is the whole
+/// of what `staged` adds here.
+pub fn what_changed(status: &str) -> String {
+    let mut letters = status.chars();
+    let (index, tree) = (letters.next().unwrap_or(' '), letters.next().unwrap_or(' '));
+    if index == 'U' || tree == 'U' {
+        return "conflict".into();
+    }
+    if status == "??" {
+        return "untracked".into();
+    }
+    let word = |letter: char| match letter {
+        'M' => "modified",
+        'A' => "added",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "copied",
+        'T' => "type changed",
+        _ => "changed",
+    };
+    match (index, tree) {
+        (' ', tree) => word(tree).into(),
+        (index, ' ') => format!("{}, staged", word(index)),
+        (index, tree) => format!("{}, {} staged", word(tree), word(index)),
+    }
+}
+
 /// A patch that stages exactly `hunk` and nothing else: no context lines, so
 /// it applies whatever the rest of the file is doing, which is what
 /// `git apply --unidiff-zero` is for. `new` is the buffer's lines for the
@@ -864,4 +941,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    #[test]
+    fn git_says_what_changed_in_two_letters_and_a_path() {
+        // `-z`: NUL after each record, and a rename carries the name it had
+        // as a record of its own, which is one to step over.
+        let output = " M src/editor.rs\0?? notes.md\0R  src/new.rs\0src/old.rs\0 D gone.rs\0";
+        assert_eq!(
+            changed(output),
+            vec![
+                (" M".to_string(), "src/editor.rs".to_string()),
+                ("??".to_string(), "notes.md".to_string()),
+                ("R ".to_string(), "src/new.rs".to_string()),
+                (" D".to_string(), "gone.rs".to_string()),
+            ]
+        );
+        // A name with a space in it is a name, not two.
+        assert_eq!(changed("?? a file.md\0"), vec![("??".to_string(), "a file.md".to_string())]);
+        assert!(changed("").is_empty());
+    }
+
+    #[test]
+    fn a_status_reads_as_words() {
+        assert_eq!(what_changed(" M"), "modified");
+        assert_eq!(what_changed("M "), "modified, staged");
+        assert_eq!(what_changed("MM"), "modified, modified staged");
+        assert_eq!(what_changed("A "), "added, staged");
+        assert_eq!(what_changed(" D"), "deleted");
+        assert_eq!(what_changed("??"), "untracked");
+        assert_eq!(what_changed("UU"), "conflict");
+    }
 }

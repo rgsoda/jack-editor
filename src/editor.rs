@@ -2023,7 +2023,7 @@ impl Editor {
                 (item.target.clone(), item.id.saturating_sub(1))
             }
             Source::Quickfix => (item.target.clone(), item.id),
-            Source::Files => (item.target.clone(), 0),
+            Source::Files | Source::Changed => (item.target.clone(), 0),
             Source::Symbols | Source::Lines => (here()?, item.id),
             Source::Buffers => {
                 let view = self.views.get(item.id)?;
@@ -2068,6 +2068,46 @@ impl Editor {
             false => "",
         };
         self.message = format!("({at}/{len}){wrapped} {}", entry.text.trim());
+    }
+
+    /// `<space>c`: the files git says are not committed, as a picker.
+    ///
+    /// The other side of the git keys: `]h` and `<space>h` are about the
+    /// change under the cursor, and this is about which files have any. Asked
+    /// once and filtered from there, rather than asked again per keystroke -
+    /// a working tree does not change while you type a name into a list of it.
+    pub fn open_changed_picker(&mut self) {
+        let Ok(here) = std::env::current_dir() else {
+            self.message = "nowhere to look: there is no working directory".into();
+            return;
+        };
+        let changes = match crate::stream::git_changes(&here) {
+            Ok(changes) => changes,
+            Err(complaint) => {
+                self.message = complaint;
+                return;
+            }
+        };
+        if changes.is_empty() {
+            self.message = "nothing changed since the last commit".into();
+            return;
+        }
+        let items = changes
+            .into_iter()
+            .enumerate()
+            .map(|(index, (status, path))| {
+                // Written from where you are standing when that says the same
+                // thing more shortly, which under a repository's top it does.
+                let shown = path.strip_prefix(&here).unwrap_or(&path);
+                crate::picker::Item {
+                    text: shown.display().to_string(),
+                    detail: crate::stream::what_changed(&status),
+                    target: path.display().to_string(),
+                    id: index,
+                }
+            })
+            .collect();
+        self.open_picker(Picker::new(Source::Changed, items));
     }
 
     /// `<space>q`: the quickfix list in the picker, to look at rather than
@@ -2516,7 +2556,7 @@ impl Editor {
                         self.goto_line(choice.id);
                         self.clamp_cursor();
                     }
-                    Source::Files => match self.open_file(&choice.target) {
+                    Source::Files | Source::Changed => match self.open_file(&choice.target) {
                         Ok(()) => self.jumps.push(origin),
                         Err(err) => self.message = format!("{err:#}"),
                     },
@@ -2856,6 +2896,7 @@ impl Editor {
         let view = match source {
             Source::Buffers => choice.id,
             Source::Files
+            | Source::Changed
             | Source::Grep
             | Source::Diagnostics
             | Source::References
@@ -4777,6 +4818,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'B' => "who changed this line",
         'e' => "the diagnostics picker",
         'q' => "the quickfix list",
+        'c' => "the changed-files picker",
         '?' => "the help picker",
         'n' => "line numbers",
         'x' => "close this buffer",

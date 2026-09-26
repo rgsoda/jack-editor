@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 62: a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 62: a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -121,6 +121,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>S` | pick a symbol anywhere in the project, as the language server finds them |
 | `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>q` | the quickfix list, as a picker |
+| `<space>c` | the files git says you have changed, as a picker |
 | `<space>h` | what the hunk under the cursor was, and is |
 | `<space>B` `:blame` | who last changed this line, when, and the commit's first line |
 | `<space>?` | every key, searchable |
@@ -791,6 +792,26 @@ Stripped on save, as one transaction, so a single undo puts every line back. It
 is never silent: the save says `wrote main.rs, trimmed 3 lines`. `:set notrim`
 turns it off. If the cursor was sitting in the spaces that went, it lands on the
 last character that is left rather than off the end of the line.
+
+## What you have changed
+
+`<space>c` is the files git says are not committed, as a picker: the path, and
+what happened to it in words down the right — `modified`, `untracked`,
+`deleted`, `modified, staged`, `conflict`. Confirming one opens it, `^v` and
+`^s` open it in a split, and `^q` sends the lot to the quickfix list, so a
+rebase or a long afternoon can be walked with `]q`.
+
+It is the other side of the git keys already here: `]h` and `<space>h` are
+about the change under the cursor, and this is about which files have any.
+Asked once, when the picker opens, and filtered from there — a working tree
+does not change while you are typing a name into a list of it.
+
+`git status --porcelain -z`, read directly. `-z` because a file with a space or
+a quote in its name is a file, not something to unescape, and because a rename
+arrives as its two paths in a row — the one worth opening is the one that is
+there now. Paths come back relative to the top of the repository, which is not
+where you are standing, so they are made whole and then written from where you
+are when that is shorter.
 
 ## Git signs
 
