@@ -161,10 +161,12 @@ fn winsize(rows: usize, cols: usize) -> libc::winsize {
 /// program gets as its terminal.
 fn openpty(rows: usize, cols: usize) -> Result<(OwnedFd, OwnedFd)> {
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
-    let size = winsize(rows, cols);
-    let opened = unsafe {
-        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &size)
-    };
+    let mut size = winsize(rows, cols);
+    // `*mut` either way: linux takes these two as `*const` and macOS as
+    // `*mut`, and a mutable pointer is the one that weakens into both.
+    let termios: *mut libc::termios = std::ptr::null_mut();
+    let window: *mut libc::winsize = &mut size;
+    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), termios, window) };
     if opened < 0 {
         return Err(std::io::Error::last_os_error()).context("opening a pty");
     }
