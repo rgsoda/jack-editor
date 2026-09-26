@@ -119,7 +119,7 @@ jack - a terminal text editor
 
 Usage:
   jack [file ...]   open files
-  jack <dir>        start in that directory with the file picker open
+  jack <dir>        start in that directory, listing what is in it
   jack              an empty buffer
   jack-gui [...]    the same, in a window - a second name for this binary
 
@@ -167,9 +167,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // A directory is not a buffer: it means start in that project with the
-    // file picker open. Nothing here is a mode - the picker already walks the
-    // working directory, so this is a `cd` and an empty editor.
+    // A directory is where the work is, not a file to read: it means start in
+    // that project, listing what is in it. Nothing here is a mode - the
+    // listing is an ordinary buffer and the working directory is the one
+    // every picker and grep already walks, so this is a `cd` and an `:e`.
     let directory = start_directory(&paths).cloned();
     if let Some(directory) = &directory {
         std::env::set_current_dir(directory)
@@ -213,12 +214,19 @@ fn main() -> Result<()> {
         default_hook(info);
     }));
 
+    // What is in here, rather than which file is called what: arriving
+    // somewhere is the moment you do not yet know the names to type at a
+    // picker, and the picker is one key away for when you do. The listing is
+    // of `.` because the directory was entered above, and a path written
+    // relative to where the shell was standing does not mean that any more.
+    if directory.is_some()
+        && let Err(err) = editor.open_path(".")
+    {
+        editor.message = format!("{err:#}");
+    }
+
     let (tx, rx) = stream::channels();
     editor.set_jobs(tx.clone());
-    // After `set_jobs`, because the picker needs somewhere to send the walk.
-    if directory.is_some() {
-        editor.open_file_picker();
-    }
 
     let result = match gui {
         true => in_a_window(&mut editor, rx),

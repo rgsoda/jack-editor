@@ -2414,8 +2414,11 @@ does this.
 came from; `-` again goes up a level, cursor on the directory you just left.
 `enter` opens what the cursor is on — into a directory, or a file in this
 window. `^v` and `^s` open it in a split beside or below, which is what those
-keys do in the picker. `:e src/` lists a directory too, and so does a directory
-named on the command line alongside files.
+keys do in the picker. `:e src/` lists a directory too, and so does `jack src`:
+a directory on the command line means start in that project - jack enters it,
+so every picker and grep works from there - and what it shows you first is what
+is in it. Arriving somewhere is the moment you do not yet know the names to
+type at a picker, and `<space>f` is one key away for when you do.
 
 The listing is text, and that is the whole point: `j` and `k` walk it, `/`
 searches it, `*` finds the name under the cursor further down, `^o` walks back
