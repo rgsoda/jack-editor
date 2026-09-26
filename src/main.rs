@@ -4,6 +4,7 @@ mod budget;
 mod clipboard;
 mod comment;
 mod command;
+mod compile;
 mod complete;
 mod editor;
 mod info;

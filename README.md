@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 61: soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 62: a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -196,6 +196,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:g/pat/cmd` | run a command on every matching line — `:g/dbg!/d`, `:g/TODO/s/TODO/DONE/` |
 | `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
 | `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
+| `:make [cmd]` | run a build in the background; what it complained about becomes the quickfix list, and you land on the first |
 | `:cd [dir]` `:pwd` | where the pickers look and grep runs; bare `:cd` is the project the file in front of you belongs to |
 | `:config` | open the config file, writing the documented defaults first |
 | `:preview` | a markdown buffer rendered in a pane down the right, following the cursor; again to close it |
@@ -215,6 +216,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
+| `:set makeprg=cargo test` | what a bare `:make` runs; empty means whatever builds the project you are in |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
@@ -371,6 +373,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
+- `compile.rs` — what a build said, read back as places: the four shapes a
+  compiler names a file and a line in, and the guess at what builds a project.
+  No running in it; that is a background job like any other.
 - `quickfix.rs` — the quickfix list: the places `]q` walks, and the walk. No
   document and no files: the arithmetic is the part worth testing on its own.
 - `session.rs` — what happens between one frame and the next: the work due
@@ -2180,9 +2185,49 @@ filters it and `^v` opens one in a split — with the cursor on the entry the
 walk is on. Choosing one is where the walk carries on from.
 
 One list, replaced whole. Vim keeps ten of them and has `:colder` to move
-between them, which is an answer to a question nobody asks twice. There is no
-`errorformat` and no `:make`: what fills the list is a picker, and a picker
-already knows what its items point at.
+between them, which is an answer to a question nobody asks twice.
+
+## Running a build
+
+`:make` runs a build and puts what it complained about in the quickfix list,
+so `]q` walks the errors. `:make cargo test` runs that instead; `:set
+makeprg=cargo clippy` says what a bare `:make` should run, and with neither,
+jack runs whatever builds the project you are standing in — a `Makefile`
+means `make`, a `Cargo.toml` means `cargo check`, a `go.mod` means
+`go build ./...`. A build file is somebody saying it outright and wins over a
+language's usual one. `cargo check` rather than `cargo build`, because the
+question `:make` asks is "what is wrong with this".
+
+It is not `:!cargo check`. That hands over the terminal and hands back a
+screenful of text to read twice; this runs in the background, leaves the
+editor yours while it does, and comes back with places. When it is done you
+are already at the first problem, with `(1/12)` and what it says in the status
+line. A build that failed without naming a file says the last thing it printed
+instead, because a build that failed silently is worse than one that shouted.
+
+There is no `errorformat`. Compilers copied each other, and four shapes cover
+nearly all of them:
+
+```text
+src/main.rs:12:5: error: no method named `foo`     gcc, clang, go, eslint
+src/main.rs:12: undefined: foo                     older tools, git grep
+  --> src/main.rs:12:5                             rustc, after its message
+  File "app.py", line 12, in <module>              python
+```
+
+rustc says what is wrong on one line and where on the next, so the message is
+carried down to the place it belongs to. A panic names its file after a
+sentence — `thread 'main' panicked at src/main.rs:4:5` — so the last word
+before the line number is tried as a path too.
+
+What keeps this from being a mess is one rule: **a line is only a place if the
+file it names is really there.** Output is full of things shaped like
+`path:line` — a URL with a port, a timestamp, a duration, `12:04:07 INFO` —
+and asking the disk is the one cheap way to tell them apart. It costs a `stat`
+per candidate line and it is the difference between a list of errors and a
+list of noise. The column is read only so it cannot be mistaken for part of
+the message, and then dropped: the list is lines, for the same reason the jump
+list is.
 
 ## A window, when you want one
 

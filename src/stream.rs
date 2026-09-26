@@ -37,6 +37,11 @@ pub enum Message {
     },
     /// A message from language server `server`, or `None` when it has gone.
     Lsp { server: usize, message: Option<serde_json::Value> },
+    /// What `:make` ran, and everything it printed. One message at the end
+    /// rather than a stream: a build says most of what it has to say in its
+    /// last second, and a list of places that grew while you walked it would
+    /// be a list you could not trust.
+    Built { token: u64, output: String, ok: bool },
 }
 
 /// A run of lines that differ from what git has, and what git has there
@@ -155,6 +160,38 @@ pub fn spawn_input(tx: Sender<Message>, input: Arc<Input>) {
                 return;
             }
         }
+    });
+}
+
+/// A build's output stops here. Past this it is a program in a loop, and the
+/// places worth walking were in the first screenful anyway.
+const MAX_OUTPUT: usize = 4 << 20;
+
+/// Run `command` in `root` and hand back what it printed. Through a shell, so
+/// a pipe or a `&&` in what was typed means what it looks like, and with both
+/// streams kept: a compiler complains on stderr, a test runner on stdout, and
+/// which is which is not jack's business.
+///
+/// Nothing is handed the terminal, unlike `:!` - the point of `:make` is that
+/// the editor stays yours while it runs.
+pub fn spawn_build(command: String, root: PathBuf, token: u64, tx: Sender<Message>) {
+    thread::spawn(move || {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let finished = Command::new(shell)
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&root)
+            .output();
+        let message = match finished {
+            Ok(finished) => {
+                let mut output = String::from_utf8_lossy(&finished.stderr).into_owned();
+                output.push_str(&String::from_utf8_lossy(&finished.stdout));
+                output.truncate(output.char_indices().nth(MAX_OUTPUT).map_or(output.len(), |(at, _)| at));
+                Message::Built { token, output, ok: finished.status.success() }
+            }
+            Err(err) => Message::Failed { token, error: format!("{command}: {err}") },
+        };
+        let _ = tx.send(message);
     });
 }
 

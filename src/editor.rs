@@ -481,6 +481,17 @@ pub struct Editor {
     /// Where background jobs send their results. `None` outside a run loop,
     /// which is how the tests drive a picker without spawning threads.
     jobs: Option<Sender<Message>>,
+    /// `:set makeprg`: what `:make` runs when it is not told. Empty means
+    /// "whatever builds this project", worked out from what is in its root.
+    pub makeprg: String,
+    /// Which build we are waiting on, counting from one. A build that was
+    /// replaced by another, or by `:make` being run again, has its output
+    /// dropped.
+    build: u64,
+    /// Where that build is running, which is where the paths in its output
+    /// are counted from. Kept rather than asked for again, since `:cd` can
+    /// happen while a build does.
+    build_root: PathBuf,
     /// True when nobody has said which directory jack is working in - a
     /// window opened from a launcher, which starts at the root of the
     /// filesystem. The first file opened settles it, and then this is false
@@ -593,6 +604,9 @@ impl Editor {
             search: Search::default(),
             token: Arc::new(AtomicU64::new(0)),
             jobs: None,
+            makeprg: String::new(),
+            build: 0,
+            build_root: PathBuf::new(),
             adrift: false,
         }
     }
@@ -1233,6 +1247,7 @@ impl Editor {
             }
             ("set", option) => self.set_option(option),
             ("setw", option) => self.set_and_save(option),
+            ("make", command) => self.make(command),
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
             ("config", _) => self.open_config(),
@@ -1726,6 +1741,7 @@ impl Editor {
                 ("autocomplete" | "ac", _) => {
                     self.message = format!("autocomplete wants 0 to 16, not {value:?}");
                 }
+                ("makeprg", _) => self.makeprg = value.trim().to_string(),
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -1812,7 +1828,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1831,6 +1847,10 @@ impl Editor {
                     self.tabline.name(),
                     self.autocomplete,
                     self.semicolon.name(),
+                    match self.makeprg.is_empty() {
+                        true => "(what builds this project)",
+                        false => &self.makeprg,
+                    },
                     self.guifont,
                     self.guifontsize
                 );
@@ -1880,6 +1900,86 @@ impl Editor {
     fn open_picker(&mut self, picker: Picker) -> u64 {
         self.picker = Some(picker);
         self.retire()
+    }
+
+    // --- building -----------------------------------------------------
+
+    /// `:make [command]` - run a build and put what it complained about in
+    /// the quickfix list, where `]q` and `[q` walk it.
+    ///
+    /// Not `:!`, which hands over the terminal and hands back nothing: this
+    /// runs in the background, the editor stays yours while it does, and what
+    /// comes back is places rather than a screenful of text to read twice.
+    /// With no command it is `:set makeprg`, and with no makeprg it is
+    /// whatever builds the project you are standing in.
+    pub fn make(&mut self, command: &str) {
+        // As with `:!`, a line in a config file that starts a build at
+        // startup is a surprise nobody asked for.
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        let Ok(root) = std::env::current_dir() else {
+            self.message = "nowhere to build: there is no working directory".into();
+            return;
+        };
+        let command = match (command.trim(), self.makeprg.trim()) {
+            ("", "") => match crate::compile::builder(&root) {
+                Some(guess) => guess.to_string(),
+                None => {
+                    self.message =
+                        "nothing here says how to build it: :make {command}, or :set makeprg=..."
+                            .into();
+                    return;
+                }
+            },
+            ("", configured) => configured.to_string(),
+            (typed, _) => typed.to_string(),
+        };
+        let Some(jobs) = self.jobs.clone() else {
+            return;
+        };
+        self.build += 1;
+        self.build_root = root.clone();
+        self.message = format!("{command}...");
+        crate::stream::spawn_build(command, root, self.build, jobs);
+    }
+
+    /// A build finished. What it said becomes the quickfix list, and the walk
+    /// starts at the first place rather than waiting to be asked - the reason
+    /// to run a build is to be taken to what is wrong with it.
+    pub fn build_finished(&mut self, token: u64, output: String, ok: bool) {
+        if token == 0 || token != self.build {
+            return;
+        }
+        let mut places = crate::compile::places(&output, &self.build_root);
+        // A build prints paths relative to where it ran. While that is where
+        // you are standing they are openable as they are, and short enough to
+        // read in the picker; once it is not - a `:cd` since, or a build
+        // somewhere else - only the whole path means anything.
+        if std::env::current_dir().ok().as_deref() != Some(self.build_root.as_path()) {
+            for place in &mut places {
+                place.path = self.build_root.join(&place.path).display().to_string();
+            }
+        }
+        let empty = places.is_empty();
+        self.quickfix.fill(places);
+        if empty {
+            // Nothing to walk, so the only thing worth saying is whether it
+            // worked - and when it did not, the last thing it said, since a
+            // build that failed without naming a file has still failed.
+            self.message = match ok {
+                true => "no problems".into(),
+                false => match output.lines().rev().find(|line| !line.trim().is_empty()) {
+                    Some(last) => format!("failed: {}", last.trim()),
+                    None => "failed, and said nothing".into(),
+                },
+            };
+            return;
+        }
+        // Straight to the first one, which says `(1/12)` and what it is:
+        // there is nothing to add to that.
+        self.quickfix_step(true, 1);
     }
 
     // --- the quickfix list --------------------------------------------
@@ -5397,6 +5497,47 @@ two
     /// A key with no modifiers, for driving a prompt.
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn what_a_build_complained_about_becomes_the_quickfix_list() {
+        let root = std::env::temp_dir()
+            .join(format!("jack_make_{}", std::process::id()))
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir().join(format!("jack_make_{}", std::process::id())));
+        std::fs::create_dir_all(root.join("src")).expect("a project");
+        std::fs::write(root.join("src/main.rs"), "one\ntwo\nthree\nfour\n").expect("a file");
+        let root = root.canonicalize().expect("a real path");
+
+        let mut e = Editor::scratch();
+        e.build = 1;
+        e.build_root = root.clone();
+        e.build_finished(
+            1,
+            "error[E0599]: no method named `frob`\n  --> src/main.rs:3:5\n".into(),
+            false,
+        );
+
+        // The list is filled and the walk has already taken us to the first.
+        assert_eq!(e.quickfix.entries().len(), 1);
+        assert_eq!(e.quickfix.entries()[0].line, 2);
+        assert!(e.message.starts_with("(1/1)"), "{}", e.message);
+        assert_eq!(e.view().doc.path.as_deref(), Some(root.join("src/main.rs").as_path()));
+        assert_eq!(e.view().cursor_coords().0, 2);
+
+        // A build nobody is waiting on any more says nothing.
+        e.build = 2;
+        e.build_finished(1, "src/main.rs:1: stale\n".into(), false);
+        assert_eq!(e.quickfix.entries().len(), 1, "the old build was dropped");
+
+        // Nothing to walk: the last thing a failed build said, rather than
+        // silence.
+        e.build_finished(2, "linker: no such file\n".into(), false);
+        assert_eq!(e.message, "failed: linker: no such file");
+        e.build = 3;
+        e.build_finished(3, "    Finished in 0.2s\n".into(), true);
+        assert_eq!(e.message, "no problems");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

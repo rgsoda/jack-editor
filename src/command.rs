@@ -52,6 +52,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "unmap", argument: Argument::None },
     Command { name: "set", argument: Argument::Option },
     Command { name: "setw", argument: Argument::Option },
+    Command { name: "make", argument: Argument::None },
     Command { name: "cd", argument: Argument::Path },
     Command { name: "pwd", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
@@ -212,6 +213,13 @@ pub static SETTINGS: &[Setting] = &[
         name: "lsp",
         kind: Kind::Flag(true),
         about: "Start a language server for files that have one installed: diagnostics, and gd across files.",
+    },
+    Setting {
+        name: "makeprg",
+        kind: Kind::Value(&["make", "cargo check", "cargo test"], ""),
+        about: "What `:make` runs when it is not told what to run. Empty is \
+                whatever builds the project you are in - a Makefile, a \
+                Cargo.toml, a go.mod.",
     },
     Setting {
         name: "guifont",

@@ -97,6 +97,7 @@ impl Session {
             Message::Failed { token, error } => editor.job_failed(token, error),
             Message::Signs { token, signs, hunks } => editor.set_signs(token, signs, hunks),
             Message::Lsp { server, message } => editor.lsp_message(server, message),
+            Message::Built { token, output, ok } => editor.build_finished(token, output, ok),
             // A resize needs nothing: the next frame asks how big the screen
             // is, whichever screen it is.
             Message::Resize => {}
