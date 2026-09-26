@@ -121,7 +121,7 @@ impl Editor {
         self.view_mut().sel = Selection::point(at);
         self.set_mode(Mode::Normal);
         self.clamp_cursor();
-        self.dog_fetches();
+        self.dog_fetches(crate::editor::What::Bone);
     }
 
     /// The rows of a block as text, one line each - ragged rows stay ragged,

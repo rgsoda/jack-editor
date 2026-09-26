@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::editor::{Completing, Editor, Errand, Prompt};
+use crate::editor::{Completing, Editor, Errand, Prompt, What};
 use crate::view::Diagnostic;
 use crate::window::Rect;
 use crate::view::cluster_width;
@@ -761,14 +761,42 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
         true => status::DOG_RUNNING,
         false => status::DOG_SITTING,
     };
-    // An errand is somewhere else to be and something to be holding: gone to
-    // the far end of the lane after a yank, and back at its own spot with it.
-    let (x, dog, held) = match editor.dog.errand {
-        Errand::Fetching => (gap.end - 1, status::DOG_RUNNING, None),
-        Errand::Carrying => (home, status::DOG_SITTING, Some(status::DOG_BONE)),
+    // An errand is somewhere else to be and something to be holding: the far
+    // end of the lane after a yank and back at its own spot with it, the near
+    // end to bury what you deleted, and a mound left where it went.
+    let carried = |what| match what {
+        What::Bone => status::DOG_BONE,
+        What::Paper => status::DOG_PAPER,
+    };
+    let (x, mut dog, mut held) = match editor.dog.errand {
+        Errand::Fetching(_) => (gap.end - 1, status::DOG_RUNNING, None),
+        Errand::Carrying(what) => (home, status::DOG_SITTING, Some(carried(what))),
+        Errand::Burying => (gap.start, status::DOG_RUNNING, None),
         Errand::Petted => (home, status::DOG_SITTING, Some(status::DOG_HEART)),
         _ => (home, running, None),
     };
+    // Asleep is where it was and what it was holding, plus the one thing you
+    // can tell about a dog that has not moved for five minutes.
+    if editor.dog.asleep {
+        dog = status::DOG_SITTING;
+        held = Some(status::DOG_SLEEP);
+    }
+
+    // Two prints behind it while it runs its own lane, which is the only time
+    // it is going anywhere one cell at a time: they say which way, which one
+    // glyph on its own cannot. Dim, because they are not the dog.
+    if dog == status::DOG_RUNNING && matches!(editor.dog.errand, Errand::None | Errand::Building) {
+        let faint = Style { dim: true, ..bar };
+        for back in 1..=2 {
+            if let Some(print) = x.checked_sub(back).filter(|at| gap.contains(at)) {
+                surface.put(print, row, status::DOG_PAW, 1, faint);
+            }
+        }
+    }
+    // What it buried is still down there, at the end of the lane it went to.
+    if editor.dog.errand == Errand::Buried && gap.start != x {
+        surface.put(gap.start, row, status::DOG_BONE, 1, Style { dim: true, ..bar });
+    }
     surface.put(x, row, dog, 1, bar);
 
     // What it is holding goes beside it, in front where the lane allows and
@@ -1311,14 +1339,14 @@ mod tests {
 
         // `yy`, and it is gone: the far end of the lane, not a step along.
         editor.yank_lines(None, 1);
-        assert_eq!(editor.dog.errand, crate::editor::Errand::Fetching);
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Fetching(What::Bone));
         let away = lane_end(&editor);
         assert!(away > home + 1, "off after it: {home} -> {away}");
 
         // One rest later it is back where it was, sitting, with the thing in
         // its mouth beside it.
         editor.dog_rests();
-        assert_eq!(editor.dog.errand, crate::editor::Errand::Carrying);
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Carrying(What::Bone));
         assert!(!editor.dog.running, "the errand is over");
         let row: Vec<char> = status_row(&editor, &keys).chars().collect();
         assert_eq!(row.iter().position(|c| *c == status::DOG_SITTING), Some(home));
@@ -1328,6 +1356,89 @@ mod tests {
         editor.put(None, 1, true);
         let row: Vec<char> = status_row(&editor, &keys).chars().collect();
         assert!(!row.contains(&status::DOG_BONE), "put down");
+    }
+
+    #[test]
+    fn a_running_dog_leaves_prints_behind_it() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        for _ in 0..4 {
+            editor.dog_runs();
+        }
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let at = row.iter().position(|c| *c == status::DOG_RUNNING).expect("a running dog");
+        // Two behind it, and nothing in front: which way it is going is the
+        // whole point of them.
+        assert_eq!(row[at - 1], status::DOG_PAW);
+        assert_eq!(row[at - 2], status::DOG_PAW);
+        assert_ne!(row[at + 1], status::DOG_PAW);
+
+        // And a dog that has stopped has stopped leaving them.
+        editor.dog_rests();
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_PAW), "prints without a run");
+    }
+
+    #[test]
+    fn the_dog_buries_what_you_delete_until_you_put_it_back() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        for _ in 0..6 {
+            editor.dog_runs();
+        }
+        let home: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let was = home.iter().position(|c| *c == status::DOG_RUNNING).unwrap();
+
+        // `dd`, and it is off the other way: the near end of the lane, which
+        // is the opposite of where a yank sends it.
+        editor.delete_lines(None, 1);
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Burying);
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let away = row.iter().position(|c| *c == status::DOG_RUNNING).unwrap();
+        assert!(away < was, "the other way: {was} -> {away}");
+
+        // A rest later it is back, and what it buried is still down there.
+        editor.dog_rests();
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Buried);
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(row.contains(&status::DOG_SITTING));
+        let mound = row.iter().position(|c| *c == status::DOG_BONE).expect("a mound");
+        assert_eq!(mound, away, "where it went to bury it");
+
+        // Putting the lines back digs it up.
+        editor.put(None, 1, true);
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_BONE), "dug up");
+    }
+
+    #[test]
+    fn a_dog_with_nothing_to_do_for_five_minutes_falls_asleep() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        for _ in 0..3 {
+            editor.dog_runs();
+        }
+        editor.dog_rests();
+        let sitting: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let at = sitting.iter().position(|c| *c == status::DOG_SITTING).unwrap();
+
+        // The nap is a second, longer wait after the rest - and it is the
+        // last thing the loop waits for, so there is nothing after this one.
+        assert!(editor.dog_may_nap(), "a sitting dog might drop off");
+        editor.dog_sleeps();
+        assert!(!editor.dog_may_nap(), "and then there is nothing to wait for");
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert_eq!(row.iter().position(|c| *c == status::DOG_SITTING), Some(at), "where it was");
+        assert_eq!(row.iter().position(|c| *c == status::DOG_SLEEP), Some(at + 1));
+
+        // Any key at all wakes it, which is what the next key already does.
+        editor.dog_forgets();
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_SLEEP), "awake");
+
+        // With no dog drawn there is nothing to wait up for either.
+        editor.show_dog = false;
+        assert!(!editor.dog_may_nap());
     }
 
     #[test]

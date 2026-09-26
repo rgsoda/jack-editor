@@ -493,35 +493,43 @@ impl ApplicationHandler<Message> for App<'_> {
         self.scrolled = None;
         // The dog is the one thing here that needs a clock: it stops running
         // when nothing has arrived for a while, and nothing arriving is not
-        // an event anything else would wake up for.
-        match self.editor.dog.running {
-            true => {
-                // Nothing has arrived since the last frame, or this would not
-                // be the wait: one rest's worth of that is the dog stopping.
-                match self.resting {
-                    Some(since) if since.elapsed() >= crate::DOG_REST => {
-                        self.editor.dog_rests();
-                        // Still running after a rest means it is not resting:
-                        // it is out on an errand, which has the same clock.
-                        self.resting = self.editor.dog.running.then(Instant::now);
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                        match self.resting {
-                            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at + crate::DOG_REST)),
-                            None => event_loop.set_control_flow(ControlFlow::Wait),
-                        }
-                    }
-                    Some(since) => {
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(since + crate::DOG_REST));
-                    }
-                    None => {
-                        self.resting = Some(Instant::now());
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + crate::DOG_REST));
-                    }
+        // an event anything else would wake up for. Then one longer wait, to
+        // see whether you have gone away - and a sleeping dog needs no clock
+        // at all, so the loop goes back to waiting on events alone.
+        let patience = match (self.editor.dog.running, self.editor.dog_may_nap()) {
+            (true, _) => Some(crate::DOG_REST),
+            (false, true) => Some(crate::DOG_NAP),
+            (false, false) => None,
+        };
+        let Some(patience) = patience else {
+            self.resting = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+        match self.resting {
+            // Nothing has arrived since the last frame, or this would not be
+            // the wait: that much of it is the dog stopping, or dropping off.
+            Some(since) if since.elapsed() >= patience => {
+                match self.editor.dog.running {
+                    true => self.editor.dog_rests(),
+                    false => self.editor.dog_sleeps(),
                 }
+                // What it is waiting for now is worked out on the way back
+                // through here, once the frame this asks for has been drawn.
+                self.resting = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
             }
-            false => event_loop.set_control_flow(ControlFlow::Wait),
+            Some(since) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(since + patience));
+            }
+            None => {
+                let now = Instant::now();
+                self.resting = Some(now);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(now + patience));
+            }
         }
     }
 }

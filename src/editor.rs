@@ -134,6 +134,8 @@ pub struct Dog {
     pub running: bool,
     /// What it is doing that your typing did not ask for.
     pub errand: Errand,
+    /// Five minutes of nothing at all. Any key wakes it.
+    pub asleep: bool,
 }
 
 /// Where the dog's attention is. Following the cursor is the usual answer and
@@ -146,12 +148,24 @@ pub enum Errand {
     /// run on for once - so the status line has something moving in it for as
     /// long as the build takes, and nothing extra had to be woken up to do it.
     Building,
-    /// A yank: out to the far end of the lane, gone for one rest.
-    Fetching,
-    /// And back with what it went for, until you put it down.
-    Carrying,
+    /// Out to the far end of the lane after something, gone for one rest.
+    Fetching(What),
+    /// And back with it, until you put it down.
+    Carrying(What),
+    /// Off to the near end to bury what you deleted, and the mound that is
+    /// still there afterwards.
+    Burying,
+    Buried,
     /// Petted, until the next key.
     Petted,
+}
+
+/// What it has gone after. A yank is a bone; a build that goes green after a
+/// failing one is worth a paper.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum What {
+    Bone,
+    Paper,
 }
 
 /// A config file with `set name=value` in it: replacing the line that sets
@@ -512,6 +526,9 @@ pub struct Editor {
     /// are counted from. Kept rather than asked for again, since `:cd` can
     /// happen while a build does.
     build_root: PathBuf,
+    /// Whether the last build failed, which is what makes the next clean one
+    /// worth more than a bark.
+    build_broke: bool,
     /// True when nobody has said which directory jack is working in - a
     /// window opened from a launcher, which starts at the root of the
     /// filesystem. The first file opened settles it, and then this is false
@@ -627,6 +644,7 @@ impl Editor {
             makeprg: String::new(),
             build: 0,
             build_root: PathBuf::new(),
+            build_broke: false,
             adrift: false,
         }
     }
@@ -1984,8 +2002,15 @@ impl Editor {
             return;
         }
         let barks = self.dog.errand == Errand::Building;
+        // A build that goes green after a failing one is the good news of the
+        // day, and the dog goes and gets the paper rather than just barking.
+        let paper = barks && ok && std::mem::take(&mut self.build_broke);
         self.dog.errand = Errand::None;
         self.dog.running = false;
+        self.build_broke = !ok;
+        if paper {
+            self.dog_fetches(What::Paper);
+        }
         let mut places = crate::compile::places(&output, &self.build_root);
         // A build prints paths relative to where it ran. While that is where
         // you are standing they are openable as they are, and short enough to
@@ -4492,8 +4517,12 @@ impl Editor {
     pub fn dog_rests(&mut self) {
         match self.dog.errand {
             Errand::Building => self.dog.steps = self.dog.steps.wrapping_add(1),
-            Errand::Fetching => {
-                self.dog.errand = Errand::Carrying;
+            Errand::Fetching(what) => {
+                self.dog.errand = Errand::Carrying(what);
+                self.dog.running = false;
+            }
+            Errand::Burying => {
+                self.dog.errand = Errand::Buried;
                 self.dog.running = false;
             }
             _ => self.dog.running = false,
@@ -4503,27 +4532,52 @@ impl Editor {
     /// A yank: the dog goes after it. It is at the far end of its lane for
     /// one rest and then back where it was with the thing in its mouth, which
     /// is as much animation as a status line has any business having.
-    pub fn dog_fetches(&mut self) {
+    pub fn dog_fetches(&mut self, what: What) {
         if self.dog.errand == Errand::Building {
             return;
         }
-        self.dog.errand = Errand::Fetching;
+        self.dog.errand = Errand::Fetching(what);
         self.dog.running = true;
     }
 
-    /// A put: what it fetched goes into the buffer, so it is not carrying it
-    /// any more.
+    /// `dd`: the same trip the other way, to bury what you deleted. The mound
+    /// stays at the end of the lane until you put the lines back.
+    pub fn dog_buries(&mut self) {
+        if self.dog.errand == Errand::Building {
+            return;
+        }
+        self.dog.errand = Errand::Burying;
+        self.dog.running = true;
+    }
+
+    /// A put: what it fetched goes into the buffer, or what it buried comes
+    /// back up, so there is nothing of yours left with the dog either way.
     pub fn dog_drops(&mut self) {
-        if self.dog.errand == Errand::Carrying {
+        if matches!(self.dog.errand, Errand::Carrying(_) | Errand::Buried) {
             self.dog.errand = Errand::None;
         }
     }
 
-    /// The next key, whatever it is: a pat is over by then.
+    /// The next key, whatever it is: a pat is over by then, and so is a nap.
     pub fn dog_forgets(&mut self) {
+        self.dog.asleep = false;
         if self.dog.errand == Errand::Petted {
             self.dog.errand = Errand::None;
         }
+    }
+
+    /// Nothing at all for five minutes. Worth one wake-up to draw, and then
+    /// the loop goes back to blocking for ever - a sleeping dog is the last
+    /// frame there is until you touch the keyboard.
+    pub fn dog_sleeps(&mut self) {
+        self.dog.asleep = true;
+    }
+
+    /// Whether there is any point waiting to see if it drops off: a dog that
+    /// is not drawn, is already asleep, or is out on an errand has no nap in
+    /// it, and the loop can go back to blocking for ever.
+    pub fn dog_may_nap(&self) -> bool {
+        self.show_dog && !self.dog.asleep && self.dog.errand != Errand::Petted
     }
 
     /// `<space>p`. It stops whatever it was doing and sits, which is the
@@ -4665,7 +4719,7 @@ impl Editor {
         // The cursor lands at the start of what was yanked, as vim does.
         view.sel = Selection::point(start);
         self.set_mode(Mode::Normal);
-        self.dog_fetches();
+        self.dog_fetches(What::Bone);
     }
 
     /// Replace the selection with a register's contents. What was there goes
@@ -4747,7 +4801,7 @@ impl Editor {
         // Yanking leaves the cursor at the start of what was yanked.
         view.sel = Selection::point(start);
         self.clamp_cursor();
-        self.dog_fetches();
+        self.dog_fetches(What::Bone);
     }
 
     /// `count` characters from the cursor, stopping at the end of the line so
@@ -4802,6 +4856,7 @@ impl Editor {
         };
 
         view.cut(start, end);
+        self.dog_buries();
         self.move_cursor(Move::FirstNonBlank, false);
         self.clamp_cursor();
     }
@@ -4812,7 +4867,7 @@ impl Editor {
         let (start, end) = view.line_range(count);
         let text = view.doc.slice_str(start, end);
         registers.record_yank(register, RegisterValue::linewise(text));
-        self.dog_fetches();
+        self.dog_fetches(What::Bone);
         if count > 1 {
             self.message = format!("{count} lines yanked");
         }
@@ -5697,6 +5752,22 @@ two
         assert_eq!(e.message, "woof - no problems");
         assert_eq!(e.dog.errand, Errand::None);
         assert!(!e.dog.running, "the build is over and so is the run");
+
+        // A clean build after a failing one is worth more than a bark: the
+        // dog goes and gets the paper, and the second clean one does not.
+        e.build = 5;
+        e.dog.errand = Errand::Building;
+        e.build_finished(5, "error: no\n".into(), false);
+        e.build = 6;
+        e.dog.errand = Errand::Building;
+        e.build_finished(6, "    Finished in 0.2s\n".into(), true);
+        assert_eq!(e.dog.errand, Errand::Fetching(What::Paper));
+        e.dog_rests();
+        assert_eq!(e.dog.errand, Errand::Carrying(What::Paper));
+        e.build = 7;
+        e.dog.errand = Errand::Building;
+        e.build_finished(7, "    Finished in 0.2s\n".into(), true);
+        assert_eq!(e.dog.errand, Errand::None, "the news is a day old");
         std::fs::remove_dir_all(&root).ok();
     }
 

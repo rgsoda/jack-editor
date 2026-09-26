@@ -55,6 +55,11 @@ pub const DOG_SITTING: char = '\u{f0a43}';
 /// Both from the same icon set as the dog, so a font that has one has all.
 pub const DOG_BONE: char = '\u{f00b9}';
 pub const DOG_HEART: char = '\u{f02d1}';
+/// What it leaves behind it while it runs, what it comes back with when a
+/// build finally goes green, and what five minutes of nothing looks like.
+pub const DOG_PAW: char = '\u{f03e9}';
+pub const DOG_PAPER: char = '\u{f0395}';
+pub const DOG_SLEEP: char = '\u{f04b2}';
 /// The narrowest gap worth letting a dog into: any less and it is not running,
 /// it is stuck between the file name and the line number.
 pub const DOG_ROOM: usize = 4;

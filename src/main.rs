@@ -265,6 +265,11 @@ fn in_a_window(_editor: &mut Editor, _rx: Receiver<Message>) -> Result<()> {
 /// are thinking.
 const DOG_REST: Duration = Duration::from_millis(700);
 
+/// And how long a pause means you have gone away. One more wake-up after the
+/// dog has sat down, to draw it asleep, and then the loop blocks for ever
+/// again: a sleeping dog is the last frame there is until you come back.
+const DOG_NAP: Duration = Duration::from_secs(300);
+
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
@@ -327,12 +332,24 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         // While the dog is running, wait with a timeout rather than for ever:
         // the moment nothing arrives is the moment typing has stopped, which
         // is the one thing the dog needs a clock for.
-        let mut message = match editor.dog.running {
-            false => rx.recv()?,
-            true => match rx.recv_timeout(DOG_REST) {
+        // Running: wait a rest, and a rest that runs out is the dog stopping.
+        // Sitting but awake: wait a nap, and a nap that runs out is the dog
+        // asleep - one more wake-up, and then there is nothing left to draw.
+        // Asleep, or no dog at all: block for ever, as this always did.
+        let wait = match (editor.dog.running, editor.dog_may_nap()) {
+            (true, _) => Some(DOG_REST),
+            (false, true) => Some(DOG_NAP),
+            (false, false) => None,
+        };
+        let mut message = match wait {
+            None => rx.recv()?,
+            Some(patience) => match rx.recv_timeout(patience) {
                 Ok(message) => message,
                 Err(RecvTimeoutError::Timeout) => {
-                    editor.dog_rests();
+                    match editor.dog.running {
+                        true => editor.dog_rests(),
+                        false => editor.dog_sleeps(),
+                    }
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
