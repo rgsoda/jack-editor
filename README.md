@@ -197,6 +197,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:g/pat/cmd` | run a command on every matching line — `:g/dbg!/d`, `:g/TODO/s/TODO/DONE/` |
 | `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
 | `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
+| `:help [what]` | the keymap as a picker, with what you asked about already typed — the same list as `<space>?` |
 | `:make [cmd]` | run a build in the background; what it complained about becomes the quickfix list, and you land on the first |
 | `:cd [dir]` `:pwd` | where the pickers look and grep runs; bare `:cd` is the project the file in front of you belongs to |
 | `:config` | open the config file, writing the documented defaults first |
@@ -2593,9 +2594,12 @@ showed two files out of a hundred and thirty-four. `.git` is the one hidden
 directory left out, because nobody has ever wanted to open a file in it from
 a picker.
 
-`<space>?` is the keymap as another source, so the help is searchable by the
-key or by what it does - typing `yank` finds `y` and `yy`, typing `gn` finds the
-buffer keys. The bindings are a written table rather than something derived from
+`<space>?`, or `:help`, is the keymap as another source, so the help is
+searchable by the key or by what it does - typing `yank` finds `y` and `yy`, typing `gn` finds the
+buffer keys. `:help undo` is the same list with the query already typed, which
+is what anybody means by asking for help about something — and `:h` for short,
+since that is the one command every vim reflex reaches for.
+The bindings are a written table rather than something derived from
 the match arms, which makes it a promise: a test walks every leader key the help
 claims exists and checks it opens what it says.
 

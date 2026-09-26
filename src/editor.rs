@@ -1247,6 +1247,13 @@ impl Editor {
             }
             ("set", option) => self.set_option(option),
             ("setw", option) => self.set_and_save(option),
+            ("h" | "help", "") => self.open_help_picker(),
+            // `:help yank` is the picker with the query already typed, which
+            // is what anybody means by asking for help about something.
+            ("h" | "help", about) => {
+                self.open_help_picker();
+                self.paste(about);
+            }
             ("make", command) => self.make(command),
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
@@ -5537,6 +5544,20 @@ two
     /// A key with no modifiers, for driving a prompt.
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn help_is_a_command_as_well_as_a_key_and_takes_what_you_want_help_about() {
+        let mut e = Editor::scratch();
+        e.run_command("help");
+        assert_eq!(e.picker.as_ref().map(|picker| picker.source), Some(Source::Help));
+
+        // `:h undo` opens it with the query already typed.
+        let mut e = Editor::scratch();
+        e.run_command("h undo");
+        let picker = e.picker.as_ref().expect("a picker");
+        assert!(picker.prompt_text().ends_with("undo"), "{}", picker.prompt_text());
+        assert!(!picker.matches().is_empty(), "and something matches it");
     }
 
     #[test]
