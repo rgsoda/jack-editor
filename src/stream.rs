@@ -195,19 +195,34 @@ pub fn spawn_build(command: String, root: PathBuf, token: u64, tx: Sender<Messag
     });
 }
 
+/// Every file under `root` worth offering, as the pickers and the grep both
+/// want it: `.gitignore` honoured, whether or not the directory has been
+/// `git init`ed, and `.git` itself left alone.
+///
+/// Hidden files are in. They were out, which is what ripgrep and every picker
+/// built on it does, and it is wrong here for the same reason a listing shows
+/// dotfiles: half of a directory is a worse answer than a long one, and a
+/// query narrows it down anyway. A dotfiles repository is the case that
+/// settles it - laid out for stow, every file in it lives under `.config` or
+/// `.local`, and skipping hidden directories skips the entire repository.
+/// `.git` is the one exception, because nobody has ever wanted to open a file
+/// in it from a picker.
+fn walker(root: &Path) -> ignore::Walk {
+    ignore::WalkBuilder::new(root)
+        .require_git(false)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+}
+
 /// Walk `root` for files, sending them in batches so the picker can be used
-/// before the walk finishes. Honours `.gitignore` and skips hidden files,
-/// which is the difference between listing a project and listing a disk.
+/// before the walk finishes.
 /// `active` is the editor's current picker token: when it no longer matches
 /// this walk's, the picker is gone and there is no reason to keep reading the
 /// disk for it.
 pub fn spawn_walk(root: PathBuf, token: u64, active: Arc<AtomicU64>, tx: Sender<Message>) {
     thread::spawn(move || {
-        let walk = ignore::WalkBuilder::new(&root)
-            // A `.gitignore` says what is not worth looking at whether or not
-            // the directory has been `git init`ed yet.
-            .require_git(false)
-            .build();
+        let walk = walker(&root);
         let mut batch = Vec::with_capacity(BATCH);
         let mut total = 0;
 
@@ -260,7 +275,7 @@ pub fn spawn_grep(root: PathBuf, pattern: String, token: u64, active: Arc<Atomic
             .binary_detection(grep_searcher::BinaryDetection::quit(0))
             .build();
 
-        let walk = ignore::WalkBuilder::new(&root).require_git(false).build();
+        let walk = walker(&root);
         let mut batch: Vec<String> = Vec::with_capacity(BATCH);
         let mut total = 0;
         let mut stopped = false;
@@ -711,6 +726,13 @@ mod tests {
         std::fs::write(dir.join("src/main.rs"), "").unwrap();
         std::fs::write(dir.join("target/huge.o"), "").unwrap();
         std::fs::write(dir.join(".hidden"), "").unwrap();
+        // A dotfiles repository, laid out for stow: everything in it is under
+        // a hidden directory, and a walk that skips those finds nothing.
+        std::fs::create_dir_all(dir.join("nvim/.config/nvim")).unwrap();
+        std::fs::write(dir.join("nvim/.config/nvim/init.lua"), "").unwrap();
+        // And the one hidden directory nobody wants files out of.
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/config"), "").unwrap();
 
         let (tx, rx) = channels();
         spawn_walk(dir.clone(), 7, Arc::new(AtomicU64::new(7)), tx);
@@ -730,9 +752,10 @@ mod tests {
         }
         found.sort();
 
-        // Paths are relative to the root, build output is ignored, and so are
-        // hidden files - including the `.gitignore` that did the ignoring.
-        assert_eq!(found, ["src/main.rs"]);
+        // Paths are relative to the root and build output is ignored. Hidden
+        // files are in - a dotfiles repository is nothing else - and `.git`
+        // is the one that is not.
+        assert_eq!(found, [".gitignore", ".hidden", "nvim/.config/nvim/init.lua", "src/main.rs"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

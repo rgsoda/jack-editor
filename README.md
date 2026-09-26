@@ -2580,8 +2580,18 @@ The file picker walks the working directory with `ignore` on its own thread and
 streams batches of 512 into the open picker, so a large tree is usable
 immediately - the count in the prompt climbs with a `+` after it while the walk
 is still running. Walking stops at 100,000 files, and stops early if the picker
-it was feeding has closed. `.gitignore` and hidden files are honoured, which is
-the difference between listing a project and listing a disk.
+it was feeding has closed. `.gitignore` is honoured, which is the difference
+between listing a project and listing a disk.
+
+Hidden files are listed. They were not, which is what ripgrep and every picker
+built on it does, and it is the wrong answer here for the same reason a
+listing shows dotfiles: half of a directory is worse than a long one, and a
+query narrows it down anyway. A dotfiles repository is the case that settles
+it — laid out for stow, every file in it lives under `.config`, `.local` or
+`.emacs.d`, so skipping hidden directories skips the whole repository. Mine
+showed two files out of a hundred and thirty-four. `.git` is the one hidden
+directory left out, because nobody has ever wanted to open a file in it from
+a picker.
 
 `<space>?` is the keymap as another source, so the help is searchable by the
 key or by what it does - typing `yank` finds `y` and `yy`, typing `gn` finds the
