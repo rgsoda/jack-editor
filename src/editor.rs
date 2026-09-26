@@ -136,7 +136,18 @@ pub struct Dog {
     pub errand: Errand,
     /// Five minutes of nothing at all. Any key wakes it.
     pub asleep: bool,
+    /// What it has done for you this session, for `:dog` to read back. The
+    /// step count is already the distance, and these are the errands.
+    pub fetched: usize,
+    pub buried: usize,
+    /// Cells left of a lap at full pelt, which one sequence of keys starts
+    /// and nothing else does.
+    pub sprint: usize,
 }
+
+/// How many cells a lap at full pelt is. Wider than any terminal, so it is a
+/// lap of the line and out the other side rather than a stumble.
+const SPRINT: usize = 160;
 
 /// Where the dog's attention is. Following the cursor is the usual answer and
 /// the one with no name: the rest are the errands it goes off on.
@@ -158,6 +169,11 @@ pub enum Errand {
     Buried,
     /// Petted, until the next key.
     Petted,
+    /// Standing up and barking at something: a quit you have not saved for,
+    /// until the next key, whichever key that is.
+    Barking,
+    /// A lap of the whole line at a pace nothing else asks for.
+    Lapping,
 }
 
 /// What it has gone after. A yank is a bone; a build that goes green after a
@@ -166,6 +182,20 @@ pub enum Errand {
 pub enum What {
     Bone,
     Paper,
+}
+
+/// A number with its thousands split up, because `4112` is a number and
+/// `4,112` is a distance.
+fn grouped(number: usize) -> String {
+    let digits = number.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (seen, digit) in digits.chars().enumerate() {
+        if seen > 0 && (digits.len() - seen).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// A config file with `set name=value` in it: replacing the line that sets
@@ -417,9 +447,11 @@ pub struct Editor {
     /// What visual mode was last left with, for `gv` to bring back.
     last_visual: Option<(Selection, Mode)>,
     pub cursorline: bool,
-    /// The dog in the status line: whether to draw one, and what it is doing.
+    /// The dog in the status line: whether to draw one, what it is doing, and
+    /// what it answers to.
     pub show_dog: bool,
     pub dog: Dog,
+    pub dogname: String,
     /// Set by `:q`, read by the run loop. `Some(true)` is `:q!`.
     pub quit: Option<bool>,
     /// What `<space>{key}` runs, as set by `:map`. The leader is the space
@@ -598,6 +630,7 @@ impl Editor {
             cursorline: true,
             show_dog: true,
             dog: Dog::default(),
+            dogname: String::new(),
             semicolon: Semicolon::default(),
             tabline: Tabline::Auto,
             autoindent: true,
@@ -1295,6 +1328,7 @@ impl Editor {
             ("make", command) => self.make(command),
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
+            ("dog", _) => self.dog_report(),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
             ("guifonts", _) => self.open_font_picker(),
@@ -1787,6 +1821,7 @@ impl Editor {
                     self.message = format!("autocomplete wants 0 to 16, not {value:?}");
                 }
                 ("makeprg", _) => self.makeprg = value.trim().to_string(),
+                ("dogname", _) => self.dogname = value.trim().to_string(),
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -1873,7 +1908,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1895,6 +1930,10 @@ impl Editor {
                     match self.makeprg.is_empty() {
                         true => "(what builds this project)",
                         false => &self.makeprg,
+                    },
+                    match self.dogname.is_empty() {
+                        true => "(unnamed)",
+                        false => &self.dogname,
                     },
                     self.guifont,
                     self.guifontsize
@@ -2030,7 +2069,10 @@ impl Editor {
             self.message = match ok {
                 // The dog has been running the whole build and has earned a
                 // word in the one case where there is nothing else to say.
-                true if barks => "woof - no problems".into(),
+                true if barks => match self.dogname.trim() {
+                    "" => "woof - no problems".into(),
+                    named => format!("{named}: woof - no problems"),
+                },
                 true => "no problems".into(),
                 false => match output.lines().rev().find(|line| !line.trim().is_empty()) {
                     Some(last) => format!("failed: {}", last.trim()),
@@ -4525,6 +4567,14 @@ impl Editor {
                 self.dog.errand = Errand::Buried;
                 self.dog.running = false;
             }
+            Errand::Lapping => {
+                self.dog.steps = self.dog.steps.wrapping_add(1);
+                self.dog.sprint -= 1;
+                if self.dog.sprint == 0 {
+                    self.dog.errand = Errand::None;
+                    self.dog.running = false;
+                }
+            }
             _ => self.dog.running = false,
         }
     }
@@ -4538,6 +4588,7 @@ impl Editor {
         }
         self.dog.errand = Errand::Fetching(what);
         self.dog.running = true;
+        self.dog.fetched += 1;
     }
 
     /// `dd`: the same trip the other way, to bury what you deleted. The mound
@@ -4548,6 +4599,7 @@ impl Editor {
         }
         self.dog.errand = Errand::Burying;
         self.dog.running = true;
+        self.dog.buried += 1;
     }
 
     /// A put: what it fetched goes into the buffer, or what it buried comes
@@ -4558,12 +4610,60 @@ impl Editor {
         }
     }
 
-    /// The next key, whatever it is: a pat is over by then, and so is a nap.
+    /// The next key, whatever it is: a pat is over by then, and so is a nap,
+    /// and so is whatever it was barking about.
     pub fn dog_forgets(&mut self) {
         self.dog.asleep = false;
-        if self.dog.errand == Errand::Petted {
+        if matches!(self.dog.errand, Errand::Petted | Errand::Barking) {
             self.dog.errand = Errand::None;
         }
+    }
+
+    /// The editor has refused you something - the only thing it ever refuses,
+    /// a quit with work unsaved. The message says so and is easy to miss; a
+    /// dog standing up in the middle of the line is not.
+    pub fn dog_barks(&mut self) {
+        if self.dog.errand == Errand::Building {
+            return;
+        }
+        self.dog.errand = Errand::Barking;
+        self.dog.running = false;
+        self.dog.asleep = false;
+    }
+
+    /// A lap of the line at a pace it has no other reason to go at. There is
+    /// one sequence of keys that asks for this and it is not written down.
+    pub fn dog_laps(&mut self) {
+        self.dog.errand = Errand::Lapping;
+        self.dog.running = true;
+        self.dog.asleep = false;
+        self.dog.sprint = SPRINT;
+    }
+
+    /// `:dog`. It has been counting steps since it came in at the left of the
+    /// lane, and nothing has ever read the number back.
+    pub fn dog_report(&mut self) {
+        if !self.show_dog {
+            self.message = "there is no dog: :set dog".into();
+            return;
+        }
+        let name = match self.dogname.trim() {
+            "" => "the dog".to_string(),
+            named => named.to_string(),
+        };
+        let dog = &self.dog;
+        if dog.steps == 0 {
+            self.message = format!("{name} has not moved yet");
+            return;
+        }
+        // Cells, because that is the unit it runs in, and a lap of a wide
+        // terminal is about eighty of them.
+        self.message = format!(
+            "{name} has run {} cells, fetched {} and buried {}",
+            grouped(dog.steps),
+            dog.fetched,
+            dog.buried,
+        );
     }
 
     /// Nothing at all for five minutes. Worth one wake-up to draw, and then
@@ -5760,8 +5860,10 @@ two
         e.build_finished(5, "error: no\n".into(), false);
         e.build = 6;
         e.dog.errand = Errand::Building;
+        e.dogname = "Rex".into();
         e.build_finished(6, "    Finished in 0.2s\n".into(), true);
         assert_eq!(e.dog.errand, Errand::Fetching(What::Paper));
+        assert_eq!(e.message, "Rex: woof - no problems", "a named dog barks its name");
         e.dog_rests();
         assert_eq!(e.dog.errand, Errand::Carrying(What::Paper));
         e.build = 7;
@@ -5769,6 +5871,34 @@ two
         e.build_finished(7, "    Finished in 0.2s\n".into(), true);
         assert_eq!(e.dog.errand, Errand::None, "the news is a day old");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_dog_keeps_count_and_says_so_when_asked() {
+        let mut e = Editor::scratch();
+        e.run_command("dog");
+        assert_eq!(e.message, "the dog has not moved yet");
+
+        for _ in 0..1234 {
+            e.dog_runs();
+        }
+        e.view_mut().doc.text = ropey::Rope::from_str("one\ntwo\nthree\n");
+        e.yank_lines(None, 1);
+        e.delete_lines(None, 1);
+        e.run_command("dog");
+        assert_eq!(e.message, "the dog has run 1,234 cells, fetched 1 and buried 1");
+
+        // Named, it answers to that instead - in the count and in the bark.
+        e.run_command("set dogname=Rex");
+        e.run_command("dog");
+        assert!(e.message.starts_with("Rex has run 1,234 cells"), "{}", e.message);
+        e.run_command("set");
+        assert!(e.message.contains("dogname=Rex"), "in the settings too: {}", e.message);
+
+        // And with no dog there is nothing to count.
+        e.run_command("set nodog");
+        e.run_command("dog");
+        assert_eq!(e.message, "there is no dog: :set dog");
     }
 
     #[test]

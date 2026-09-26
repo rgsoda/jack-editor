@@ -497,6 +497,9 @@ impl ApplicationHandler<Message> for App<'_> {
         // see whether you have gone away - and a sleeping dog needs no clock
         // at all, so the loop goes back to waiting on events alone.
         let patience = match (self.editor.dog.running, self.editor.dog_may_nap()) {
+            (true, _) if self.editor.dog.errand == crate::editor::Errand::Lapping => {
+                Some(crate::DOG_ZOOM)
+            }
             (true, _) => Some(crate::DOG_REST),
             (false, true) => Some(crate::DOG_NAP),
             (false, false) => None,

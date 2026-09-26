@@ -56,6 +56,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "make", argument: Argument::None },
     Command { name: "cd", argument: Argument::Path },
     Command { name: "pwd", argument: Argument::None },
+    Command { name: "dog", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },
@@ -214,6 +215,12 @@ pub static SETTINGS: &[Setting] = &[
         name: "lsp",
         kind: Kind::Flag(true),
         about: "Start a language server for files that have one installed: diagnostics, and gd across files.",
+    },
+    Setting {
+        name: "dogname",
+        kind: Kind::Value(&["Rex", "Bluey", "Laika"], ""),
+        about: "What the dog in the status line answers to. It turns up when \
+                it barks and when `:dog` says how far it has run.",
     },
     Setting {
         name: "makeprg",

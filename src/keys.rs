@@ -274,9 +274,54 @@ pub struct Keys {
     grouped: bool,
     /// The register `"x` named for the command being typed.
     register: Option<char>,
+    /// How much of one particular sequence has been typed. Nothing else in
+    /// here counts keys across commands, and nothing else needs to.
+    konami: usize,
 }
 
+/// Up up down down left right left right b a, in a modal editor, where the
+/// first eight are motions that do no harm on the way past. Both spellings of
+/// each direction count: the arrow, and the letter a vim reflex reaches for.
+const KONAMI: [(KeyCode, KeyCode); 10] = [
+    (KeyCode::Up, KeyCode::Char('k')),
+    (KeyCode::Up, KeyCode::Char('k')),
+    (KeyCode::Down, KeyCode::Char('j')),
+    (KeyCode::Down, KeyCode::Char('j')),
+    (KeyCode::Left, KeyCode::Char('h')),
+    (KeyCode::Right, KeyCode::Char('l')),
+    (KeyCode::Left, KeyCode::Char('h')),
+    (KeyCode::Right, KeyCode::Char('l')),
+    (KeyCode::Char('b'), KeyCode::Char('b')),
+    (KeyCode::Char('a'), KeyCode::Char('a')),
+];
+
 impl Keys {
+    /// How far into the sequence this key gets, and whether it finished it.
+    /// A key that is not the next one starts again, and may itself be the
+    /// first - `kk` is two goes at the first key, not a miss and a restart.
+    fn konami(&mut self, editor: &Editor, key: KeyEvent) -> bool {
+        let plain = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
+        if !plain || editor.mode != Mode::Normal || self.pending.is_some() || self.count.is_some() {
+            self.konami = 0;
+            return false;
+        }
+        let matches = |step: usize| {
+            let (arrow, letter) = KONAMI[step];
+            key.code == arrow || key.code == letter
+        };
+        self.konami = match matches(self.konami) {
+            true => self.konami + 1,
+            false => usize::from(matches(0)),
+        };
+        match self.konami == KONAMI.len() {
+            true => {
+                self.konami = 0;
+                true
+            }
+            false => false,
+        }
+    }
+
     pub fn handle(&mut self, editor: &mut Editor, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -296,6 +341,15 @@ impl Keys {
                 Some(force) => Action::Quit { force },
                 None => Action::Continue,
             };
+        }
+
+        // The one sequence of keys that is not a command. The last key of it
+        // is swallowed - an `a` that opened insert mode would rather spoil
+        // the moment - and every other key of it does what it always does on
+        // the way past.
+        if self.konami(editor, key) {
+            editor.dog_laps();
+            return Action::Continue;
         }
 
         // Chords that mean the same thing in either mode.
@@ -3414,6 +3468,36 @@ plain
         assert_eq!(vim.editor.mode, Mode::Normal);
         assert_eq!(vim.editor.selection_range(), None);
         assert_eq!(vim.editor.cursor_coords(), (0, 1));
+    }
+
+    #[test]
+    fn one_sequence_of_motions_sends_the_dog_round_the_line() {
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\n");
+        vim.press("<up><up><down><down><left><right><left><right>b");
+        assert_eq!(vim.editor.dog.errand, crate::editor::Errand::None, "nine is not ten");
+        vim.press("a");
+        assert_eq!(vim.editor.dog.errand, crate::editor::Errand::Lapping);
+        // The last key is swallowed rather than opening insert mode.
+        assert_eq!(vim.editor.mode, Mode::Normal);
+        assert!(vim.editor.dog.running);
+
+        // It runs itself out and stops, without a key being touched.
+        let steps = vim.editor.dog.steps;
+        for _ in 0..500 {
+            vim.editor.dog_rests();
+        }
+        assert_eq!(vim.editor.dog.errand, crate::editor::Errand::None);
+        assert!(!vim.editor.dog.running, "a lap ends");
+        assert!(vim.editor.dog.steps > steps + 100, "and it was a long one");
+
+        // The vim spelling of the same eight, and a near miss that is not it.
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\n");
+        vim.press("kkjjhlhlba");
+        assert_eq!(vim.editor.dog.errand, crate::editor::Errand::Lapping);
+        let mut vim = Vim::new("one\ntwo\nthree\nfour\nfive\n");
+        vim.press("kkjjhlhlab");
+        assert_eq!(vim.editor.dog.errand, crate::editor::Errand::None);
+        assert_eq!(vim.editor.mode, Mode::Insert, "an ordinary `a`");
     }
 
     #[test]

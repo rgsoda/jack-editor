@@ -270,6 +270,10 @@ const DOG_REST: Duration = Duration::from_millis(700);
 /// again: a sleeping dog is the last frame there is until you come back.
 const DOG_NAP: Duration = Duration::from_secs(300);
 
+/// And the pace of a lap at full pelt, which one sequence of keys asks for
+/// and nothing else does. Fast enough to be a run rather than a march.
+const DOG_ZOOM: Duration = Duration::from_millis(40);
+
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
@@ -337,6 +341,7 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         // asleep - one more wake-up, and then there is nothing left to draw.
         // Asleep, or no dog at all: block for ever, as this always did.
         let wait = match (editor.dog.running, editor.dog_may_nap()) {
+            (true, _) if editor.dog.errand == editor::Errand::Lapping => Some(DOG_ZOOM),
             (true, _) => Some(DOG_REST),
             (false, true) => Some(DOG_NAP),
             (false, false) => None,

@@ -74,6 +74,9 @@ impl Session {
                             return Flow::Quit;
                         }
                         editor.message = "unsaved changes - press ^Q again to quit".into();
+                        // The one thing the editor ever refuses, and a line of
+                        // text in the middle of a status line is easy to miss.
+                        editor.dog_barks();
                         self.quit_armed = true;
                     }
                 }

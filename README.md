@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 64: a dog that fetches, buries, gets petted, runs your builds and falls asleep, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 65: a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -128,6 +128,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>n` | cycle line numbers: absolute, relative, hybrid, off |
 | `<space>x` | close this buffer |
 | `<space>p` | pet the dog |
+| `:dog` | how far it has run, and what it fetched and buried |
 | `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
 | `"+y` `"+d` `"+p` | the same, spelled as a register |
 | `^d` `^u`, page up/down | scroll |
@@ -930,6 +931,17 @@ and barks when a clean one comes back — `woof - no problems`. A build that fou
 something to complain about takes you to the first complaint instead, which is a
 better thing to be given than a bark. A clean build after a failing one is the
 good news of the day, and for that it fetches the paper.
+
+It barks when the editor refuses you. There is only one thing it refuses — a
+quit with work unsaved — and `unsaved changes - press ^Q again to quit` is a
+line of text in the middle of a busy line, which is easy to miss; a dog on its
+feet with a `!` beside it is not. Any key settles it, the same key that disarms
+the quit.
+
+`:dog` reads back what it has been doing, because it has been counting steps
+since the first one and nothing ever asked: *the dog has run 4,112 cells,
+fetched 9 and buried 3*. `:set dogname=Rex` gives it a name, and then it is Rex
+who has run 4,112 cells and Rex who barks at your build.
 
 None of them needed a clock of their own. The run loop already waits with a
 rest's timeout while the dog is running, so a rest that arrives during a build

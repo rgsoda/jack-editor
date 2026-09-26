@@ -773,6 +773,7 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
         Errand::Carrying(what) => (home, status::DOG_SITTING, Some(carried(what))),
         Errand::Burying => (gap.start, status::DOG_RUNNING, None),
         Errand::Petted => (home, status::DOG_SITTING, Some(status::DOG_HEART)),
+        Errand::Barking => (home, status::DOG_RUNNING, Some(status::DOG_ALERT)),
         _ => (home, running, None),
     };
     // Asleep is where it was and what it was holding, plus the one thing you
@@ -785,7 +786,9 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
     // Two prints behind it while it runs its own lane, which is the only time
     // it is going anywhere one cell at a time: they say which way, which one
     // glyph on its own cannot. Dim, because they are not the dog.
-    if dog == status::DOG_RUNNING && matches!(editor.dog.errand, Errand::None | Errand::Building) {
+    if dog == status::DOG_RUNNING
+        && matches!(editor.dog.errand, Errand::None | Errand::Building | Errand::Lapping)
+    {
         let faint = Style { dim: true, ..bar };
         for back in 1..=2 {
             if let Some(print) = x.checked_sub(back).filter(|at| gap.contains(at)) {
@@ -1409,6 +1412,25 @@ mod tests {
         editor.put(None, 1, true);
         let row: Vec<char> = status_row(&editor, &keys).chars().collect();
         assert!(!row.contains(&status::DOG_BONE), "dug up");
+    }
+
+    #[test]
+    fn the_dog_stands_up_and_barks_at_a_quit_you_have_not_saved_for() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        for _ in 0..4 {
+            editor.dog_runs();
+        }
+        editor.dog_rests();
+        editor.dog_barks();
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let at = row.iter().position(|c| *c == status::DOG_RUNNING).expect("on its feet");
+        assert_eq!(row.iter().position(|c| *c == status::DOG_ALERT), Some(at + 1));
+
+        // And it stops as soon as you have done anything about it.
+        editor.dog_forgets();
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_ALERT));
     }
 
     #[test]

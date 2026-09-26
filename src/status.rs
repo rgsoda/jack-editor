@@ -60,6 +60,8 @@ pub const DOG_HEART: char = '\u{f02d1}';
 pub const DOG_PAW: char = '\u{f03e9}';
 pub const DOG_PAPER: char = '\u{f0395}';
 pub const DOG_SLEEP: char = '\u{f04b2}';
+/// And what it has to say about a quit you have not saved for.
+pub const DOG_ALERT: char = '\u{f0205}';
 /// The narrowest gap worth letting a dog into: any less and it is not running,
 /// it is stuck between the file name and the line number.
 pub const DOG_ROOM: usize = 4;
