@@ -12,7 +12,7 @@ TOML.
 
 ```sh
 cargo run -- src/main.rs src/view.rs   # files
-cargo run -- .                         # a directory: the file picker, there
+cargo run -- .                         # a directory: what is in it, listed
 ```
 
 ## Install
