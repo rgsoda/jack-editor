@@ -3463,6 +3463,7 @@ plain
             // show in a scratch buffer - a word about why.
             let did_something = vim.editor.picker.is_some()
                 || vim.editor.numbers != numbers
+                || vim.editor.dog.errand != crate::editor::Errand::None
                 || !vim.editor.message.is_empty();
             assert!(did_something, "{} did nothing", binding.keys);
         }

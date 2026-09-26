@@ -909,7 +909,9 @@ took: it is at the far end of the lane for one rest and then back where it was
 with a bone beside it, and it is still holding that bone until you put the
 thing down — `p` is the dog dropping it. `<space>p` pets it, which stops it
 where it is and puts a heart next to it until the next key, and does nothing
-else whatsoever. And `:make` runs it: a build is the one time the editor is
+else whatsoever - it does not even say so, because a message is written on the
+left of the status line and the lane starts where that ends, so a word about
+petting the dog would shove the dog along the line as you reached for it. And `:make` runs it: a build is the one time the editor is
 waiting on something slow with nothing to show for it, so the dog runs for as
 long as the build does and barks when a clean one comes back — `woof - no
 problems`. A build that found something to complain about takes you to the

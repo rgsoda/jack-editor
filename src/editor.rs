@@ -4528,6 +4528,11 @@ impl Editor {
 
     /// `<space>p`. It stops whatever it was doing and sits, which is the
     /// whole of it and rather the point.
+    ///
+    /// It says nothing while it does. A message is written on the left of the
+    /// status line and the lane starts where that ends, so anything said here
+    /// would shove the dog along the line at the moment you reached out to
+    /// pet it - and the heart says it anyway.
     pub fn pet_dog(&mut self) {
         if !self.show_dog {
             self.message = "there is no dog: :set dog".into();
@@ -4535,7 +4540,6 @@ impl Editor {
         }
         self.dog.errand = Errand::Petted;
         self.dog.running = false;
-        self.message = "good dog".into();
     }
 
     /// True when something is selected outside visual mode - what shift and an

@@ -1337,12 +1337,18 @@ mod tests {
         for _ in 0..3 {
             editor.dog_runs();
         }
+        let before: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let was = before.iter().position(|c| *c == status::DOG_RUNNING).expect("a dog");
         editor.pet_dog();
         assert!(!editor.dog.running, "it stops to be petted");
         let row: Vec<char> = status_row(&editor, &keys).chars().collect();
         let at = row.iter().position(|c| *c == status::DOG_SITTING).expect("a sitting dog");
         assert_eq!(row.iter().position(|c| *c == status::DOG_HEART), Some(at + 1));
-        assert_eq!(editor.message, "good dog");
+        // And it is petted where it stands. A message would be written on the
+        // left of the line and the lane begins where that ends, so saying
+        // anything here would shove the dog along just as you reached it.
+        assert_eq!(at, was, "petting does not move it");
+        assert!(editor.message.is_empty(), "{}", editor.message);
 
         // Until the next key, which is the same life a message has.
         editor.dog_forgets();
