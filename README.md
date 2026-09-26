@@ -907,8 +907,7 @@ It needs no timer and no thread, because the keyboard is the only clock it
 wants: a cursor that moves is a step, and the moment nothing arrives is the
 moment typing has stopped. The run loop already blocks waiting for the next message; while the
 dog is running it blocks with a 700ms timeout instead, and a timeout is the
-dog sitting down. It leaves two dim paw prints in the cells behind it while it
-runs, which is what says which way it is going — one glyph on its own cannot.
+dog sitting down.
 
 A dog that has sat down waits five minutes and then falls asleep, with the
 `zzz` a sleeping dog is owed. That is the second and last wake-up: the loop

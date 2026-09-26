@@ -783,19 +783,6 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
         held = Some(status::DOG_SLEEP);
     }
 
-    // Two prints behind it while it runs its own lane, which is the only time
-    // it is going anywhere one cell at a time: they say which way, which one
-    // glyph on its own cannot. Dim, because they are not the dog.
-    if dog == status::DOG_RUNNING
-        && matches!(editor.dog.errand, Errand::None | Errand::Building | Errand::Lapping)
-    {
-        let faint = Style { dim: true, ..bar };
-        for back in 1..=2 {
-            if let Some(print) = x.checked_sub(back).filter(|at| gap.contains(at)) {
-                surface.put(print, row, status::DOG_PAW, 1, faint);
-            }
-        }
-    }
     // What it buried is still down there, at the end of the lane it went to.
     if editor.dog.errand == Errand::Buried && gap.start != x {
         surface.put(gap.start, row, status::DOG_BONE, 1, Style { dim: true, ..bar });
@@ -1359,27 +1346,6 @@ mod tests {
         editor.put(None, 1, true);
         let row: Vec<char> = status_row(&editor, &keys).chars().collect();
         assert!(!row.contains(&status::DOG_BONE), "put down");
-    }
-
-    #[test]
-    fn a_running_dog_leaves_prints_behind_it() {
-        let mut editor = editor_with_lines(10);
-        let keys = Keys::default();
-        for _ in 0..4 {
-            editor.dog_runs();
-        }
-        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
-        let at = row.iter().position(|c| *c == status::DOG_RUNNING).expect("a running dog");
-        // Two behind it, and nothing in front: which way it is going is the
-        // whole point of them.
-        assert_eq!(row[at - 1], status::DOG_PAW);
-        assert_eq!(row[at - 2], status::DOG_PAW);
-        assert_ne!(row[at + 1], status::DOG_PAW);
-
-        // And a dog that has stopped has stopped leaving them.
-        editor.dog_rests();
-        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
-        assert!(!row.contains(&status::DOG_PAW), "prints without a run");
     }
 
     #[test]
