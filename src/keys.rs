@@ -281,6 +281,9 @@ pub struct Keys {
     /// How much of one particular sequence has been typed. Nothing else in
     /// here counts keys across commands, and nothing else needs to.
     konami: usize,
+    /// Whether `^\` has been typed in a terminal buffer and the key after it
+    /// might be the `^n` that comes back out.
+    leaving_terminal: bool,
 }
 
 /// Up up down down left right left right b a, in a modal editor, where the
@@ -404,6 +407,7 @@ impl Keys {
             Mode::Normal => self.normal(editor, key, ctrl),
             Mode::Insert => insert(editor, key, ctrl),
             Mode::Visual | Mode::VisualLine | Mode::VisualBlock => self.visual(editor, key, ctrl),
+            Mode::Terminal => self.terminal(editor, key, ctrl),
         }
 
         if !self.replaying {
@@ -834,6 +838,30 @@ impl Keys {
 
     /// Visual mode. Motions drag the head of the selection; everything else
     /// acts on the whole of it at once and drops back to normal mode.
+    /// Terminal mode: every key is the program's, except the two that are
+    /// not. `^\` then `^n` comes back to normal mode, as it does in vim and
+    /// in neovim - a terminal needs `esc`, and `:`, and `d`, so the way out
+    /// has to be a chord nothing running in it wants.
+    fn terminal(&mut self, editor: &mut Editor, key: KeyEvent, ctrl: bool) {
+        if std::mem::take(&mut self.leaving_terminal) {
+            if ctrl && key.code == KeyCode::Char('n') {
+                editor.set_mode(Mode::Normal);
+                editor.message = "normal mode - i to type in it again".into();
+                return;
+            }
+            // Not the way out after all, so the program gets the `^\` it was
+            // sent first: a program waiting for a quit signal should have it.
+            editor.terminal_key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        }
+        // A terminal sends `^\` as the byte 28, and crossterm reads that back
+        // as control and `4`. Both spellings are the same key.
+        if ctrl && matches!(key.code, KeyCode::Char('\\') | KeyCode::Char('4')) {
+            self.leaving_terminal = true;
+            return;
+        }
+        editor.terminal_key(key);
+    }
+
     fn visual(&mut self, editor: &mut Editor, key: KeyEvent, ctrl: bool) {
         if key.code == KeyCode::Esc {
             self.finish();

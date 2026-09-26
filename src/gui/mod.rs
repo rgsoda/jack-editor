@@ -595,7 +595,7 @@ fn window_title(editor: &Editor) -> String {
         true => " +",
         false => "",
     };
-    format!("{}{modified} - jack", view.doc.display_name())
+    format!("{}{modified} - jack", view.name())
 }
 
 /// A terminal emulator to run `:!cmd` in: what the session says it uses, and

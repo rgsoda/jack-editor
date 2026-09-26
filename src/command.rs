@@ -49,6 +49,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "stage", argument: Argument::None },
     Command { name: "revert", argument: Argument::None },
     Command { name: "shell", argument: Argument::None },
+    Command { name: "term", argument: Argument::None },
     Command { name: "suspend", argument: Argument::None },
     Command { name: "map", argument: Argument::None },
     Command { name: "unmap", argument: Argument::None },

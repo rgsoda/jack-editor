@@ -21,6 +21,8 @@ mod picker;
 mod mouse;
 mod positions;
 mod preview;
+#[cfg(unix)]
+mod pty;
 mod quickfix;
 mod undofile;
 mod reflow;
@@ -35,6 +37,7 @@ mod status;
 mod stream;
 mod substitute;
 mod syntax;
+mod term;
 mod theme;
 mod ui;
 mod view;

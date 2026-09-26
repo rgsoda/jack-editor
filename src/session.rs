@@ -41,6 +41,9 @@ impl Session {
     pub fn before_frame(&mut self, editor: &mut Editor, cols: usize, rows: usize) {
         editor.watch_disk();
         editor.set_viewport(cols, rows);
+        // A program is told how big its terminal is once the frame that
+        // shows it has said how big that is.
+        editor.resize_terminals();
         editor.scroll_to_cursor();
         // Cheap when nothing has changed: it compares a revision first.
         editor.refresh_signs();
@@ -87,6 +90,11 @@ impl Session {
             Message::Paste(text) => {
                 editor.message.clear();
                 editor.dismiss_hover();
+                // Pasted into a terminal, text is the program's input.
+                if editor.mode == crate::editor::Mode::Terminal {
+                    editor.terminal_paste(&text);
+                    return Flow::Continue;
+                }
                 editor.paste(&text);
                 editor.dog_runs();
             }
@@ -103,6 +111,8 @@ impl Session {
             Message::Signs { token, signs, hunks } => editor.set_signs(token, signs, hunks),
             Message::Lsp { server, message } => editor.lsp_message(server, message),
             Message::Built { token, output, ok } => editor.build_finished(token, output, ok),
+            Message::Term { token, bytes } => editor.term_output(token, bytes),
+            Message::TermGone { token } => editor.term_gone(token),
             Message::Saying { token, chunk } => editor.ai_saying(token, chunk),
             Message::Said { token, said, ok } => editor.ai_answered(token, said, ok),
             // A resize needs nothing: the next frame asks how big the screen

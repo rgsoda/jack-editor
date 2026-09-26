@@ -60,6 +60,7 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-yaml = "0.7.2"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
+vte = "0.15.0"
 
 # `^z`: raising SIGTSTP is the whole of it, and there is no other way to ask.
 [target.'cfg(unix)'.dependencies]

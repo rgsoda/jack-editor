@@ -42,6 +42,12 @@ pub enum Message {
     /// last second, and a list of places that grew while you walked it would
     /// be a list you could not trust.
     Built { token: u64, output: String, ok: bool },
+    /// Bytes a program in a `:term` buffer wrote to its terminal. Whatever
+    /// arrived in one read, not whole lines: a shell's prompt has no line
+    /// break at the end of it and would never be shown if it waited for one.
+    Term { token: u64, bytes: Vec<u8> },
+    /// That program has finished and its pty has closed.
+    TermGone { token: u64 },
     /// A line of what `aiprg` is saying, as it says it.
     Saying { token: u64, chunk: String },
     /// And all of it, once it has finished, with whether it exited happily.

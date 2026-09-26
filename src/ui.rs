@@ -945,7 +945,7 @@ fn draw_inactive_status(editor: &Editor, surface: &mut Surface, id: usize, rect:
     let style = editor.theme.style("ui.statusline.inactive");
     let end = rect.x + rect.width;
 
-    let mut name = format!(" {}", view.doc.display_name());
+    let mut name = format!(" {}", view.name());
     if view.is_modified() {
         name.push(' ');
         name.push_str(status::glyphs(editor).modified);

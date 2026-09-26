@@ -157,7 +157,7 @@ pub fn tabs(editor: &Editor) -> Vec<Segment> {
                 text.push_str(icon);
                 text.push(' ');
             }
-            text.push_str(view.doc.display_name());
+            text.push_str(&view.name());
             if view.is_modified() {
                 text.push(' ');
                 text.push_str(glyphs.modified);
@@ -187,6 +187,7 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
         Mode::Normal => "ui.mode.normal",
         Mode::Insert => "ui.mode.insert",
         Mode::Visual | Mode::VisualLine | Mode::VisualBlock => "ui.mode.visual",
+        Mode::Terminal => "ui.mode.insert",
     });
 
     let mut left = vec![Segment { text: editor.mode.name().to_string(), style: mode_style }];
@@ -202,7 +203,7 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
         file.push_str(icon);
         file.push(' ');
     }
-    file.push_str(view.doc.display_name());
+    file.push_str(&view.name());
     if editor.is_modified() {
         file.push(' ');
         file.push_str(glyphs.modified);

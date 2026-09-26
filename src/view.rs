@@ -147,6 +147,10 @@ pub struct View {
     /// The listing as it was read, which is what `:w` compares the buffer
     /// against to work out what you did to it. Empty for everything else.
     pub listing_was: Vec<String>,
+    /// The program this buffer is a terminal for, when it is one. The text is
+    /// what the program has drawn, redrawn from its screen as it arrives; the
+    /// pty goes when the buffer does.
+    pub terminal: Option<Box<crate::term::Terminal>>,
     pub sel: Selection,
     /// Put the cursor's line in the middle of the screen at the next frame,
     /// rather than scrolling only as far as it takes to see it. Set when a
@@ -264,6 +268,7 @@ impl View {
             lsp: Lsp::Untried,
             listing: false,
             listing_was: Vec::new(),
+            terminal: None,
             doc,
             sel: Selection::point(0),
             goal_col: None,
@@ -653,6 +658,23 @@ impl View {
 
     pub fn history(&self) -> &History {
         &self.history
+    }
+
+    /// What this buffer is called on screen: the file's name, or - for a
+    /// terminal buffer, which has no file - what the program running in it
+    /// calls itself.
+    pub fn name(&self) -> String {
+        match &self.terminal {
+            Some(terminal) => terminal.name(),
+            None => self.doc.display_name().to_string(),
+        }
+    }
+
+    /// Throw the undo history away. For a buffer whose text is not yours -
+    /// a terminal's screen, redrawn from the program - where `u` would put
+    /// back a screen that no longer means anything.
+    pub fn forget_history(&mut self) {
+        self.history = History::new();
     }
 
     /// A history read back from the undo file, in place of the empty one a
@@ -1377,7 +1399,10 @@ impl View {
     /// nothing typed into it. Opening a file replaces one of these rather than
     /// leaving a dead tab beside it.
     pub fn is_empty_scratch(&self) -> bool {
-        self.doc.path.is_none() && self.doc.len_chars() == 0 && !self.is_modified()
+        self.doc.path.is_none()
+            && self.doc.len_chars() == 0
+            && self.terminal.is_none()
+            && !self.is_modified()
     }
 
     /// Apply a transaction to the text and the syntax tree, and log it for any

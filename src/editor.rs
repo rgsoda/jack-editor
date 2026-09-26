@@ -30,6 +30,7 @@ mod git;
 pub(crate) mod listing;
 mod lsp;
 mod replace;
+mod terminal;
 mod surround;
 
 /// How many characters of a word bring the completion popup up on its own.
@@ -377,6 +378,9 @@ pub enum Mode {
     /// several lines, which is a different model and not a third variant of
     /// the other two. See `editor::block`.
     VisualBlock,
+    /// Keys go to the program in a `:term` buffer rather than to the editor.
+    /// `^\ ^n` comes back out, as it does in vim.
+    Terminal,
 }
 
 impl Mode {
@@ -387,6 +391,7 @@ impl Mode {
             Mode::Visual => "VISUAL",
             Mode::VisualLine => "V-LINE",
             Mode::VisualBlock => "V-BLOCK",
+            Mode::Terminal => "TERMINAL",
         }
     }
 
@@ -577,6 +582,9 @@ pub struct Editor {
     /// Whether the last build failed, which is what makes the next clean one
     /// worth more than a bark.
     build_broke: bool,
+    /// Terminals opened this session, counting from one: what tells one
+    /// `:term` buffer's output from another's.
+    terms: u64,
     /// The column `gq` wraps to. Not a limit on what you may type: nothing
     /// happens at this width until you ask for it.
     pub textwidth: usize,
@@ -718,6 +726,7 @@ impl Editor {
             build_group: crate::stream::pgid(),
             ai_group: crate::stream::pgid(),
             build_broke: false,
+            terms: 0,
             textwidth: DEFAULT_TEXTWIDTH,
             aiprg: String::new(),
             ai: 0,
@@ -1416,6 +1425,7 @@ impl Editor {
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
             ("diff", which) => self.diff_with(which),
+            ("term" | "terminal", command) => self.open_terminal(command),
             ("dog", _) => self.dog_report(),
             ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
@@ -2845,7 +2855,7 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(id, view)| Item {
-                text: view.doc.display_name().to_string(),
+                text: view.name(),
                 target: String::new(),
                 detail: match (id == current, view.is_modified()) {
                     (true, true) => "% [+]".into(),
@@ -2925,7 +2935,7 @@ impl Editor {
             let Some(path) = view.doc.path.as_deref() else {
                 continue;
             };
-            let shown = view.doc.display_name();
+            let shown = view.name();
             for diagnostic in &view.diagnostics {
                 let first = diagnostic.message.lines().next().unwrap_or_default();
                 let line = view.doc.char_to_line(diagnostic.start.min(view.doc.len_chars()));
@@ -4643,6 +4653,15 @@ impl Editor {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
+        // `i` in a terminal buffer means "type in the program", not "type in
+        // the text": the text is the program's screen and inserting into it
+        // would be painted over by the next thing it wrote. Every way into
+        // insert mode - `i`, `a`, `A`, `o`, `c` - comes through here, so it is
+        // the one place that has to know.
+        let mode = match mode == Mode::Insert && self.is_terminal() {
+            true => Mode::Terminal,
+            false => mode,
+        };
         // Leaving insert mode after a block `I`, `A` or `c` puts what was
         // typed on the rest of the block's lines. It has to happen before the
         // cursor steps back off the last character typed.
@@ -4688,7 +4707,10 @@ impl Editor {
     /// Insert mode is the only one that lets the cursor sit past the last
     /// character of a line.
     pub fn clamp_cursor(&mut self) {
-        if self.mode != Mode::Insert {
+        // Terminal mode is insert mode as far as the cursor is concerned: a
+        // shell's cursor sits one past the last character of the prompt, and
+        // pulling it back onto the `$` would be a lie about where typing goes.
+        if !matches!(self.mode, Mode::Insert | Mode::Terminal) {
             self.view_mut().clamp_cursor();
         }
     }
@@ -5335,6 +5357,11 @@ impl Editor {
             Mode::Normal => {
                 self.put(Some(SYSTEM), 1, true);
                 self.clamp_cursor();
+            }
+            // What is on the clipboard, as the program's own input.
+            Mode::Terminal => {
+                let text = self.registers.get(Some(SYSTEM)).text;
+                self.terminal_paste(&text);
             }
         }
     }

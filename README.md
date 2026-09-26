@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 67: `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 68: `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -191,6 +191,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:revert` `:stage` | put back git's lines for the hunk under the cursor, or stage just that hunk |
 | `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
 | `:sh` | a shell; `exit` comes back |
+| `:term [cmd]` | a shell, or one command, in a buffer of its own — `i` types in it, `^\ ^n` comes back out |
 | `^z` `:suspend` | stop jack and go back to the shell; `fg` comes back |
 | `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
 | `:e path` `:e!` | open a file or list a directory, reload this one from disk |
@@ -386,6 +387,13 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
+- `term.rs` — what a program writes to a terminal, as a grid of characters: a
+  cursor, a scrollback, the alternate screen, and the escape sequences that
+  move them about. The state machine underneath is vte's; what the sequences
+  mean is here. Bytes in, lines out, and no pty anywhere in it.
+- `pty.rs` — the pty itself: the program, the terminal it thinks it has, the
+  thread that reads it, and the hangup that goes with closing the buffer.
+  Unix only, because a pty is.
 - `reflow.rs` — `gq`: the prefix a paragraph's lines share - the indent and
   the `//` - taken off, the words wrapped to a width, and the prefix put back
   on every line of the answer. Strings only.
@@ -1768,6 +1776,59 @@ being replaced.
 Nothing is said when a mapping works. A config file is read by running its
 lines, so anything said there reads as a complaint about the line and stops the
 file - which is the same silence `:set` keeps, for the same reason.
+
+## A terminal in a buffer
+
+`:term` opens a shell in a buffer, and `:term cargo test` one command. It is
+text in a buffer, the way a directory listing is: `j` and `k` walk it, `/`
+searches it, `y` yanks out of it, `^w s` puts it beside the file you are
+reading and `:bd` closes it and the program with it. Nothing below that layer
+knows it is looking at a terminal.
+
+`i` starts typing in the program - the status line says `TERMINAL` - and
+`^\ ^n` comes back out to normal mode. That is neovim's arrangement and the
+reason for it is the same: a terminal needs every key there is, `:` and `d`
+and `esc` included, so the way out has to be a chord nothing running inside
+wants. Everything else goes straight through, `^c` first among them.
+
+This is the third way jack runs something, and the three are for three
+different things. `:!lazygit` hands over the whole terminal and waits, which
+is what a full-screen program you are going to sit in wants. `:make` runs a
+build with nothing to look at and turns what it said into the quickfix list.
+`:term` is for the things in between: a shell you go back to, a test run you
+want to watch and then scroll back through, a `git log` you want to yank a
+hash out of.
+
+**How it works.** A pty, because a pipe is not a terminal: a shell behaves
+differently when its output is not one, and the programs worth running in a
+buffer want a size, a controlling terminal and a `SIGWINCH` when that size
+changes. `pty.rs` opens one, starts the program in a session of its own so
+that `^c` reaches it and not jack, and reads what it writes on a thread, onto
+the same channel as keys and git signs. Closing the buffer drops the pty, and
+dropping it hangs the program up - the whole process group, so a shell's
+children go too.
+
+`term.rs` is what those bytes mean: a grid of characters, a cursor, a
+scrollback, the alternate screen that `less` and `vim` ask for, and the escape
+sequences a shell actually uses. The state machine underneath it is vte's,
+alacritty's parser - the awkward part of reading escape sequences is not the
+sequences, it is the states around them, and half a parser is worse than none.
+What each sequence *means* is jack's. It is handed bytes and asked what the
+screen looks like, so it is tested with a string and an assertion rather than
+with a shell.
+
+After each batch of output the screen is turned into lines and the buffer is
+replaced with them, cursor and all. The whole text every time: eighty columns
+by fifty rows can all have changed, and working out which ones did would cost
+more than writing them. The undo history is thrown away with each redraw,
+because the text is the program's and not yours - `u` in a terminal buffer
+does nothing rather than half-restoring a screen from a second ago.
+
+What is given up is colour. Keeping it would mean a second kind of window with
+a second way of drawing and a second set of keys, and a shell you can scroll,
+search and yank from is worth more than a coloured one you cannot. The window
+the program is told about is the buffer's own, gutter taken off, so what it
+draws fits where it is drawn, and a split or a resize tells it again.
 
 ## Handing the terminal over
 
