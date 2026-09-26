@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 62: a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 62: a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -176,7 +176,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | | |
 |---|---|
 | `tab` `shift-tab` | complete the command, the option, or the path |
-| `:w [path]` `:w!` | write, write elsewhere, write over a changed file |
+| `:w [path]` `:w!` | write, write elsewhere, write over a changed file — and, in a listing, do to the directory what was done to its lines |
 | `:wa` `:wqa` `:xa` | write every changed buffer, and quit |
 | `:q` `:q!` `:wq` `:x` | quit, discard changes, write and quit — or close the window, while there is more than one |
 | `:sp [path]` `:vs [path]` | split below / beside, onto this file or another |
@@ -314,7 +314,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   started in was anybody's choice, the project a file belongs to, and `~` both
   ways. Paths only; the moving is `:cd`'s.
 - `editor/listing.rs` — a directory as a buffer: what is in it, in the order it
-  is read in, and what `enter` and `-` do with the line under the cursor.
+  is read in, what `enter` and `-` do with the line under the cursor, and the
+  diff between the lines as they were read and the lines as they are now that
+  makes `:w` a rename rather than a deletion.
 - `window.rs` — how the screen is divided: a tree of splits with window ids at
   the leaves, the rectangles it works out to, and which window is beside which.
   Arithmetic only; what a window shows is the editor's.
@@ -2483,9 +2485,39 @@ its own: `ui.listing.directory` and `ui.listing.parent`, handed to the drawing
 code in the same shape a grammar's highlights arrive in, so nothing below knows
 the difference.
 
-What is deliberately not here yet is oil's editable listing — renaming a file
-by editing its line, deleting one by deleting it, and `:w` to mean it. That is
-a good idea and a separate change; looking around comes first.
+### Editing the directory
+
+The listing is editable, as oil's is. Change a line and `:w`, and the file is
+renamed. Add a line and it is a new empty file; end it with `/` and it is a new
+directory. Delete a line and the file goes — except that nothing is deleted
+without `:w!`, which is the one rule worth remembering. A plain `:w` says what
+it would remove and does nothing:
+
+```
+delete README.md - :w! to go ahead
+```
+
+Every editing key you already have works on it, because it is a buffer: `cw`
+over a name, `:%s/\.js$/.ts/` across all of them, `dd` on the line, `.` on the
+next one, `u` to take the text back before you have written it.
+
+What makes a changed line a *rename* rather than a deletion and a new empty
+file is that the lines as they were read are kept beside the buffer, and `:w`
+is a diff between the two. Position alone is not enough: delete `.hidden` and
+edit `main.rs` to `app.rs` in the same breath, and pairing by position renames
+the wrong file. So inside a run the diff could not match up, a pair is the one
+that looks most like it — how much of the name two lines start and end with in
+common — taken best-first, and position decides only when nothing resembles
+anything, which is when position is all there is. Nothing is hidden in the
+buffer to track identity: the text is the whole of the state, here as
+everywhere else.
+
+Two things it will not do. A name is a name, not a path: `../elsewhere/x.rs`
+typed into a line is refused rather than moving a file out of sight, and so is
+the same name on two lines, before anything at all has happened. And a
+directory with anything in it is not removed — a line deleted by accident
+should cost one empty directory, never a tree. Go in and empty it, which is the
+same keys again.
 
 ## Picker
 

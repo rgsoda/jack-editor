@@ -4062,14 +4062,12 @@ impl Editor {
     /// Write the buffer, optionally to a new path. `force` overrides the guard
     /// against overwriting a file that has changed behind our back.
     pub fn write(&mut self, path: Option<PathBuf>, force: bool) {
-        // A listing is a picture of a directory, not the directory: writing
-        // it would mean renaming and deleting what it names, which is a
-        // feature this does not have yet.
+        // A listing is written by doing to the directory what was done to its
+        // lines - a rename is an edited line, a deletion is a line that is
+        // gone - rather than by saving the text over the directory, which is
+        // not a thing a directory can be.
         if self.view().listing && path.is_none() {
-            self.message = format!(
-                "{} is a directory - a listing is not written back",
-                self.view().doc.display_name()
-            );
+            self.write_listing(force);
             return;
         }
         if let Some(path) = path {

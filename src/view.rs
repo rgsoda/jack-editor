@@ -141,8 +141,12 @@ pub struct View {
     pub doc: Document,
     /// Whether this buffer is a directory listing rather than a file. A
     /// listing is text like any other, but it is not highlighted as source,
-    /// not written back, and not reloaded from disk behind the cursor.
+    /// not reloaded from disk behind the cursor, and written back by doing
+    /// what was done to its lines rather than by saving them.
     pub listing: bool,
+    /// The listing as it was read, which is what `:w` compares the buffer
+    /// against to work out what you did to it. Empty for everything else.
+    pub listing_was: Vec<String>,
     pub sel: Selection,
     /// Put the cursor's line in the middle of the screen at the next frame,
     /// rather than scrolling only as far as it takes to see it. Set when a
@@ -259,6 +263,7 @@ impl View {
             edits: 0,
             lsp: Lsp::Untried,
             listing: false,
+            listing_was: Vec::new(),
             doc,
             sel: Selection::point(0),
             goal_col: None,
@@ -274,9 +279,13 @@ impl View {
         }
     }
 
-    /// A view over a directory listing: the same buffer, marked as one.
+    /// A view over a directory listing: the same buffer, marked as one, and
+    /// remembering the lines it was opened with - a rename is a line that
+    /// differs from the one that was read there, so the one that was read has
+    /// to be kept.
     pub fn listing(doc: Document) -> Self {
-        View { listing: true, ..View::new(doc) }
+        let was = doc.text.lines().map(|line| line.to_string().trim_end().to_string()).collect();
+        View { listing: true, listing_was: was, ..View::new(doc) }
     }
 
     /// Set up highlighting for the document's language, if we know it. Returns
