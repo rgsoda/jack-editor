@@ -501,11 +501,16 @@ impl ApplicationHandler<Message> for App<'_> {
                 match self.resting {
                     Some(since) if since.elapsed() >= crate::DOG_REST => {
                         self.editor.dog_rests();
-                        self.resting = None;
+                        // Still running after a rest means it is not resting:
+                        // it is out on an errand, which has the same clock.
+                        self.resting = self.editor.dog.running.then(Instant::now);
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
-                        event_loop.set_control_flow(ControlFlow::Wait);
+                        match self.resting {
+                            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at + crate::DOG_REST)),
+                            None => event_loop.set_control_flow(ControlFlow::Wait),
+                        }
                     }
                     Some(since) => {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(since + crate::DOG_REST));

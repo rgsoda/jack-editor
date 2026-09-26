@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::editor::{Completing, Editor, Prompt};
+use crate::editor::{Completing, Editor, Errand, Prompt};
 use crate::view::Diagnostic;
 use crate::window::Rect;
 use crate::view::cluster_width;
@@ -752,16 +752,37 @@ fn draw_dog(editor: &Editor, surface: &mut Surface, row: usize, gap: Range<usize
         return;
     }
 
-    let dog = match editor.dog.running {
-        true => status::DOG_RUNNING,
-        false => status::DOG_SITTING,
-    };
     // Where it has got to, running or resting: a dog that stops running stops
     // where it is, and starts again from there, which is the only way the two
     // glyphs read as one animal rather than two. Before the first key that is
     // the start of the lane, which is where it comes in from.
-    let x = gap.start + editor.dog.steps % lane;
+    let home = gap.start + editor.dog.steps % lane;
+    let running = match editor.dog.running {
+        true => status::DOG_RUNNING,
+        false => status::DOG_SITTING,
+    };
+    // An errand is somewhere else to be and something to be holding: gone to
+    // the far end of the lane after a yank, and back at its own spot with it.
+    let (x, dog, held) = match editor.dog.errand {
+        Errand::Fetching => (gap.end - 1, status::DOG_RUNNING, None),
+        Errand::Carrying => (home, status::DOG_SITTING, Some(status::DOG_BONE)),
+        Errand::Petted => (home, status::DOG_SITTING, Some(status::DOG_HEART)),
+        _ => (home, running, None),
+    };
     surface.put(x, row, dog, 1, bar);
+
+    // What it is holding goes beside it, in front where the lane allows and
+    // behind where it does not - one cell either way, and neither on top of
+    // the dog nor outside its lane.
+    if let Some(glyph) = held {
+        let beside = match x + 1 < gap.end {
+            true => x + 1,
+            false => x.saturating_sub(1),
+        };
+        if beside != x && gap.contains(&beside) {
+            surface.put(beside, row, glyph, 1, bar);
+        }
+    }
 }
 
 /// What `tab` is offering on the `:` line, in the row above it, with the one
@@ -1271,6 +1292,86 @@ mod tests {
         let moved: Vec<char> = status_row(&editor, &keys).chars().collect();
         let now = moved.iter().position(|c| *c == status::DOG_RUNNING).unwrap();
         assert_eq!(now, stopped + 1);
+    }
+
+    #[test]
+    fn the_dog_fetches_a_yank_and_brings_it_back() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        let lane_end = |editor: &Editor| {
+            let row: Vec<char> = status_row(editor, &keys).chars().collect();
+            row.iter().position(|c| *c == status::DOG_RUNNING).unwrap()
+        };
+
+        // A few keys, so it is somewhere of its own to come back to.
+        for _ in 0..5 {
+            editor.dog_runs();
+        }
+        let home = lane_end(&editor);
+
+        // `yy`, and it is gone: the far end of the lane, not a step along.
+        editor.yank_lines(None, 1);
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Fetching);
+        let away = lane_end(&editor);
+        assert!(away > home + 1, "off after it: {home} -> {away}");
+
+        // One rest later it is back where it was, sitting, with the thing in
+        // its mouth beside it.
+        editor.dog_rests();
+        assert_eq!(editor.dog.errand, crate::editor::Errand::Carrying);
+        assert!(!editor.dog.running, "the errand is over");
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert_eq!(row.iter().position(|c| *c == status::DOG_SITTING), Some(home));
+        assert_eq!(row.iter().position(|c| *c == status::DOG_BONE), Some(home + 1));
+
+        // And putting it down is what a put is.
+        editor.put(None, 1, true);
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_BONE), "put down");
+    }
+
+    #[test]
+    fn a_petted_dog_sits_with_a_heart_until_the_next_key() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        for _ in 0..3 {
+            editor.dog_runs();
+        }
+        editor.pet_dog();
+        assert!(!editor.dog.running, "it stops to be petted");
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        let at = row.iter().position(|c| *c == status::DOG_SITTING).expect("a sitting dog");
+        assert_eq!(row.iter().position(|c| *c == status::DOG_HEART), Some(at + 1));
+        assert_eq!(editor.message, "good dog");
+
+        // Until the next key, which is the same life a message has.
+        editor.dog_forgets();
+        let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+        assert!(!row.contains(&status::DOG_HEART));
+
+        // And with no dog to pet, it says so rather than pretending.
+        editor.show_dog = false;
+        editor.pet_dog();
+        assert!(editor.message.contains(":set dog"), "{}", editor.message);
+    }
+
+    #[test]
+    fn the_dog_runs_for_as_long_as_the_build_does() {
+        let mut editor = editor_with_lines(10);
+        let keys = Keys::default();
+        editor.dog.errand = crate::editor::Errand::Building;
+        editor.dog.running = true;
+
+        // A rest is a step while a build is running: the run loop's timeout
+        // is the clock, and nothing else had to be woken up for it.
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let row: Vec<char> = status_row(&editor, &keys).chars().collect();
+            seen.push(row.iter().position(|c| *c == status::DOG_RUNNING).expect("running"));
+            editor.dog_rests();
+            assert!(editor.dog.running, "a build keeps it going");
+        }
+        assert!(seen.windows(2).all(|w| w[1] == w[0] + 1), "{seen:?}");
     }
 
     #[test]

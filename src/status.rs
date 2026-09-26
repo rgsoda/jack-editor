@@ -51,6 +51,10 @@ pub struct Glyphs {
 /// icons, so they need the patched font the rest of the pretty glyphs do.
 pub const DOG_RUNNING: char = '\u{f0a44}';
 pub const DOG_SITTING: char = '\u{f0a43}';
+/// What it comes back from a yank with, and what being petted looks like.
+/// Both from the same icon set as the dog, so a font that has one has all.
+pub const DOG_BONE: char = '\u{f00b9}';
+pub const DOG_HEART: char = '\u{f02d1}';
 /// The narrowest gap worth letting a dog into: any less and it is not running,
 /// it is stuck between the file name and the line number.
 pub const DOG_ROOM: usize = 4;

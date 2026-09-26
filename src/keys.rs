@@ -107,6 +107,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>B", what: "who last changed this line, when, and why", mode: "normal" },
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
+    Binding { keys: "<space>p", what: "pet the dog", mode: "normal" },
     Binding { keys: "<space>x", what: "close this buffer", mode: "normal" },
 
     Binding { keys: "^q", what: "in a picker: send what is listed to the quickfix list", mode: "normal" },
@@ -649,6 +650,7 @@ impl Keys {
                     KeyCode::Char('e') => editor.open_diagnostics_picker(),
                     KeyCode::Char('q') => editor.open_quickfix_picker(),
                     KeyCode::Char('c') => editor.open_changed_picker(),
+                    KeyCode::Char('p') => editor.pet_dog(),
                     KeyCode::Char('h') => editor.preview_hunk(),
                     KeyCode::Char('B') => editor.blame_line(),
                     KeyCode::Char('?') => editor.open_help_picker(),

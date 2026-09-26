@@ -132,6 +132,26 @@ pub struct Dog {
     /// that the dog sits where it stopped; zero means it has never run.
     pub steps: usize,
     pub running: bool,
+    /// What it is doing that your typing did not ask for.
+    pub errand: Errand,
+}
+
+/// Where the dog's attention is. Following the cursor is the usual answer and
+/// the one with no name: the rest are the errands it goes off on.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Errand {
+    #[default]
+    None,
+    /// A build is running, and the run loop's timeout is a clock the dog can
+    /// run on for once - so the status line has something moving in it for as
+    /// long as the build takes, and nothing extra had to be woken up to do it.
+    Building,
+    /// A yank: out to the far end of the lane, gone for one rest.
+    Fetching,
+    /// And back with what it went for, until you put it down.
+    Carrying,
+    /// Petted, until the next key.
+    Petted,
 }
 
 /// A config file with `set name=value` in it: replacing the line that sets
@@ -1949,6 +1969,10 @@ impl Editor {
         self.build += 1;
         self.build_root = root.clone();
         self.message = format!("{command}...");
+        // Something has to say it is still going, and there is already an
+        // animal in the status line with nothing to do while you wait.
+        self.dog.errand = Errand::Building;
+        self.dog.running = true;
         crate::stream::spawn_build(command, root, self.build, jobs);
     }
 
@@ -1959,6 +1983,9 @@ impl Editor {
         if token == 0 || token != self.build {
             return;
         }
+        let barks = self.dog.errand == Errand::Building;
+        self.dog.errand = Errand::None;
+        self.dog.running = false;
         let mut places = crate::compile::places(&output, &self.build_root);
         // A build prints paths relative to where it ran. While that is where
         // you are standing they are openable as they are, and short enough to
@@ -1976,6 +2003,9 @@ impl Editor {
             // worked - and when it did not, the last thing it said, since a
             // build that failed without naming a file has still failed.
             self.message = match ok {
+                // The dog has been running the whole build and has earned a
+                // word in the one case where there is nothing else to say.
+                true if barks => "woof - no problems".into(),
                 true => "no problems".into(),
                 false => match output.lines().rev().find(|line| !line.trim().is_empty()) {
                     Some(last) => format!("failed: {}", last.trim()),
@@ -3741,6 +3771,7 @@ impl Editor {
         }
         let text = value.text.clone();
         self.insert(&text);
+        self.dog_drops();
     }
 
     /// `^t`: swap the two characters around the cursor, as emacs does - which
@@ -4454,8 +4485,57 @@ impl Editor {
     /// Typing stopped: the dog sits down where it had got to. Keeping the
     /// step count is what puts it there rather than back in the middle, and
     /// what makes the next burst of typing carry on from the same place.
+    ///
+    /// Unless it is out on an errand, which is the one thing that keeps it
+    /// going when the keyboard has gone quiet: a build runs it on, and a
+    /// fetch is over in a rest.
     pub fn dog_rests(&mut self) {
+        match self.dog.errand {
+            Errand::Building => self.dog.steps = self.dog.steps.wrapping_add(1),
+            Errand::Fetching => {
+                self.dog.errand = Errand::Carrying;
+                self.dog.running = false;
+            }
+            _ => self.dog.running = false,
+        }
+    }
+
+    /// A yank: the dog goes after it. It is at the far end of its lane for
+    /// one rest and then back where it was with the thing in its mouth, which
+    /// is as much animation as a status line has any business having.
+    pub fn dog_fetches(&mut self) {
+        if self.dog.errand == Errand::Building {
+            return;
+        }
+        self.dog.errand = Errand::Fetching;
+        self.dog.running = true;
+    }
+
+    /// A put: what it fetched goes into the buffer, so it is not carrying it
+    /// any more.
+    pub fn dog_drops(&mut self) {
+        if self.dog.errand == Errand::Carrying {
+            self.dog.errand = Errand::None;
+        }
+    }
+
+    /// The next key, whatever it is: a pat is over by then.
+    pub fn dog_forgets(&mut self) {
+        if self.dog.errand == Errand::Petted {
+            self.dog.errand = Errand::None;
+        }
+    }
+
+    /// `<space>p`. It stops whatever it was doing and sits, which is the
+    /// whole of it and rather the point.
+    pub fn pet_dog(&mut self) {
+        if !self.show_dog {
+            self.message = "there is no dog: :set dog".into();
+            return;
+        }
+        self.dog.errand = Errand::Petted;
         self.dog.running = false;
+        self.message = "good dog".into();
     }
 
     /// True when something is selected outside visual mode - what shift and an
@@ -4581,6 +4661,7 @@ impl Editor {
         // The cursor lands at the start of what was yanked, as vim does.
         view.sel = Selection::point(start);
         self.set_mode(Mode::Normal);
+        self.dog_fetches();
     }
 
     /// Replace the selection with a register's contents. What was there goes
@@ -4662,6 +4743,7 @@ impl Editor {
         // Yanking leaves the cursor at the start of what was yanked.
         view.sel = Selection::point(start);
         self.clamp_cursor();
+        self.dog_fetches();
     }
 
     /// `count` characters from the cursor, stopping at the end of the line so
@@ -4726,6 +4808,7 @@ impl Editor {
         let (start, end) = view.line_range(count);
         let text = view.doc.slice_str(start, end);
         registers.record_yank(register, RegisterValue::linewise(text));
+        self.dog_fetches();
         if count > 1 {
             self.message = format!("{count} lines yanked");
         }
@@ -4767,6 +4850,7 @@ impl Editor {
         } else {
             self.view_mut().put_inline(&text, after);
         }
+        self.dog_drops();
     }
 
     pub fn open_line_below(&mut self) {
@@ -4826,6 +4910,7 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'e' => "the diagnostics picker",
         'q' => "the quickfix list",
         'c' => "the changed-files picker",
+        'p' => "petting the dog",
         '?' => "the help picker",
         'n' => "line numbers",
         'x' => "close this buffer",
@@ -5598,6 +5683,16 @@ two
         e.build = 3;
         e.build_finished(3, "    Finished in 0.2s\n".into(), true);
         assert_eq!(e.message, "no problems");
+
+        // And when the dog has been running the build, it says so: the one
+        // case where there was nothing else to say.
+        e.build = 4;
+        e.dog.errand = Errand::Building;
+        e.dog.running = true;
+        e.build_finished(4, "    Finished in 0.2s\n".into(), true);
+        assert_eq!(e.message, "woof - no problems");
+        assert_eq!(e.dog.errand, Errand::None);
+        assert!(!e.dog.running, "the build is over and so is the run");
         std::fs::remove_dir_all(&root).ok();
     }
 

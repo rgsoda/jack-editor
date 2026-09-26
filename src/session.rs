@@ -56,6 +56,8 @@ impl Session {
         match message {
             Message::Key(key) => {
                 editor.message.clear();
+                // A pat lasts until the next key, the same as a message does.
+                editor.dog_forgets();
                 // The box from a `K` is read and gone, the same as a message.
                 editor.dismiss_hover();
                 let was_armed = std::mem::take(&mut self.quit_armed);
