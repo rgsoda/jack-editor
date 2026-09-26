@@ -330,6 +330,16 @@ impl View {
         }
     }
 
+    /// The lines of the item the cursor is in, from the grammar. `None`
+    /// without a grammar, or at the top level of a file where there is no
+    /// item to be in.
+    pub fn item_lines(&self, at: usize) -> Option<(usize, usize)> {
+        let syntax = self.syntax.as_ref()?;
+        let range = syntax.item_at(self.doc.text.char_to_byte(at))?;
+        let end = range.end.min(self.doc.text.len_bytes());
+        Some((self.doc.text.byte_to_line(range.start), self.doc.text.byte_to_line(end)))
+    }
+
     /// Where `name` is defined, as a char index: `gd` with `local`, `gD`
     /// without. Three tiers, and the last one needs no grammar at all - which
     /// is why `gd` does something sensible in a file we have no parser for.

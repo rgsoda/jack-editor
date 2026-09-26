@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 65: a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 66: `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -221,6 +221,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set makeprg=cargo test` | what a bare `:make` runs; empty means whatever builds the project you are in |
+| `:ai {what you want}` | ask the program `aiprg` names; over a selection it rewrites those lines, otherwise it answers in a buffer |
+| `:set aiprg=claude -p` | what `:ai` runs; empty, and `:ai` does nothing at all |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
@@ -379,6 +381,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
+- `ai.rs` — what gets sent to the program that answers questions about code,
+  and what to make of what comes back: the prompt, and the fence that has to
+  come off the answer. Pure functions, because what leaves the machine is
+  worth being able to test exactly. Nothing in it talks to anything.
 - `compile.rs` — what a build said, read back as places: the four shapes a
   compiler names a file and a line in, and the guess at what builds a project.
   No running in it; that is a background job like any other.
@@ -2300,6 +2306,56 @@ per candidate line and it is the difference between a list of errors and a
 list of noise. The column is read only so it cannot be mistaken for part of
 the message, and then dropped: the list is lines, for the same reason the jump
 list is.
+
+## Asking a program about your code
+
+`:ai {what you want}` hands your question to whatever `:set aiprg=` names and
+does something with the answer. Over a selection it rewrites those lines; with
+no selection it answers in a buffer of its own. There is no default: until you
+name a program, `:ai` does nothing and says so.
+
+```
+:set aiprg=claude -p
+V}                      the lines you mean
+:ai add doc comments    and they come back written
+```
+
+The program is anything that reads a prompt on stdin and writes an answer on
+stdout — `claude -p`, `llm`, `ollama run llama3`, a shell script of your own.
+That is the whole contract. jack has no HTTP client in it, no API key, no
+model setting and no vendor: an editor that has learned to make network
+requests is a bigger thing than an editor, and `makeprg` had already shown
+what the smaller version looks like.
+
+What goes with your question is where you are — the file, the line, and the
+item the cursor is in, which tree-sitter already knows the bounds of. A
+function, not the file: a whole file is not context, it is a dump. If the
+language server or the last build has said something about that line, that
+goes too, which is what makes `:ai fix this` a complete sentence. `:ai!` sends
+your words and nothing else.
+
+A rewrite is one undo step, so `u` puts your lines back. The answer only goes
+into the buffer if the buffer has not changed since you asked: type while it
+thinks and the answer arrives in a buffer of its own instead, because splicing
+an answer into lines that have moved is how you lose work. A fence around the
+answer comes off — models put one there however plainly you ask them not to —
+and a program that fails says so rather than having its complaint pasted into
+your file.
+
+The dog runs while it waits, the same as during a build.
+
+**This is the one command that sends what you are editing somewhere else.** So
+it is off until you name a program, it only ever runs when you type `:ai`, and
+it says what it sent: `asking claude: sent 12 lines...`. What happens to those
+lines after that is between you and whatever you pointed it at.
+
+An agent that edits files itself — `claude -p` is one — is the obvious next
+step from here, and most of the editor for it already exists: a file changed
+on disk is reloaded within the second, the git signs mark every line it
+touched, `]c` walks them and `<space>c` lists the files. What it needs is
+streaming output, a way to stop it, and the honesty that `u` is not your undo
+when something else did the writing. That is the next piece of work, not this
+one.
 
 ## A window, when you want one
 

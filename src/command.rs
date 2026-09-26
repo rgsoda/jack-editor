@@ -57,6 +57,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "cd", argument: Argument::Path },
     Command { name: "pwd", argument: Argument::None },
     Command { name: "dog", argument: Argument::None },
+    Command { name: "ai", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },
@@ -215,6 +216,13 @@ pub static SETTINGS: &[Setting] = &[
         name: "lsp",
         kind: Kind::Flag(true),
         about: "Start a language server for files that have one installed: diagnostics, and gd across files.",
+    },
+    Setting {
+        name: "aiprg",
+        kind: Kind::Value(&["claude -p", "llm", "ollama run llama3"], ""),
+        about: "What `:ai` runs: a program that reads a prompt on stdin and \
+                writes an answer on stdout. Empty means `:ai` does nothing, \
+                which is how it stays until you name one.",
     },
     Setting {
         name: "dogname",

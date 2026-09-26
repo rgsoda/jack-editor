@@ -145,6 +145,14 @@ pub struct Dog {
     pub sprint: usize,
 }
 
+/// What an answer is going to be spliced into: the buffer, the lines, and
+/// the revision they had when the question went out.
+struct AiTarget {
+    view: usize,
+    lines: (usize, usize),
+    revision: (usize, usize, usize),
+}
+
 /// How many cells a lap at full pelt is. Wider than any terminal, so it is a
 /// lap of the line and out the other side rather than a stumble.
 const SPRINT: usize = 160;
@@ -561,6 +569,20 @@ pub struct Editor {
     /// Whether the last build failed, which is what makes the next clean one
     /// worth more than a bark.
     build_broke: bool,
+    /// What `:ai` runs. Empty until you name something, which is what keeps
+    /// the feature off until you have asked for it - nothing is ever sent
+    /// anywhere by an editor that has not been told what to send it to.
+    pub aiprg: String,
+    /// Questions asked, counting from one: every one gets a token of its own.
+    ai: u64,
+    /// The one being waited on, or zero. An answer to any other question -
+    /// one superseded, or one already answered - is dropped rather than
+    /// pasted into a buffer that was not expecting it.
+    ai_awaited: u64,
+    /// Where the answer goes when it comes: which buffer, which lines, and
+    /// what that buffer looked like when the question was asked. A buffer
+    /// that has changed since is not one to splice an answer into.
+    ai_target: Option<AiTarget>,
     /// True when nobody has said which directory jack is working in - a
     /// window opened from a launcher, which starts at the root of the
     /// filesystem. The first file opened settles it, and then this is false
@@ -678,6 +700,10 @@ impl Editor {
             build: 0,
             build_root: PathBuf::new(),
             build_broke: false,
+            aiprg: String::new(),
+            ai: 0,
+            ai_awaited: 0,
+            ai_target: None,
             adrift: false,
         }
     }
@@ -1244,6 +1270,30 @@ impl Editor {
                 return;
             };
             self.delete_line_range(first, last);
+            return;
+        }
+        // `:ai` takes a range the same way, and for the same reason: `'<,'>`
+        // is how you say "these lines" and a bare `:ai` is a question rather
+        // than a rewrite.
+        let asked = rest.trim_start();
+        if let Some(instruction) = asked.strip_prefix("ai ").or_else(|| "ai".eq(asked).then_some(""))
+        {
+            let bare = false;
+            let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
+            if ranged && lines.is_none() {
+                return;
+            }
+            self.ai(instruction, lines, bare);
+            return;
+        }
+        if let Some(instruction) =
+            asked.strip_prefix("ai! ").or_else(|| "ai!".eq(asked).then_some(""))
+        {
+            let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
+            if ranged && lines.is_none() {
+                return;
+            }
+            self.ai(instruction, lines, true);
             return;
         }
         if matches!(rest.trim(), "fmt" | "format") {
@@ -1822,6 +1872,7 @@ impl Editor {
                 }
                 ("makeprg", _) => self.makeprg = value.trim().to_string(),
                 ("dogname", _) => self.dogname = value.trim().to_string(),
+                ("aiprg", _) => self.aiprg = value.trim().to_string(),
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -1908,7 +1959,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} aiprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1930,6 +1981,10 @@ impl Editor {
                     match self.makeprg.is_empty() {
                         true => "(what builds this project)",
                         false => &self.makeprg,
+                    },
+                    match self.aiprg.is_empty() {
+                        true => "(nothing to ask)",
+                        false => &self.aiprg,
                     },
                     match self.dogname.is_empty() {
                         true => "(unnamed)",
@@ -2031,6 +2086,202 @@ impl Editor {
         self.dog.errand = Errand::Building;
         self.dog.running = true;
         crate::stream::spawn_build(command, root, self.build, jobs);
+    }
+
+    /// `:ai {instruction}` - ask whatever `aiprg` names about your code.
+    ///
+    /// A range means rewrite: `:'<,'>ai fix this` replaces those lines with
+    /// the answer, as one undo step. No range means ask: the answer opens in
+    /// a buffer, and nothing in yours is touched. `:ai!` sends your words and
+    /// nothing else - no file, no lines, no diagnostic.
+    ///
+    /// This is the one command that sends what you are editing somewhere
+    /// else, so it says what it sent and it does nothing at all until you
+    /// have named a program to send it to.
+    pub fn ai(&mut self, instruction: &str, lines: Option<(usize, usize)>, bare: bool) {
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        if instruction.trim().is_empty() {
+            self.message = "ask it something: :ai {what you want}".into();
+            return;
+        }
+        let command = self.aiprg.trim().to_string();
+        if command.is_empty() {
+            self.message = "nothing to ask: :set aiprg=claude -p, or another program".into();
+            return;
+        }
+        let Some(jobs) = self.jobs.clone() else {
+            return;
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        let context = (!bare).then(|| self.ai_context(lines));
+        let ask = crate::ai::Ask { instruction, context, replacing: lines.is_some() };
+        let prompt = crate::ai::prompt(&ask);
+
+        self.ai += 1;
+        self.ai_awaited = self.ai;
+        self.ai_target = lines.map(|lines| AiTarget {
+            view: self.current,
+            lines,
+            revision: self.revision(),
+        });
+        // Said out loud, and counted: what leaves the machine is not something
+        // to find out about afterwards.
+        let sent = match (&ask.context, lines) {
+            (None, _) => "your words alone".to_string(),
+            (Some(_), Some((first, last))) => format!("{} lines", last - first + 1),
+            (Some(context), None) => match context.code.lines().count() {
+                0 => "where you are".to_string(),
+                n => format!("where you are and {n} lines"),
+            },
+        };
+        let name = command.split_whitespace().next().unwrap_or("it").to_string();
+        self.message = format!("asking {name}: sent {sent}...");
+        self.dog_thinks();
+        crate::stream::spawn_ask(command, prompt, root, self.ai, jobs);
+    }
+
+    /// What is around the cursor, for a question to carry: where you are, the
+    /// code itself, and whatever is wrong with it.
+    fn ai_context(&self, lines: Option<(usize, usize)>) -> crate::ai::Context {
+        let line = self.view().cursor_coords().0;
+        let path = match &self.view().doc.path {
+            Some(path) => path.display().to_string(),
+            None => self.view().doc.display_name().to_string(),
+        };
+        // The lines asked for, or the item the cursor is in - a function, a
+        // type, whatever the grammar calls one thing. Failing that, nothing:
+        // a whole file is not context, it is a dump.
+        let code = match lines {
+            Some((first, last)) => self.line_text(first, last),
+            None => self.item_here().map(|(first, last)| self.line_text(first, last)).unwrap_or_default(),
+        };
+        let trouble = self.trouble_at(line);
+        crate::ai::Context {
+            path,
+            line: line + 1,
+            range: lines.map(|(first, last)| (first + 1, last + 1)),
+            code,
+            trouble,
+        }
+    }
+
+    /// Lines `first..=last` as chars, clamped to the buffer and taking the
+    /// line break at the end with them: replacing lines means replacing whole
+    /// lines, break and all, or what follows joins on.
+    fn line_span(&self, first: usize, last: usize) -> Option<(usize, usize)> {
+        let doc = &self.view().doc;
+        let last = last.min(doc.len_lines().saturating_sub(1));
+        if first > last {
+            return None;
+        }
+        let start = doc.line_to_char(first);
+        let end = match last + 1 < doc.len_lines() {
+            true => doc.line_to_char(last + 1),
+            false => doc.len_chars(),
+        };
+        Some((start, end))
+    }
+
+    /// Those lines as text.
+    fn line_text(&self, first: usize, last: usize) -> String {
+        match self.line_span(first, last) {
+            Some((start, end)) => self.view().doc.slice_str(start, end),
+            None => String::new(),
+        }
+    }
+
+    /// The lines of the item the cursor is in, from the grammar: the function
+    /// or the type, rather than the file or the one line.
+    fn item_here(&self) -> Option<(usize, usize)> {
+        self.view().item_lines(self.view().sel.head)
+    }
+
+    /// What anything has said about this line: the language server first,
+    /// since it is the one that knows types, then the last build.
+    fn trouble_at(&self, line: usize) -> Option<String> {
+        let view = self.view();
+        let found = view.diagnostics.iter().find(|d| view.doc.char_to_line(d.start) == line);
+        if let Some(found) = found {
+            return Some(found.message.clone());
+        }
+        let path = self.view().doc.path.as_ref()?;
+        self.quickfix
+            .entries()
+            .iter()
+            .find(|entry| entry.line == line && path.ends_with(&entry.path))
+            .map(|entry| entry.text.clone())
+    }
+
+    /// An answer arrived. Into the buffer if a range asked for one and that
+    /// buffer has not moved on, and into a buffer of its own otherwise.
+    pub fn ai_answered(&mut self, token: u64, said: String, ok: bool) {
+        if token == 0 || token != self.ai_awaited {
+            return;
+        }
+        self.ai_awaited = 0;
+        self.dog_stops_thinking();
+        let name = self.aiprg.split_whitespace().next().unwrap_or("it").to_string();
+        if !ok {
+            self.ai_target = None;
+            self.message = crate::ai::complaint(&name, &said);
+            return;
+        }
+        let answer = crate::ai::cleaned(&said);
+        if answer.trim().is_empty() {
+            self.ai_target = None;
+            self.message = format!("{name} said nothing");
+            return;
+        }
+
+        let Some(target) = self.ai_target.take() else {
+            self.open_answer(&answer);
+            return;
+        };
+        // The buffer it was asked about has been edited since. Splicing an
+        // answer into lines that have moved is how you lose work, so it goes
+        // in a buffer of its own and you decide.
+        if self.current != target.view || self.revision() != target.revision {
+            self.open_answer(&answer);
+            self.message = format!("{name} answered, but the buffer had moved on - it is in a buffer");
+            return;
+        }
+        let (first, last) = target.lines;
+        let replaced = last - first + 1;
+        let Some((start, end)) = self.line_span(first, last) else {
+            self.open_answer(&answer);
+            return;
+        };
+        // The last line of a file that ended without a break: the answer must
+        // not add one, or asking about the end of a file grows it every time.
+        let mut answer = answer;
+        let had_break = self.view().doc.slice_str(start, end).ends_with('\n');
+        if !had_break && answer.ends_with('\n') {
+            answer.pop();
+        }
+        self.begin_undo_group();
+        self.view_mut().edit_at(start, end - start, &answer, Some(start));
+        self.end_undo_group();
+        self.clamp_cursor();
+        let wrote = answer.lines().count();
+        self.message = format!("{name}: {replaced} lines became {wrote} - u puts them back");
+    }
+
+    /// An answer nobody is going to paste anywhere: a buffer of its own, so
+    /// it can be read, searched and yanked from like anything else.
+    fn open_answer(&mut self, answer: &str) {
+        let mut document = crate::buffer::Document::scratch();
+        document.text = ropey::Rope::from_str(answer);
+        match self.views.len() == 1 && self.views[0].is_empty_scratch() {
+            true => self.views[0] = View::new(document),
+            false => self.views.push(View::new(document)),
+        }
+        let index = self.views.len() - 1;
+        self.switch_to(index);
+        self.message = "the answer, in a buffer of its own".into();
     }
 
     /// A build finished. What it said becomes the quickfix list, and the walk
@@ -4640,6 +4891,24 @@ impl Editor {
         self.dog.sprint = SPRINT;
     }
 
+    /// Something slow is happening somewhere else and the editor is still
+    /// yours: the dog runs while it does, which is the only sign a terminal
+    /// has that anything is going on at all.
+    pub fn dog_thinks(&mut self) {
+        self.dog.errand = Errand::Building;
+        self.dog.running = true;
+        self.dog.asleep = false;
+    }
+
+    /// And stops when the answer comes, with none of the build's fanfare:
+    /// there is nothing to bark about, the answer is the answer.
+    pub fn dog_stops_thinking(&mut self) {
+        if self.dog.errand == Errand::Building {
+            self.dog.errand = Errand::None;
+            self.dog.running = false;
+        }
+    }
+
     /// `:dog`. It has been counting steps since it came in at the left of the
     /// lane, and nothing has ever read the number back.
     pub fn dog_report(&mut self) {
@@ -5871,6 +6140,97 @@ two
         e.build_finished(7, "    Finished in 0.2s\n".into(), true);
         assert_eq!(e.dog.errand, Errand::None, "the news is a day old");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn ai_does_nothing_until_you_have_said_what_to_ask() {
+        let mut e = opened("fn add(a: usize, b: usize) -> usize {\n    a - b\n}\n");
+        e.run_command("ai fix the arithmetic");
+        assert!(e.message.contains(":set aiprg="), "{}", e.message);
+        assert_eq!(e.ai, 0, "and nothing was sent");
+
+        // Named, but with nothing to ask.
+        e.run_command("set aiprg=true");
+        e.run_command("ai");
+        assert_eq!(e.message, "ask it something: :ai {what you want}");
+        assert_eq!(e.ai, 0);
+
+        // A config file is not allowed to start one, the same as `:make`.
+        e.from_config = true;
+        e.run_command("ai fix it");
+        assert_eq!(e.message, "not from a config file");
+        assert_eq!(e.ai, 0);
+    }
+
+    #[test]
+    fn an_answer_replaces_the_lines_that_asked_for_it_in_one_undo_step() {
+        let mut e = opened("one\ntwo\nthree\nfour\n");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=true");
+        e.run_command("2,3ai make these better");
+        assert_eq!(e.ai, 1, "a question went out");
+        assert!(e.message.contains("sent 2 lines"), "and it says what it sent: {}", e.message);
+
+        e.ai_answered(1, "```\nTWO\nTHREE\n```\n".into(), true);
+        assert_eq!(e.view().doc.text.to_string(), "one\nTWO\nTHREE\nfour\n", "the fence came off");
+        assert!(e.message.contains("2 lines became 2"), "{}", e.message);
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "one\ntwo\nthree\nfour\n", "one step");
+
+        // An answer nobody is waiting for any more is dropped.
+        e.ai_answered(1, "LATE\n".into(), true);
+        assert_eq!(e.view().doc.text.to_string(), "one\ntwo\nthree\nfour\n");
+    }
+
+    #[test]
+    fn an_answer_to_a_buffer_that_moved_on_goes_in_a_buffer_of_its_own() {
+        let mut e = opened("one\ntwo\nthree\n");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=true");
+        e.run_command("1,2ai rewrite");
+        // Typing while it thinks: the lines it was asked about have moved.
+        e.run_command("d");
+        e.ai_answered(1, "ONE\n".into(), true);
+        assert_eq!(e.view().doc.text.to_string(), "ONE\n", "in a buffer of its own");
+        assert_eq!(e.views.len(), 2, "and yours is still there");
+        assert_eq!(e.views[0].doc.text.to_string(), "two\nthree\n", "untouched");
+        assert!(e.message.contains("moved on"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_question_with_no_range_answers_into_a_buffer_and_touches_nothing() {
+        let mut e = opened("one\ntwo\n");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=claude -p");
+        e.run_command("ai what does this do?");
+        assert!(e.message.starts_with("asking claude:"), "{}", e.message);
+        e.ai_answered(1, "It counts.\n".into(), true);
+        assert_eq!(e.views[0].doc.text.to_string(), "one\ntwo\n", "yours is untouched");
+        assert_eq!(e.view().doc.text.to_string(), "It counts.\n");
+
+        // And a program that failed says so rather than pasting its complaint.
+        e.run_command("ai again");
+        e.ai_answered(2, "claude: not logged in\n".into(), false);
+        assert_eq!(e.message, "claude: claude: not logged in");
+    }
+
+    #[test]
+    fn what_a_question_carries_is_where_you_are_and_the_item_you_are_in() {
+        let mut e = opened("fn one() {\n    1\n}\n\nfn two() {\n    2\n}\n");
+        e.views[0].doc.path = Some(PathBuf::from("src/lib.rs"));
+        e.attach_syntax(0);
+        e.goto_line(5);
+        let context = e.ai_context(None);
+        assert_eq!(context.line, 6);
+        assert_eq!(context.path, "src/lib.rs");
+        // The item the cursor is in, not the file and not the line.
+        assert!(context.code.contains("fn two()"), "{:?}", context.code);
+        assert!(!context.code.contains("fn one()"), "{:?}", context.code);
+
+        // A range is the lines asked for, whatever the grammar thinks.
+        let context = e.ai_context(Some((0, 1)));
+        assert_eq!(context.range, Some((1, 2)));
+        assert_eq!(context.code, "fn one() {\n    1\n");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod ai;
 mod buffer;
 #[cfg(test)]
 mod budget;

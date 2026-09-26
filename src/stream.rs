@@ -42,6 +42,8 @@ pub enum Message {
     /// last second, and a list of places that grew while you walked it would
     /// be a list you could not trust.
     Built { token: u64, output: String, ok: bool },
+    /// What `aiprg` answered, and whether it exited happily.
+    Said { token: u64, said: String, ok: bool },
 }
 
 /// A run of lines that differ from what git has, and what git has there
@@ -174,6 +176,58 @@ const MAX_OUTPUT: usize = 4 << 20;
 ///
 /// Nothing is handed the terminal, unlike `:!` - the point of `:make` is that
 /// the editor stays yours while it runs.
+/// Ask a program about your code: the prompt goes in on stdin, the answer
+/// comes back on stdout, and what it said on stderr is kept for the complaint
+/// if it failed. The same shape as a build, and for the same reason - the
+/// editor must stay yours while something slow is happening somewhere else.
+///
+/// This is the only place a buffer's contents leave the editor, and it only
+/// runs when `:ai` was typed and `aiprg` names something to run.
+pub fn spawn_ask(command: String, prompt: String, root: PathBuf, token: u64, tx: Sender<Message>) {
+    thread::spawn(move || {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let child = Command::new(shell)
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = tx.send(Message::Failed { token, error: format!("{command}: {err}") });
+                return;
+            }
+        };
+        // Dropped as soon as it is written, or a program that reads until the
+        // end of its input waits for ever.
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(prompt.as_bytes());
+        }
+        let message = match child.wait_with_output() {
+            Ok(finished) => {
+                let mut said = String::from_utf8_lossy(&finished.stdout).into_owned();
+                said.truncate(said.char_indices().nth(MAX_OUTPUT).map_or(said.len(), |(at, _)| at));
+                match finished.status.success() {
+                    true => Message::Said { token, said, ok: true },
+                    // What a program complains with is stderr, which is not
+                    // the answer and must not be pasted into a buffer as one.
+                    false => {
+                        let mut why = String::from_utf8_lossy(&finished.stderr).into_owned();
+                        why.push_str(&said);
+                        Message::Said { token, said: why, ok: false }
+                    }
+                }
+            }
+            Err(err) => Message::Failed { token, error: format!("{command}: {err}") },
+        };
+        let _ = tx.send(message);
+    });
+}
+
 pub fn spawn_build(command: String, root: PathBuf, token: u64, tx: Sender<Message>) {
     thread::spawn(move || {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());

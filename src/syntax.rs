@@ -1226,6 +1226,16 @@ fn scope_of(root: Node, id: usize, start: usize, scopes: &HashSet<usize>) -> Opt
 
 /// The byte range of the top-level item holding `at` - the function, `impl`
 /// or `mod` that a binding in scope has to be inside.
+impl Syntax {
+    /// The byte range of the item the cursor is in - the function, the type,
+    /// whatever the grammar calls one thing at the top level of a file. What
+    /// to send when something is asked about "this", since the file is too
+    /// much and the line is not enough.
+    pub fn item_at(&self, at: usize) -> Option<Range<usize>> {
+        enclosing_item(self.tree.root_node(), at)
+    }
+}
+
 fn enclosing_item(root: Node, at: usize) -> Option<Range<usize>> {
     let end = (at + 1).min(root.end_byte());
     let mut node = root.descendant_for_byte_range(at, end)?;
