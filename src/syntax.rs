@@ -1234,6 +1234,49 @@ impl Syntax {
     pub fn item_at(&self, at: usize) -> Option<Range<usize>> {
         enclosing_item(self.tree.root_node(), at)
     }
+
+    /// The function the cursor is in, and the inside of it: what `af` and
+    /// `if` select. The nearest one rather than the outermost, so `af` on a
+    /// method is the method and not the `impl` block it is in.
+    pub fn function_at(&self, at: usize) -> Option<(Range<usize>, Range<usize>)> {
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(at, end)?;
+        loop {
+            if is_function(node.kind()) {
+                let whole = node.byte_range();
+                let inside = node.child_by_field_name("body").map_or(whole.clone(), inside_body);
+                return Some((whole, inside));
+            }
+            node = node.parent()?;
+        }
+    }
+}
+
+/// Whether a node is a function, by the name the grammar gives it.
+///
+/// A name rather than a list per language: every grammar worth having calls
+/// one `function_item`, `function_definition`, `function_declaration`,
+/// `method_declaration` or `method_definition`, and a rule that reads the
+/// name works for the next grammar as well as for the ones already here.
+fn is_function(kind: &str) -> bool {
+    kind.contains("function") || kind.contains("method") || kind.ends_with("constructor")
+}
+
+/// What is inside a function's body: between the braces where there are
+/// braces, and the whole body where there are none - Python has no braces
+/// and its body is exactly the statements in it.
+fn inside_body(body: Node) -> Range<usize> {
+    let mut cursor = body.walk();
+    let children: Vec<Node> = body.children(&mut cursor).collect();
+    match (children.first(), children.last()) {
+        (Some(open), Some(close))
+            if children.len() >= 2 && open.kind() == "{" && close.kind() == "}" =>
+        {
+            open.end_byte()..close.start_byte()
+        }
+        _ => body.byte_range(),
+    }
 }
 
 fn enclosing_item(root: Node, at: usize) -> Option<Range<usize>> {

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 68: `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 68: `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -147,6 +147,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `yy` `Y` `y{motion}` | yank lines / over a motion |
 | `p` `P` | put after / before the cursor |
 | `diw` `daw` `ciw` `yiw` | an operator over a text object (see below) |
+| `daf` `dif` `vaf` `yif` | the function the cursor is in, from the grammar |
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `==` `={motion}` | re-indent: ask the grammar where the lines go |
 | `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
@@ -192,6 +193,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:!cmd` | run a command with the terminal handed to it — `:!lazygit`, `:!make`, `:!git rebase -i` |
 | `:sh` | a shell; `exit` comes back |
 | `:term [cmd]` | a shell, or one command, in a buffer of its own — `i` types in it, `^\ ^n` comes back out |
+| `<space>T` | the terminal, and back to what you were reading — the same key both ways |
+| `:send` `:'<,'>send` | type the line, or the lines, into the running terminal |
+| `:qa` `:qa!` | quit everything, rather than closing this window |
 | `^z` `:suspend` | stop jack and go back to the shell; `fg` comes back |
 | `:map g !lazygit` | what `<space>g` does; `:map` lists them, `:unmap g` takes one back |
 | `:e path` `:e!` | open a file or list a directory, reload this one from disk |
@@ -1326,6 +1330,7 @@ key naming the shape to act on:
 | `(` `)` `b` | round brackets, however many lines they span |
 | `[` `]`, `{` `}` `B`, `<` `>` | the other pairs |
 | `p` | the paragraph: lines up to the next blank one |
+| `f` `m` | the function the cursor is in, from the grammar |
 
 `i` is the inside, `a` is around: `di"` empties a string and `da"` removes it,
 quotes and all; `daw` takes the space after the word too, or the space before it
@@ -1339,13 +1344,28 @@ Brackets do nest: the pair chosen is the innermost one the cursor is inside, and
 if it is inside none, the command does nothing rather than reaching for the next
 one. On a blank line, `ip` is the run of blank lines.
 
+`af` is the odd one out, and the only one that needs a grammar: `daf` takes the
+whole function away, `dif` empties it and leaves it standing, `vaf` selects it,
+`yif` copies the body. It is the *nearest* function rather than the outermost
+item, so `af` on a method is the method and not the `impl` block around it, and
+what counts as a function is read off the name the grammar gives the node —
+`function_item`, `function_definition`, `method_declaration` — so it works for
+the next grammar as well as for the ones already here. Braces are not required:
+Python's body is the statements in it, and `dif` there deletes exactly those.
+
+Both ends snap to whole lines, but only where nothing else shares the line. A
+function on its own lines becomes those lines, break and all, so `daf` does not
+leave an empty one behind; the `}` line stays out of `if`; and a closure in the
+middle of a call is left exactly where it is.
+
 `object.rs` answers one question — given a position, which char range? — and
 knows nothing about operators, modes or registers. The operator half lives in
-`keys.rs`, which is why the same five objects work under `d`, `c`, `y` and in
-visual mode without repeating anything. None of it is syntax-aware: brackets are
-counted, not parsed, so a brace inside a string or a comment still counts. That
-matters for `%` too, and the fix for both is the same one — ask the tree-sitter
-tree instead of the rope.
+`keys.rs`, which is why the same objects work under `d`, `c`, `y` and in
+visual mode without repeating anything. Only `f` is syntax-aware, and it is
+handled a layer up because `object.rs` is handed a document and not a tree.
+The rest are counted rather than parsed, so a brace inside a string or a
+comment still counts. That matters for `%` too, and the fix for both is the
+same one — ask the tree-sitter tree instead of the rope.
 
 ## Surround
 
@@ -1790,6 +1810,13 @@ knows it is looking at a terminal.
 reason for it is the same: a terminal needs every key there is, `:` and `d`
 and `esc` included, so the way out has to be a chord nothing running inside
 wants. Everything else goes straight through, `^c` first among them.
+
+`<space>T` is the same terminal every time: it opens one if there is none,
+goes to it if there is, and goes back to what you were reading if you are in
+it. `:term` always opens a new one, which is what you want when the first is
+busy. `:send` types the line the cursor is on into the running terminal, and
+`:'<,'>send` types the selected lines - a python or a psql in one window, the
+file you are writing in the other, and neither losing its place.
 
 This is the third way jack runs something, and the three are for three
 different things. `:!lazygit` hands over the whole terminal and waits, which

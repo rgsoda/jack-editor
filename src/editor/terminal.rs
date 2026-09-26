@@ -74,6 +74,71 @@ impl Editor {
         }
     }
 
+    /// `<space>t` - the terminal, if there is one, and a new one if there is
+    /// not. The point of a key rather than a command is that it is the same
+    /// key both ways: one to open the shell, one to go back to it, one to
+    /// come back from it.
+    pub fn toggle_terminal(&mut self) {
+        // Already in one: back to wherever you came from, which is the
+        // buffer before it in the list. `^o` is the general answer to "back",
+        // but a terminal is a place you step out of rather than jump from.
+        if self.is_terminal() {
+            let back = self.back_from_terminal.filter(|index| *index < self.views.len());
+            match back {
+                Some(index) => self.switch_to(index),
+                None => self.previous_view(),
+            }
+            return;
+        }
+        let running = self.views.iter().position(|view| {
+            view.terminal.as_ref().is_some_and(|terminal| !terminal.over)
+        });
+        self.back_from_terminal = Some(self.current);
+        match running {
+            Some(index) => {
+                self.switch_to(index);
+                self.message = "the terminal - <space>t goes back".into();
+            }
+            None => self.open_terminal(""),
+        }
+    }
+
+    /// `:send` - lines from a buffer, typed into the terminal.
+    ///
+    /// A REPL is the reason: a python or a psql in one window, the file you
+    /// are writing in the other, and a key that runs the paragraph you are
+    /// looking at without either of them losing their place.
+    pub fn send_to_terminal(&mut self, lines: Option<(usize, usize)>) {
+        let Some(index) = self
+            .views
+            .iter()
+            .position(|view| view.terminal.as_ref().is_some_and(|terminal| !terminal.over))
+        else {
+            self.message = "no terminal running - :term opens one".into();
+            return;
+        };
+        if index == self.current {
+            self.message = "that is the terminal".into();
+            return;
+        }
+        let (first, last) = lines.unwrap_or_else(|| {
+            let line = self.view().cursor_coords().0;
+            (line, line)
+        });
+        let text = self.line_text(first, last);
+        let sent = text.lines().count();
+        // Every line ends in a return, the last one included: a line typed
+        // into a shell is a line run, not a line left on the prompt.
+        let typed: String = text.lines().map(|line| format!("{line}\r")).collect();
+        if let Some(terminal) = self.views[index].terminal.as_ref() {
+            terminal.send(typed.as_bytes());
+        }
+        self.message = match sent {
+            1 => "sent a line to the terminal".into(),
+            n => format!("sent {n} lines to the terminal"),
+        };
+    }
+
     /// Whether the buffer in front of you is one.
     pub fn is_terminal(&self) -> bool {
         self.view().terminal.is_some()
@@ -295,6 +360,58 @@ mod tests {
         // The buffer says what it is, wherever a name is shown.
         let terminal = editor.view().terminal.as_ref().expect("a terminal");
         assert!(terminal.over);
+    }
+
+    #[test]
+    fn the_terminal_key_opens_one_and_then_goes_back_and_forth() {
+        let mut editor = Editor::scratch();
+        editor.views[0].doc.text = ropey::Rope::from_str("a file\n");
+        // No pty in a test, so the terminal is put there rather than opened;
+        // what is under test is which buffer the key lands you in.
+        editor.views.push({
+            let mut view = View::new(crate::buffer::Document::scratch());
+            view.terminal = Some(Box::new(Terminal {
+                token: 1,
+                command: String::new(),
+                screen: Term::new(4, 20),
+                #[cfg(unix)]
+                pty: None,
+                over: false,
+                size: (4, 20),
+            }));
+            view
+        });
+
+        assert_eq!(editor.current_index(), 0);
+        editor.toggle_terminal();
+        assert_eq!(editor.current_index(), 1, "the one that is already running");
+        editor.toggle_terminal();
+        assert_eq!(editor.current_index(), 0, "and back where you came from");
+    }
+
+    #[test]
+    fn send_types_the_lines_into_the_terminal() {
+        let mut editor = with_terminal();
+        editor.views.push(View::new(crate::buffer::Document::scratch()));
+        editor.views[1].doc.text = ropey::Rope::from_str("print(1)\nprint(2)\nprint(3)\n");
+        editor.switch_to(1);
+
+        // Nothing is sent from inside the terminal itself.
+        editor.switch_to(0);
+        editor.run_command("send");
+        assert_eq!(editor.message, "that is the terminal");
+
+        editor.switch_to(1);
+        editor.run_command("send");
+        assert_eq!(editor.message, "sent a line to the terminal");
+        editor.run_command("1,3send");
+        assert_eq!(editor.message, "sent 3 lines to the terminal");
+
+        // And it says so when there is nothing running to send to.
+        editor.views.remove(0);
+        editor.switch_to(0);
+        editor.run_command("send");
+        assert_eq!(editor.message, "no terminal running - :term opens one");
     }
 
     #[test]

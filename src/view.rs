@@ -345,6 +345,59 @@ impl View {
         Some((self.doc.text.byte_to_line(range.start), self.doc.text.byte_to_line(end)))
     }
 
+    /// The function the cursor is in, as char ranges: the whole of it for
+    /// `af`, and the inside of it for `if`. `None` without a grammar, or
+    /// where the cursor is not in a function at all.
+    ///
+    /// Both are snapped to whole lines where they fill them, which is what
+    /// makes `daf` take the function's lines away rather than leaving an
+    /// empty one behind, and `dif` leave the braces where they are.
+    pub fn function_ranges(&self, at: usize) -> Option<((usize, usize), (usize, usize))> {
+        let syntax = self.syntax.as_ref()?;
+        let text = &self.doc.text;
+        let (whole, inside) = syntax.function_at(text.char_to_byte(at))?;
+        let chars = |range: std::ops::Range<usize>| {
+            let start = text.byte_to_char(range.start.min(text.len_bytes()));
+            let end = text.byte_to_char(range.end.min(text.len_bytes()));
+            self.snap_to_lines(start, end)
+        };
+        Some((chars(whole), chars(inside)))
+    }
+
+    /// A range grown to whole lines, but only at the ends where nothing else
+    /// shares the line. A function on its own lines becomes those lines; a
+    /// closure in the middle of a call stays where it is.
+    fn snap_to_lines(&self, start: usize, end: usize) -> (usize, usize) {
+        let text = &self.doc.text;
+        let blank = |from: usize, to: usize| {
+            from >= to || text.slice(from..to).chars().all(char::is_whitespace)
+        };
+        let line_start = |at: usize| text.line_to_char(text.char_to_line(at));
+        let line_end = |at: usize| {
+            let line = text.char_to_line(at);
+            match line + 1 < text.len_lines() {
+                true => text.line_to_char(line + 1),
+                false => text.len_chars(),
+            }
+        };
+
+        // Nothing but a `{` before the text: start at the line below it.
+        // Nothing but indentation: start at the beginning of this line.
+        let start = match (blank(start, line_end(start)), blank(line_start(start), start)) {
+            (true, _) => line_end(start).min(text.len_chars()),
+            (false, true) => line_start(start),
+            (false, false) => start,
+        };
+        // Nothing but a `}` after it: end where that line begins. Nothing at
+        // all after it: take the line break too, so the line goes with it.
+        let end = match (blank(line_start(end), end), blank(end, line_end(end))) {
+            (true, _) => line_start(end),
+            (false, true) => line_end(end),
+            (false, false) => end,
+        };
+        (start, end.max(start))
+    }
+
     /// Where `name` is defined, as a char index: `gd` with `local`, `gD`
     /// without. Three tiers, and the last one needs no grammar at all - which
     /// is why `gd` does something sensible in a file we have no parser for.

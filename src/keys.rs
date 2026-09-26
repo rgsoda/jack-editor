@@ -72,6 +72,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
     Binding { keys: "d c y + i( i[ i{ i<", what: "inside the brackets (a( takes them too)", mode: "normal" },
     Binding { keys: "d c y + ip ap", what: "the paragraph, with the blank line after", mode: "normal" },
+    Binding { keys: "d c y + if af", what: "the function from the grammar: its inside, or the whole of it", mode: "normal" },
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
     Binding { keys: "\"+y \"+p", what: "yank to, put from the system clipboard", mode: "normal" },
     Binding { keys: ".", what: "do the last change again ({n}. counts it anew)", mode: "normal" },
@@ -109,6 +110,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "<space>?", what: "this help", mode: "normal" },
     Binding { keys: "<space>n", what: "cycle line numbers", mode: "normal" },
     Binding { keys: "<space>p", what: "pet the dog", mode: "normal" },
+    Binding { keys: "<space>T", what: "the terminal, and back again", mode: "normal" },
     Binding { keys: "<space>x", what: "close this buffer", mode: "normal" },
 
     Binding { keys: "^q", what: "in a picker: send what is listed to the quickfix list", mode: "normal" },
@@ -118,6 +120,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "o", what: "swap which end moves", mode: "visual" },
     Binding { keys: "/ ? n N *", what: "search: the selection grows to the match", mode: "visual" },
     Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
+    Binding { keys: "if af", what: "select the function the cursor is in", mode: "visual" },
     Binding { keys: "v V", what: "characters, lines, or back to normal", mode: "visual" },
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
     Binding { keys: "J", what: "join the selected lines", mode: "visual" },
@@ -724,6 +727,7 @@ impl Keys {
                     KeyCode::Char('?') => editor.open_help_picker(),
                     KeyCode::Char('n') => editor.cycle_numbers(),
                     KeyCode::Char('x') => editor.close_buffer(false),
+                    KeyCode::Char('T') => editor.toggle_terminal(),
                     // Anything else is yours, if you have said what it is:
                     // `:map g !lazygit`, in a config file or typed.
                     KeyCode::Char(key) => {
@@ -2604,6 +2608,64 @@ mod tests {
         vim.press("x<C-w>v<C-w>w.");
         assert_eq!(vim.text(), "cdef\n");
         assert_eq!(vim.keys.pending_text(), "");
+    }
+
+    #[test]
+    fn af_is_the_function_the_cursor_is_in_and_if_is_the_inside_of_it() {
+        let code = "fn one() {\n    let a = 1;\n    a\n}\n\nfn two() {\n    2\n}\n";
+
+        // From anywhere in the body, `daf` takes the whole function - its
+        // signature, its brace and its lines - and leaves the next one.
+        let mut vim = Vim::rust(code);
+        vim.at(2, 5).press("daf");
+        assert_eq!(vim.text(), "\nfn two() {\n    2\n}\n");
+
+        // `dif` leaves the function standing and empties it.
+        let mut vim = Vim::rust(code);
+        vim.at(3, 5).press("dif");
+        assert_eq!(vim.text(), "fn one() {\n}\n\nfn two() {\n    2\n}\n");
+
+        // And it is the nearest function, not the outermost item: a method
+        // is a method, not the `impl` block it sits in.
+        let method = "impl T {\n    fn a(&self) {\n        1\n    }\n\n    fn b(&self) {\n        2\n    }\n}\n";
+        let mut vim = Vim::rust(method);
+        vim.at(3, 9).press("daf");
+        assert_eq!(vim.text(), "impl T {\n\n    fn b(&self) {\n        2\n    }\n}\n");
+    }
+
+    #[test]
+    fn the_function_object_needs_no_braces_and_no_luck() {
+        // Python says where a body ends with indentation, and the body is
+        // the statements rather than anything between two characters.
+        let mut vim = Vim::file("demo.py", "def one():\n    a = 1\n    return a\n\ndef two():\n    pass\n");
+        vim.at(2, 5).press("dif");
+        assert_eq!(vim.text(), "def one():\n\ndef two():\n    pass\n");
+
+        // A file with no grammar says so rather than selecting something
+        // that happens to be nearby.
+        let mut vim = Vim::new("plain text\nmore of it\n");
+        vim.at(1, 1).press("daf");
+        assert_eq!(vim.text(), "plain text\nmore of it\n");
+        assert_eq!(vim.editor.message, "no grammar for this file");
+
+        // In a file that has one, but not inside a function.
+        let mut vim = Vim::rust("use std::fmt;\n\nfn one() {}\n");
+        vim.at(1, 1).press("daf");
+        assert_eq!(vim.text(), "use std::fmt;\n\nfn one() {}\n");
+        assert_eq!(vim.editor.message, "not in a function");
+    }
+
+    #[test]
+    fn the_function_object_is_a_selection_in_visual_mode_too() {
+        let mut vim = Vim::rust("fn one() {\n    let a = 1;\n    a\n}\n");
+        vim.at(2, 5).press("vaf");
+        let (start, end) = vim.editor.view().sel.range();
+        assert_eq!(start, 0, "from the first character of the signature");
+        // Everything but the line break the selection stops before.
+        assert_eq!(vim.editor.view().doc.text.to_string()[..end].trim_end(), "fn one() {\n    let a = 1;\n    a\n}");
+        // And an operator over it does what the same keys did in normal mode.
+        vim.press("y");
+        assert!(vim.editor.registers.get(None).text.starts_with("fn one()"));
     }
 
     #[test]

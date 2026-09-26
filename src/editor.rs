@@ -582,6 +582,8 @@ pub struct Editor {
     /// Whether the last build failed, which is what makes the next clean one
     /// worth more than a bark.
     build_broke: bool,
+    /// The buffer `<space>t` came from, so the same key goes back to it.
+    back_from_terminal: Option<usize>,
     /// Terminals opened this session, counting from one: what tells one
     /// `:term` buffer's output from another's.
     terms: u64,
@@ -726,6 +728,7 @@ impl Editor {
             build_group: crate::stream::pgid(),
             ai_group: crate::stream::pgid(),
             build_broke: false,
+            back_from_terminal: None,
             terms: 0,
             textwidth: DEFAULT_TEXTWIDTH,
             aiprg: String::new(),
@@ -1342,6 +1345,18 @@ impl Editor {
             self.sort_lines(lines, flags.trim(), reverse);
             return;
         }
+        // `:send`, `:'<,'>send` - the lines, typed into the terminal.
+        if let Some(rest) = asked.strip_prefix("send").filter(|rest| {
+            rest.is_empty() || rest.starts_with(char::is_whitespace)
+        }) {
+            let _ = rest;
+            let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
+            if ranged && lines.is_none() {
+                return;
+            }
+            self.send_to_terminal(lines);
+            return;
+        }
         if matches!(rest.trim(), "fmt" | "format") {
             let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
             if ranged && lines.is_none() {
@@ -1426,6 +1441,9 @@ impl Editor {
             ("pwd", _) => self.print_working_directory(),
             ("diff", which) => self.diff_with(which),
             ("term" | "terminal", command) => self.open_terminal(command),
+            // Everything, rather than this window: `:q` closes a window when
+            // there are several, and sometimes what you meant was all of it.
+            ("qa" | "qall" | "quitall", _) => self.quit = Some(force),
             ("dog", _) => self.dog_report(),
             ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
@@ -3285,7 +3303,24 @@ impl Editor {
     /// character, because that is where visual mode's cursor lives.
     pub fn select_object(&mut self, object: Object, around: bool) -> bool {
         let view = self.view();
-        let Some((start, end)) = object::resolve(&view.doc, view.sel.head, object, around) else {
+        let found = match object {
+            // The one object that comes from the grammar rather than from
+            // the characters: `af` is the whole function, `if` its inside.
+            Object::Function => view.function_ranges(view.sel.head).map(|(whole, inside)| {
+                match around {
+                    true => whole,
+                    false => inside,
+                }
+            }),
+            _ => object::resolve(&view.doc, view.sel.head, object, around),
+        };
+        let Some((start, end)) = found else {
+            if object == Object::Function {
+                self.message = match self.view().has_grammar() {
+                    true => "not in a function".into(),
+                    false => "no grammar for this file".into(),
+                };
+            }
             return false;
         };
         let visual = self.mode.is_visual();
@@ -5693,6 +5728,10 @@ fn built_in_leader(key: char) -> Option<&'static str> {
         'q' => "the quickfix list",
         'c' => "the changed-files picker",
         'p' => "petting the dog",
+        // The capital, because `<space>t` is the mapping everybody writes
+        // for their tests and the README teaches it: taking it would be
+        // taking something that is already yours.
+        'T' => "the terminal, and back",
         '?' => "the help picker",
         'n' => "line numbers",
         'x' => "close this buffer",

@@ -50,6 +50,8 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "revert", argument: Argument::None },
     Command { name: "shell", argument: Argument::None },
     Command { name: "term", argument: Argument::None },
+    Command { name: "send", argument: Argument::None },
+    Command { name: "qall", argument: Argument::None },
     Command { name: "suspend", argument: Argument::None },
     Command { name: "map", argument: Argument::None },
     Command { name: "unmap", argument: Argument::None },
@@ -422,6 +424,7 @@ fn argument_for(name: &str) -> Argument {
         "fmt" => "format",
         "sh" => "shell",
         "sus" | "stop" => "suspend",
+        "qa" => "qall",
         other => other,
     };
     COMMANDS
@@ -529,7 +532,7 @@ mod tests {
     #[test]
     fn a_half_typed_command_offers_the_commands() {
         assert_eq!(names("w"), ["write", "wq", "wall", "wqall"]);
-        assert_eq!(names("q"), ["quit"]);
+        assert_eq!(names("q"), ["quit", "qall"]);
         assert!(names("").len() == COMMANDS.len());
         assert!(names("zz").is_empty());
     }

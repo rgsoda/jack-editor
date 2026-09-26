@@ -15,6 +15,10 @@ pub enum Object {
     Pair(char, char),
     /// Lines up to the next blank one.
     Paragraph,
+    /// The function the cursor is in, from the grammar. The only object that
+    /// needs one, and so the only one this module cannot resolve on its own:
+    /// the editor asks the view's syntax tree instead.
+    Function,
 }
 
 /// Which object a key names. `b` and `B` are vim's aliases for the round and
@@ -29,6 +33,9 @@ pub fn from_key(key: char) -> Option<Object> {
         '[' | ']' => Object::Pair('[', ']'),
         '<' | '>' => Object::Pair('<', '>'),
         'p' => Object::Paragraph,
+        // `f` here is not the find-a-character motion: after `di` or `va`
+        // the next key names an object, and nothing else is spelled `f`.
+        'f' | 'm' => Object::Function,
         _ => return None,
     })
 }
@@ -42,6 +49,8 @@ pub fn resolve(doc: &Document, at: usize, object: Object, around: bool) -> Optio
         Object::Quote(quote) => quoted(doc, at, quote, around),
         Object::Pair(open, close) => pair(doc, at, open, close, around),
         Object::Paragraph => paragraph(doc, at, around),
+        // Needs the grammar, which is the editor's to hand over.
+        Object::Function => None,
     }
 }
 
