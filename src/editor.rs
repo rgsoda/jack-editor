@@ -562,6 +562,10 @@ pub struct Editor {
     /// replaced by another, or by `:make` being run again, has its output
     /// dropped.
     build: u64,
+    /// What is running now, so it can be stopped: the build's process group
+    /// and the question's. Zero in either when nothing of that kind is going.
+    build_group: crate::stream::Pgid,
+    ai_group: crate::stream::Pgid,
     /// Where that build is running, which is where the paths in its output
     /// are counted from. Kept rather than asked for again, since `:cd` can
     /// happen while a build does.
@@ -575,6 +579,11 @@ pub struct Editor {
     pub aiprg: String,
     /// Questions asked, counting from one: every one gets a token of its own.
     ai: u64,
+    /// The buffer an answer is being written into as it arrives, when it is
+    /// a question rather than a rewrite.
+    ai_into: Option<usize>,
+    /// How much of an answer has arrived, for a rewrite to report.
+    ai_lines: usize,
     /// The one being waited on, or zero. An answer to any other question -
     /// one superseded, or one already answered - is dropped rather than
     /// pasted into a buffer that was not expecting it.
@@ -699,10 +708,14 @@ impl Editor {
             makeprg: String::new(),
             build: 0,
             build_root: PathBuf::new(),
+            build_group: crate::stream::pgid(),
+            ai_group: crate::stream::pgid(),
             build_broke: false,
             aiprg: String::new(),
             ai: 0,
             ai_awaited: 0,
+            ai_into: None,
+            ai_lines: 0,
             ai_target: None,
             adrift: false,
         }
@@ -1379,6 +1392,7 @@ impl Editor {
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
             ("dog", _) => self.dog_report(),
+            ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
             ("guifonts", _) => self.open_font_picker(),
@@ -2085,7 +2099,7 @@ impl Editor {
         // animal in the status line with nothing to do while you wait.
         self.dog.errand = Errand::Building;
         self.dog.running = true;
-        crate::stream::spawn_build(command, root, self.build, jobs);
+        crate::stream::spawn_build(command, root, self.build, jobs, self.build_group.clone());
     }
 
     /// `:ai {instruction}` - ask whatever `aiprg` names about your code.
@@ -2123,6 +2137,15 @@ impl Editor {
 
         self.ai += 1;
         self.ai_awaited = self.ai;
+        self.ai_lines = 0;
+        // A question with nowhere to put the answer gets a buffer now rather
+        // than at the end, so the answer can be read as it arrives. A rewrite
+        // does not: lines appearing one at a time where your code was, only
+        // to be replaced wholesale, is not something to watch.
+        self.ai_into = match lines {
+            Some(_) => None,
+            None => Some(self.blank_answer()),
+        };
         self.ai_target = lines.map(|lines| AiTarget {
             view: self.current,
             lines,
@@ -2141,7 +2164,42 @@ impl Editor {
         let name = command.split_whitespace().next().unwrap_or("it").to_string();
         self.message = format!("asking {name}: sent {sent}...");
         self.dog_thinks();
-        crate::stream::spawn_ask(command, prompt, root, self.ai, jobs);
+        crate::stream::spawn_ask(crate::stream::Asking {
+            command,
+            prompt,
+            root,
+            token: self.ai,
+            tx: jobs,
+            group: self.ai_group.clone(),
+        });
+    }
+
+    /// `:cancel` - stop whatever is running in the background: a question
+    /// that is taking longer than it is worth, or a build that will not
+    /// finish. Not `:stop`, which vim has already given to `^z`.
+    ///
+    /// The process group rather than the process, so that stopping `sh -c
+    /// claude -p` stops claude too.
+    pub fn cancel_jobs(&mut self) {
+        let asking = crate::stream::stop(&self.ai_group);
+        let building = crate::stream::stop(&self.build_group);
+        if asking {
+            // Nothing else will arrive for it, and half an answer is not one.
+            self.ai_awaited = 0;
+            self.ai_target = None;
+            self.ai_into = None;
+            self.dog_stops_thinking();
+        }
+        if building {
+            self.build = 0;
+            self.dog_stops_thinking();
+        }
+        self.message = match (asking, building) {
+            (true, true) => "stopped the question and the build".into(),
+            (true, false) => "stopped asking".into(),
+            (false, true) => "stopped the build".into(),
+            (false, false) => "nothing is running".into(),
+        };
     }
 
     /// What is around the cursor, for a question to carry: where you are, the
@@ -2216,6 +2274,33 @@ impl Editor {
             .map(|entry| entry.text.clone())
     }
 
+    /// A line of the answer, as it is said. Into the buffer it is being
+    /// written to, or - for a rewrite, which has nowhere to show it yet - a
+    /// count in the status line, so that a program thinking for a minute
+    /// looks like one that is working rather than one that has hung.
+    pub fn ai_saying(&mut self, token: u64, chunk: String) {
+        if token == 0 || token != self.ai_awaited {
+            return;
+        }
+        let Some(index) = self.ai_into else {
+            self.ai_lines += 1;
+            let name = self.aiprg.split_whitespace().next().unwrap_or("it").to_string();
+            self.message = format!("{name} is answering: {} lines so far", self.ai_lines);
+            return;
+        };
+        let view = &mut self.views[index];
+        let end = view.doc.len_chars();
+        view.edit_at(end, 0, &chunk, None);
+        // Following it down, but only while you have not gone somewhere else
+        // in it yourself: an answer that drags your cursor back is worse than
+        // one you have to scroll.
+        if self.current == index && view.sel.head >= end.saturating_sub(1) {
+            let end = view.doc.len_chars();
+            view.sel = crate::view::Selection::point(end.saturating_sub(1));
+            self.scroll_to_cursor();
+        }
+    }
+
     /// An answer arrived. Into the buffer if a range asked for one and that
     /// buffer has not moved on, and into a buffer of its own otherwise.
     pub fn ai_answered(&mut self, token: u64, said: String, ok: bool) {
@@ -2227,16 +2312,31 @@ impl Editor {
         let name = self.aiprg.split_whitespace().next().unwrap_or("it").to_string();
         if !ok {
             self.ai_target = None;
+            // What it managed to say before it failed is not an answer, and a
+            // buffer of half of one is worse than none.
+            if let Some(index) = self.ai_into.take() {
+                self.views[index].doc.text = ropey::Rope::new();
+            }
             self.message = crate::ai::complaint(&name, &said);
             return;
         }
         let answer = crate::ai::cleaned(&said);
         if answer.trim().is_empty() {
             self.ai_target = None;
+            self.ai_into = None;
             self.message = format!("{name} said nothing");
             return;
         }
 
+        // A question's answer has been arriving all along; it only needs the
+        // fence taking off the buffer it went into.
+        if let Some(index) = self.ai_into.take() {
+            self.views[index].doc.text = ropey::Rope::from_str(&answer);
+            self.views[index].sel = crate::view::Selection::point(0);
+            self.clamp_cursor();
+            self.message = format!("{name} answered - {} lines", answer.lines().count());
+            return;
+        }
         let Some(target) = self.ai_target.take() else {
             self.open_answer(&answer);
             return;
@@ -2273,15 +2373,27 @@ impl Editor {
     /// An answer nobody is going to paste anywhere: a buffer of its own, so
     /// it can be read, searched and yanked from like anything else.
     fn open_answer(&mut self, answer: &str) {
-        let mut document = crate::buffer::Document::scratch();
-        document.text = ropey::Rope::from_str(answer);
-        match self.views.len() == 1 && self.views[0].is_empty_scratch() {
-            true => self.views[0] = View::new(document),
-            false => self.views.push(View::new(document)),
-        }
-        let index = self.views.len() - 1;
-        self.switch_to(index);
+        let index = self.blank_answer();
+        let doc = &mut self.views[index].doc;
+        doc.text = ropey::Rope::from_str(answer);
         self.message = "the answer, in a buffer of its own".into();
+    }
+
+    /// An empty one of those, ready to be written into as the answer arrives.
+    fn blank_answer(&mut self) -> usize {
+        let document = crate::buffer::Document::scratch();
+        let index = match self.views.len() == 1 && self.views[0].is_empty_scratch() {
+            true => {
+                self.views[0] = View::new(document);
+                0
+            }
+            false => {
+                self.views.push(View::new(document));
+                self.views.len() - 1
+            }
+        };
+        self.switch_to(index);
+        index
     }
 
     /// A build finished. What it said becomes the quickfix list, and the walk
@@ -6231,6 +6343,64 @@ two
         let context = e.ai_context(Some((0, 1)));
         assert_eq!(context.range, Some((1, 2)));
         assert_eq!(context.code, "fn one() {\n    1\n");
+    }
+
+    #[test]
+    fn a_question_fills_a_buffer_as_the_answer_arrives() {
+        let mut e = opened("one\ntwo\n");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=claude -p");
+        e.run_command("ai what does this do?");
+        // The buffer is there before a word of the answer is.
+        assert_eq!(e.views.len(), 2);
+        assert_eq!(e.view().doc.text.to_string(), "");
+
+        e.ai_saying(1, "It counts.\n".into());
+        e.ai_saying(1, "Badly.\n".into());
+        assert_eq!(e.view().doc.text.to_string(), "It counts.\nBadly.\n");
+        // A line for a question nobody is waiting on is dropped.
+        e.ai_saying(9, "nonsense\n".into());
+        assert_eq!(e.view().doc.text.to_string(), "It counts.\nBadly.\n");
+
+        e.ai_answered(1, "It counts.\nBadly.\n".into(), true);
+        assert_eq!(e.view().doc.text.to_string(), "It counts.\nBadly.\n");
+        assert!(e.message.contains("2 lines"), "{}", e.message);
+        assert_eq!(e.views[0].doc.text.to_string(), "one\ntwo\n", "yours is untouched");
+    }
+
+    #[test]
+    fn a_rewrite_counts_the_lines_rather_than_showing_them() {
+        let mut e = opened("one\ntwo\nthree\n");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=claude -p");
+        e.run_command("1,2ai rewrite");
+        assert_eq!(e.views.len(), 1, "no buffer for a rewrite");
+        e.ai_saying(1, "ONE\n".into());
+        e.ai_saying(1, "TWO\n".into());
+        assert_eq!(e.message, "claude is answering: 2 lines so far");
+        assert_eq!(e.views[0].doc.text.to_string(), "one\ntwo\nthree\n", "nothing yet");
+        e.ai_answered(1, "ONE\nTWO\n".into(), true);
+        assert_eq!(e.views[0].doc.text.to_string(), "ONE\nTWO\nthree\n");
+    }
+
+    #[test]
+    fn cancel_stops_what_is_running_and_says_when_nothing_is() {
+        let mut e = opened("one\n");
+        e.run_command("cancel");
+        assert_eq!(e.message, "nothing is running");
+
+        // A question in flight: stopping it means no answer is waited for.
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set aiprg=sleep 60");
+        e.run_command("ai hello");
+        // A group of our own, so the test stops nothing but a number.
+        e.ai_group.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        e.run_command("cancel");
+        assert_eq!(e.message, "stopped asking");
+        assert_eq!(e.ai_awaited, 0);
+        // And an answer that arrives anyway is not wanted any more.
+        e.ai_answered(1, "too late\n".into(), true);
+        assert_eq!(e.views[0].doc.text.to_string(), "one\n");
     }
 
     #[test]

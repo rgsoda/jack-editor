@@ -2,7 +2,7 @@ use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
@@ -42,7 +42,9 @@ pub enum Message {
     /// last second, and a list of places that grew while you walked it would
     /// be a list you could not trust.
     Built { token: u64, output: String, ok: bool },
-    /// What `aiprg` answered, and whether it exited happily.
+    /// A line of what `aiprg` is saying, as it says it.
+    Saying { token: u64, chunk: String },
+    /// And all of it, once it has finished, with whether it exited happily.
     Said { token: u64, said: String, ok: bool },
 }
 
@@ -165,6 +167,50 @@ pub fn spawn_input(tx: Sender<Message>, input: Arc<Input>) {
     });
 }
 
+/// A running job's process group, as the editor holds it: zero until the job
+/// has started and again once it has finished. Shared rather than returned
+/// because the job starts on a thread of its own and the editor has to be
+/// able to stop it from the one it is on.
+pub type Pgid = Arc<AtomicU32>;
+
+pub fn pgid() -> Pgid {
+    Arc::new(AtomicU32::new(0))
+}
+
+/// Stop a job, and everything it started. The group rather than the process:
+/// a job is `sh -c whatever`, and killing the shell would leave whatever it
+/// ran behind - which for a program that talks to a network is worse than
+/// leaving it alone.
+pub fn stop(group: &Pgid) -> bool {
+    let pgid = group.swap(0, Ordering::Relaxed);
+    if pgid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::killpg(pgid as i32, libc::SIGTERM);
+    }
+    true
+}
+
+/// Put a job in a process group of its own, so that stopping it stops
+/// everything it started rather than just the shell in front of it.
+#[cfg(unix)]
+fn own_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Safety: `setpgid` is async-signal-safe, which is the whole of what a
+    // `pre_exec` closure is allowed to be.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn own_group(_command: &mut Command) {}
+
 /// A build's output stops here. Past this it is a program in a loop, and the
 /// places worth walking were in the first screenful anyway.
 const MAX_OUTPUT: usize = 4 << 20;
@@ -183,44 +229,82 @@ const MAX_OUTPUT: usize = 4 << 20;
 ///
 /// This is the only place a buffer's contents leave the editor, and it only
 /// runs when `:ai` was typed and `aiprg` names something to run.
-pub fn spawn_ask(command: String, prompt: String, root: PathBuf, token: u64, tx: Sender<Message>) {
+pub fn spawn_ask(ask: Asking) {
+    let Asking { command, prompt, root, token, tx, group } = ask;
     thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read, Write};
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let child = Command::new(shell)
+        let mut builder = Command::new(shell);
+        builder
             .arg("-c")
             .arg(&command)
             .current_dir(&root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        let mut child = match child {
+            .stderr(std::process::Stdio::piped());
+        own_group(&mut builder);
+        let mut child = match builder.spawn() {
             Ok(child) => child,
             Err(err) => {
                 let _ = tx.send(Message::Failed { token, error: format!("{command}: {err}") });
                 return;
             }
         };
+        group.store(child.id(), Ordering::Relaxed);
+
         // Dropped as soon as it is written, or a program that reads until the
         // end of its input waits for ever.
         if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
             let _ = stdin.write_all(prompt.as_bytes());
         }
-        let message = match child.wait_with_output() {
-            Ok(finished) => {
-                let mut said = String::from_utf8_lossy(&finished.stdout).into_owned();
-                said.truncate(said.char_indices().nth(MAX_OUTPUT).map_or(said.len(), |(at, _)| at));
-                match finished.status.success() {
-                    true => Message::Said { token, said, ok: true },
-                    // What a program complains with is stderr, which is not
-                    // the answer and must not be pasted into a buffer as one.
-                    false => {
-                        let mut why = String::from_utf8_lossy(&finished.stderr).into_owned();
-                        why.push_str(&said);
-                        Message::Said { token, said: why, ok: false }
-                    }
+        // Stderr on a thread of its own. A pipe nobody is reading fills up and
+        // stops the program writing to it, and a program that has stopped
+        // writing never finishes.
+        let complaint = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr = child.stderr.take().map(|mut pipe| {
+            let complaint = complaint.clone();
+            thread::spawn(move || {
+                let mut said = String::new();
+                let _ = pipe.read_to_string(&mut said);
+                *complaint.lock().unwrap() = said;
+            })
+        });
+
+        // A line at a time, as it is written. A program that thinks for a
+        // minute and then answers is one you would swear had hung.
+        let mut said = String::new();
+        if let Some(stdout) = child.stdout.take() {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
                 }
+                if said.len() + line.len() > MAX_OUTPUT {
+                    break;
+                }
+                said.push_str(&line);
+                if tx.send(Message::Saying { token, chunk: line.clone() }).is_err() {
+                    break;
+                }
+            }
+        }
+        let status = child.wait();
+        if let Some(stderr) = stderr {
+            let _ = stderr.join();
+        }
+        group.store(0, Ordering::Relaxed);
+
+        let message = match status {
+            Ok(status) if status.success() => Message::Said { token, said, ok: true },
+            // What a program complains with is stderr, which is not the answer
+            // and must not be pasted into a buffer as one.
+            Ok(_) => {
+                let mut why = complaint.lock().unwrap().clone();
+                why.push_str(&said);
+                Message::Said { token, said: why, ok: false }
             }
             Err(err) => Message::Failed { token, error: format!("{command}: {err}") },
         };
@@ -228,14 +312,32 @@ pub fn spawn_ask(command: String, prompt: String, root: PathBuf, token: u64, tx:
     });
 }
 
-pub fn spawn_build(command: String, root: PathBuf, token: u64, tx: Sender<Message>) {
+/// What starting one of those takes. A struct because seven arguments in a
+/// row is a function nobody can call correctly.
+pub struct Asking {
+    pub command: String,
+    pub prompt: String,
+    pub root: PathBuf,
+    pub token: u64,
+    pub tx: Sender<Message>,
+    pub group: Pgid,
+}
+
+pub fn spawn_build(command: String, root: PathBuf, token: u64, tx: Sender<Message>, group: Pgid) {
     thread::spawn(move || {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let finished = Command::new(shell)
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&root)
-            .output();
+        let mut builder = Command::new(shell);
+        builder.arg("-c").arg(&command).current_dir(&root);
+        own_group(&mut builder);
+        let finished = match builder.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() {
+            Ok(child) => {
+                group.store(child.id(), Ordering::Relaxed);
+                let finished = child.wait_with_output();
+                group.store(0, Ordering::Relaxed);
+                finished
+            }
+            Err(err) => Err(err),
+        };
         let message = match finished {
             Ok(finished) => {
                 let mut output = String::from_utf8_lossy(&finished.stderr).into_owned();

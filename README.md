@@ -223,6 +223,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set makeprg=cargo test` | what a bare `:make` runs; empty means whatever builds the project you are in |
 | `:ai {what you want}` | ask the program `aiprg` names; over a selection it rewrites those lines, otherwise it answers in a buffer |
 | `:set aiprg=claude -p` | what `:ai` runs; empty, and `:ai` does nothing at all |
+| `:cancel` | stop a question or a build that is taking too long |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
@@ -2332,6 +2333,15 @@ function, not the file: a whole file is not context, it is a dump. If the
 language server or the last build has said something about that line, that
 goes too, which is what makes `:ai fix this` a complete sentence. `:ai!` sends
 your words and nothing else.
+
+The answer arrives as it is written. A question opens its buffer before there
+is a word in it and fills it a line at a time, so a program that thinks for
+forty seconds looks like one that is working rather than one that has hung; a
+rewrite has nowhere to show a half-written answer, so it counts the lines in
+the status line instead and applies the whole thing at the end. `:cancel`
+stops it — the process group rather than the process, so stopping `sh -c
+claude -p` stops claude too, and a build with it. Not `:stop`, which vim gave
+to `^z` long ago.
 
 A rewrite is one undo step, so `u` puts your lines back. The answer only goes
 into the buffer if the buffer has not changed since you asked: type while it

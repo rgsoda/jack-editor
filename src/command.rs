@@ -58,6 +58,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "pwd", argument: Argument::None },
     Command { name: "dog", argument: Argument::None },
     Command { name: "ai", argument: Argument::None },
+    Command { name: "cancel", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },
