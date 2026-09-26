@@ -66,6 +66,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ">> << >{motion}", what: "indent, dedent lines", mode: "normal" },
     Binding { keys: "== ={motion}", what: "re-indent: ask the grammar where lines go", mode: "normal" },
     Binding { keys: "gcc gc{motion}", what: "comment lines out, or back in", mode: "normal" },
+    Binding { keys: "gqq gq{motion}", what: "wrap lines to textwidth", mode: "normal" },
     Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
     Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
@@ -126,6 +127,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: ":", what: "a command over the selection ('<,'>)", mode: "visual" },
     Binding { keys: "=", what: "re-indent the lines", mode: "visual" },
     Binding { keys: "gc", what: "comment the lines out, or back in", mode: "visual" },
+    Binding { keys: "gq", what: "wrap the lines to textwidth", mode: "visual" },
     Binding { keys: "p P", what: "replace it with a register", mode: "visual" },
     Binding { keys: "D X Y C", what: "the same, on whole lines", mode: "visual" },
     Binding { keys: "S", what: "surround the selection with a pair: S( S\" S]", mode: "visual" },
@@ -213,6 +215,8 @@ enum Pending {
     Reindent,
     /// `gc`, which comments the lines out, or back in.
     Comment,
+    /// `gq`, which wraps the lines to `textwidth`.
+    Reflow,
     /// The `g` prefix, waiting for `gg` and the rest. `operator` is the key of
     /// the operator waiting for it - `dgg` deletes to the top of the file -
     /// or `None` when the `g` command is the whole of it.
@@ -545,6 +549,7 @@ impl Keys {
             Some(Pending::Dedent) => "<",
             Some(Pending::Reindent) => "=",
             Some(Pending::Comment) => "gc",
+            Some(Pending::Reflow) => "gq",
             Some(Pending::Go { .. }) => "g",
             Some(Pending::Replace) => "r",
             Some(Pending::Reveal) => "z",
@@ -657,6 +662,11 @@ impl Keys {
                     // before it and waits for a motion: `3gcc`, `gcap`.
                     KeyCode::Char('c') => {
                         self.pending = Some(Pending::Comment);
+                        return;
+                    }
+                    // The other operator that is two keys: `gqap`, `gqq`.
+                    KeyCode::Char('q') => {
+                        self.pending = Some(Pending::Reflow);
                         return;
                     }
                     KeyCode::Char('d') => editor.goto_definition(true),
@@ -877,6 +887,10 @@ impl Keys {
                 KeyCode::Char('g') => editor.goto_line_extending(count.unwrap_or(1) - 1),
                 KeyCode::Char('c') => {
                     editor.comment_selection();
+                    editor.set_mode(Mode::Normal);
+                }
+                KeyCode::Char('q') => {
+                    editor.reflow_selection();
                     editor.set_mode(Mode::Normal);
                 }
                 // The selection is what the server is asked about, so this is
@@ -1319,6 +1333,7 @@ impl Keys {
             '<' => editor.shift_count(false, count),
             '=' => editor.reindent_lines(first, last),
             COMMENT => editor.comment_lines(first, last),
+            REFLOW => editor.reflow_lines(first, last),
             SURROUND => {
                 let view = editor.view();
                 let start = view.doc.line_to_char(first);
@@ -1338,6 +1353,7 @@ impl Keys {
             Some('<') => editor.shift_selection(false, 1),
             Some('=') => editor.reindent_selection(),
             Some(COMMENT) => editor.comment_selection(),
+            Some(REFLOW) => editor.reflow_selection(),
             Some(SURROUND) => self.wait_for_pair(editor),
             Some('y') => editor.yank_selection(self.register),
             Some('c') => {
@@ -1377,6 +1393,7 @@ impl Keys {
                 | (Pending::Dedent, KeyCode::Char('<'))
                 | (Pending::Reindent, KeyCode::Char('='))
                 | (Pending::Comment, KeyCode::Char('c'))
+                | (Pending::Reflow, KeyCode::Char('q'))
                 | (Pending::Surround, KeyCode::Char('s'))
         );
         if doubled {
@@ -1393,6 +1410,10 @@ impl Keys {
                 Pending::Comment => {
                     let (line, _) = editor.view().cursor_coords();
                     editor.comment_lines(line, line + count - 1);
+                }
+                Pending::Reflow => {
+                    let (line, _) = editor.view().cursor_coords();
+                    editor.reflow_lines(line, (line + count - 1).min(editor.last_line()));
                 }
                 Pending::Surround => {
                     let (start, end) = editor.line_to_surround();
@@ -1453,6 +1474,7 @@ impl Keys {
             Pending::Dedent => editor.shift_motion(false),
             Pending::Reindent => editor.reindent_motion(),
             Pending::Comment => editor.comment_motion(),
+            Pending::Reflow => editor.reflow_motion(),
             Pending::Surround => self.wait_for_pair(editor),
             _ => editor.delete_selection(self.register),
         }
@@ -1471,6 +1493,7 @@ fn operator_key(operator: Pending) -> char {
         Pending::Dedent => '<',
         Pending::Reindent => '=',
         Pending::Comment => COMMENT,
+        Pending::Reflow => REFLOW,
         Pending::Surround => SURROUND,
         _ => 'd',
     }
@@ -1481,6 +1504,9 @@ fn operator_key(operator: Pending) -> char {
 /// be mistaken for one.
 const COMMENT: char = '#';
 
+/// `gq`, the same way.
+const REFLOW: char = 'Q';
+
 /// `ys`, travelling as one character the way `gc` does.
 const SURROUND: char = 's';
 
@@ -1488,6 +1514,7 @@ const SURROUND: char = 's';
 fn operator_text(operator: char) -> String {
     match operator {
         COMMENT => "gc".to_string(),
+        REFLOW => "gq".to_string(),
         SURROUND => "ys".to_string(),
         other => other.to_string(),
     }
@@ -2549,6 +2576,29 @@ mod tests {
         vim.press("x<C-w>v<C-w>w.");
         assert_eq!(vim.text(), "cdef\n");
         assert_eq!(vim.keys.pending_text(), "");
+    }
+
+    #[test]
+    fn gq_is_an_operator_and_takes_a_motion_the_way_gc_does() {
+        let long = "one two three four five six seven eight\n";
+        let mut vim = Vim::new(long);
+        vim.editor.textwidth = 20;
+        vim.at(1, 1).press("gqq");
+        assert_eq!(vim.text(), "one two three four\nfive six seven eight\n");
+
+        // `gqap` is the paragraph, and the blank line after it is the end of
+        // it rather than part of what gets wrapped.
+        let mut vim = Vim::new("aaa bbb\nccc ddd\n\neee\n");
+        vim.editor.textwidth = 40;
+        vim.at(1, 1).press("gqap");
+        assert_eq!(vim.text(), "aaa bbb ccc ddd\n\neee\n");
+
+        // And in visual mode it is the lines you picked.
+        let mut vim = Vim::new("aaa\nbbb\nccc\n");
+        vim.editor.textwidth = 40;
+        vim.at(1, 1).press("Vjgq");
+        assert_eq!(vim.text(), "aaa bbb\nccc\n");
+        assert_eq!(vim.editor.mode, Mode::Normal, "and it leaves visual mode");
     }
 
     #[test]

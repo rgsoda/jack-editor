@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 66: `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 67: `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -150,6 +150,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `>>` `<<` `{n}>>` `>{motion}` | indent / dedent lines |
 | `==` `={motion}` | re-indent: ask the grammar where the lines go |
 | `gcc` `gc{motion}` | comment lines out, or back in (`3gcc`, `gcap`, `gcG`) |
+| `gqq` `gq{motion}` | wrap lines to `textwidth`, comment marker and all (`gqap`, `gqG`) |
 | `ys{motion}{pair}` `yss` | put a pair around text: `ysiw)` makes `(word)`, `ysiw(` makes `( word )` |
 | `ds{pair}` `cs{pair}{pair}` | take away the pair around the cursor, or swap it: `ds"`, `cs"'`, `cs(]` |
 | `v` `V` `^b` (or `gb`) | select characters / whole lines / a rectangle |
@@ -199,6 +200,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:g/pat/cmd` | run a command on every matching line — `:g/dbg!/d`, `:g/TODO/s/TODO/DONE/` |
 | `:v/pat/cmd` | and `:g!/pat/cmd`: on every line that does *not* match |
 | `:d` `:3,7d` `:%d` | delete lines, into the register `p` puts back |
+| `:sort` `:sort! un` | sort the buffer, or the lines a range names — `u` unique, `n` numeric, `i` ignore case, `!` backwards |
+| `:diff [buffer]` | this buffer against another one, as a unified diff in a buffer of its own |
 | `:help [what]` | the keymap as a picker, with what you asked about already typed — the same list as `<space>?` |
 | `:make [cmd]` | run a build in the background; what it complained about becomes the quickfix list, and you land on the first |
 | `:cd [dir]` `:pwd` | where the pickers look and grep runs; bare `:cd` is the project the file in front of you belongs to |
@@ -219,6 +222,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set inlayhints` | `noinlayhints`: types and parameter names from the language server, drawn into the line |
 | `:set undofile` | `noundofile`: keep undo history across restarts |
 | `:set autocomplete=2` | `noautocomplete`: word length that pops the list |
+| `:set textwidth=80` | `tw`: the column `gq` wraps to |
 | `:set semicolon=command` | `find`: what `;` does — repeat, or open the command line |
 | `:set makeprg=cargo test` | what a bare `:make` runs; empty means whatever builds the project you are in |
 | `:ai {what you want}` | ask the program `aiprg` names; over a selection it rewrites those lines, otherwise it answers in a buffer |
@@ -382,6 +386,13 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `substitute.rs` — the `:s` grammar: range, delimiter, pattern, replacement,
   flags, and the translation from vim's replacement spellings into the regex
   crate's. No document anywhere in it, which is why it is its own file.
+- `reflow.rs` — `gq`: the prefix a paragraph's lines share - the indent and
+  the `//` - taken off, the words wrapped to a width, and the prefix put back
+  on every line of the answer. Strings only.
+- `sort.rs` — `:sort`: what "in order" means once `u`, `n`, `i` and `!` have
+  had their say, and a stable sort by that.
+- `diff.rs` — `:diff`: two buffers as a unified diff, in the format every
+  other tool in the terminal writes.
 - `ai.rs` — what gets sent to the program that answers questions about code,
   and what to make of what comes back: the prompt, and the fence that has to
   come off the answer. Pure functions, because what leaves the machine is
@@ -1049,6 +1060,59 @@ further than highlighting does: `//` for Rust, Go, C and the rest, `#` for
 Python, TOML, shell, YAML and Makefiles, `--` for Lua and SQL, and
 `<!-- -->` or `/* */` around the line for HTML, Markdown and CSS. A file jack
 has no marker for says so and is left alone.
+
+## Wrapping a paragraph
+
+`gq` is an operator like `gc`: `gqq` wraps the line, `gqap` the paragraph,
+`gqG` to the end of the file, and `gq` in visual mode the lines you picked.
+`:set textwidth=80` says where to wrap; eighty until you say otherwise.
+
+The awkward part of reflowing prose in a source file is that the prose is
+nearly always inside a comment, and a wrap that drops the `//` off the second
+line turns a comment into a syntax error. So the prefix is worked out first -
+the indentation, and the marker with the space after it - taken off every
+line, and put back on every line of the answer. The first line decides what
+the prefix is and the rest have to agree; where they do not, only the
+indentation they share is kept, which is the safe answer for a block that is
+not really one paragraph.
+
+Blank lines are where one paragraph stops and the next starts, and they stay
+exactly where they were: they are how you said "these belong together and
+those do not". A `//` with nothing after it counts as one, so a comment block
+of three paragraphs comes back as three. A word longer than the width gets a
+line of its own rather than being broken - a URL in a comment is still a URL
+afterwards.
+
+Wrapping is one undo step, and `u` puts the paragraph back as it was. The
+cursor lands on the last line of what was wrapped, so `gqap` then `j` is the
+next paragraph.
+
+## Sorting lines
+
+`:sort` puts the whole buffer in order; `:'<,'>sort`, `:3,7sort` and `:%sort`
+name lines instead. The flags are vim's: `u` keeps one line out of every run
+that compares equal, `n` sorts by the first number on the line rather than by
+its digits - so 9 comes before 10 - `i` makes upper and lower case the same
+letter, and `!` turns the whole thing round.
+
+It is a stable sort, and the text is part of the key even when `n` was asked
+for, so the same lines always come out in the same order rather than in an
+order that depends on how they went in. A sort that changes nothing says so
+and makes no undo step; one that drops duplicates says how many.
+
+## Two buffers, side by side
+
+`:diff` writes what is different between this buffer and another one into a
+buffer of its own, in the unified format that `diff -u` and `git diff` write -
+because that is the format every pair of eyes already reads, and because a
+diff you can search, yank from and leave open is worth more than a mode that
+owns the screen.
+
+`:diff 2` is a buffer number, as `:b` takes one, and `:diff main.rs` is any
+part of a name. With nothing after it, it is the buffer in the other window -
+two windows side by side is how you came to want a diff in the first place -
+or the only other buffer open. Two buffers that say the same thing say so
+rather than opening an empty one.
 
 ## Long lines
 

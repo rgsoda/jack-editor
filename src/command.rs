@@ -42,6 +42,8 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "delete", argument: Argument::None },
     Command { name: "global", argument: Argument::None },
     Command { name: "format", argument: Argument::None },
+    Command { name: "sort", argument: Argument::None },
+    Command { name: "diff", argument: Argument::None },
     Command { name: "hunk", argument: Argument::None },
     Command { name: "blame", argument: Argument::None },
     Command { name: "stage", argument: Argument::None },
@@ -230,6 +232,12 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Value(&["Rex", "Bluey", "Laika"], ""),
         about: "What the dog in the status line answers to. It turns up when \
                 it barks and when `:dog` says how far it has run.",
+    },
+    Setting {
+        name: "textwidth",
+        kind: Kind::Value(&["72", "80", "100", "120"], "80"),
+        about: "The column `gq` wraps a paragraph to. Nothing happens at that \
+                width until you ask for it: it is not a limit on what you type.",
     },
     Setting {
         name: "makeprg",

@@ -37,6 +37,10 @@ mod surround;
 /// is most of a short name already typed.
 const DEFAULT_AUTOCOMPLETE: usize = 2;
 
+/// The column `gq` wraps at when nothing has said otherwise. Eighty, which is
+/// what every comment in this repository is already written to.
+const DEFAULT_TEXTWIDTH: usize = 80;
+
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -573,6 +577,9 @@ pub struct Editor {
     /// Whether the last build failed, which is what makes the next clean one
     /// worth more than a bark.
     build_broke: bool,
+    /// The column `gq` wraps to. Not a limit on what you may type: nothing
+    /// happens at this width until you ask for it.
+    pub textwidth: usize,
     /// What `:ai` runs. Empty until you name something, which is what keeps
     /// the feature off until you have asked for it - nothing is ever sent
     /// anywhere by an editor that has not been told what to send it to.
@@ -711,6 +718,7 @@ impl Editor {
             build_group: crate::stream::pgid(),
             ai_group: crate::stream::pgid(),
             build_broke: false,
+            textwidth: DEFAULT_TEXTWIDTH,
             aiprg: String::new(),
             ai: 0,
             ai_awaited: 0,
@@ -1309,6 +1317,22 @@ impl Editor {
             self.ai(instruction, lines, true);
             return;
         }
+        // `:sort` takes a range too, and without one it means the whole
+        // buffer rather than the line the cursor is on: nobody sorts one line.
+        let sorting = asked
+            .strip_prefix("sort!")
+            .map(|flags| (flags, true))
+            .or_else(|| asked.strip_prefix("sort").map(|flags| (flags, false)));
+        if let Some((flags, reverse)) = sorting
+            && (flags.is_empty() || flags.starts_with(char::is_whitespace))
+        {
+            let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
+            if ranged && lines.is_none() {
+                return;
+            }
+            self.sort_lines(lines, flags.trim(), reverse);
+            return;
+        }
         if matches!(rest.trim(), "fmt" | "format") {
             let lines = ranged.then(|| self.substitute_lines(lines)).flatten();
             if ranged && lines.is_none() {
@@ -1391,6 +1415,7 @@ impl Editor {
             ("make", command) => self.make(command),
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
+            ("diff", which) => self.diff_with(which),
             ("dog", _) => self.dog_report(),
             ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
@@ -1884,6 +1909,12 @@ impl Editor {
                 ("autocomplete" | "ac", _) => {
                     self.message = format!("autocomplete wants 0 to 16, not {value:?}");
                 }
+                ("textwidth" | "tw", Ok(width)) if (1..=1000).contains(&width) => {
+                    self.textwidth = width;
+                }
+                ("textwidth" | "tw", _) => {
+                    self.message = format!("textwidth wants 1 to 1000, not {value:?}");
+                }
                 ("makeprg", _) => self.makeprg = value.trim().to_string(),
                 ("dogname", _) => self.dogname = value.trim().to_string(),
                 ("aiprg", _) => self.aiprg = value.trim().to_string(),
@@ -1973,7 +2004,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} semicolon={} makeprg={} aiprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -1991,6 +2022,7 @@ impl Editor {
                     self.lsp_enabled,
                     self.tabline.name(),
                     self.autocomplete,
+                    self.textwidth,
                     self.semicolon.name(),
                     match self.makeprg.is_empty() {
                         true => "(what builds this project)",
@@ -2250,6 +2282,189 @@ impl Editor {
             Some((start, end)) => self.view().doc.slice_str(start, end),
             None => String::new(),
         }
+    }
+
+    /// Put `text` in place of lines `first..=last`, as one undo step.
+    ///
+    /// The last line of a file that ended without a break has to stay that
+    /// way, or a command that touches the end of a file grows it by one every
+    /// time it is run.
+    fn put_lines(&mut self, first: usize, last: usize, text: &str) -> bool {
+        let Some((start, end)) = self.line_span(first, last) else {
+            return false;
+        };
+        let mut text = text.to_string();
+        let had_break = self.view().doc.slice_str(start, end).ends_with('\n');
+        if !had_break && text.ends_with('\n') {
+            text.pop();
+        }
+        if had_break && !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        if self.view().doc.slice_str(start, end) == text {
+            return false;
+        }
+        self.begin_undo_group();
+        self.view_mut().edit_at(start, end - start, &text, Some(start));
+        self.end_undo_group();
+        self.clamp_cursor();
+        true
+    }
+
+    /// Those lines, one string each, without their breaks.
+    fn lines_of(&self, first: usize, last: usize) -> Vec<String> {
+        (first..=last.min(self.last_line()))
+            .map(|line| self.view().doc.line_str(line).trim_end_matches('\n').to_string())
+            .collect()
+    }
+
+    /// `:sort` - the lines of the range in order, or the whole buffer when no
+    /// range was given, which is what vim does and what anybody typing four
+    /// letters at an unsorted file means.
+    pub fn sort_lines(&mut self, lines: Option<(usize, usize)>, flags: &str, reverse: bool) {
+        let mut options = match crate::sort::Options::parse(flags) {
+            Ok(options) => options,
+            Err(flag) => {
+                self.message = format!("not a sort flag: {flag} (u unique, n numeric, i case)");
+                return;
+            }
+        };
+        options.reverse |= reverse;
+        let (first, last) = lines.unwrap_or((0, self.last_line()));
+        let before = self.lines_of(first, last);
+        let after = crate::sort::sorted(&before, options);
+        let dropped = before.len() - after.len();
+        let text = match after.is_empty() {
+            true => String::new(),
+            false => format!("{}\n", after.join("\n")),
+        };
+        if !self.put_lines(first, last, &text) {
+            self.message = format!("{} lines, already sorted", before.len());
+            return;
+        }
+        self.message = match dropped {
+            0 => format!("{} lines sorted", after.len()),
+            1 => format!("{} lines sorted, one duplicate dropped", after.len()),
+            n => format!("{} lines sorted, {n} duplicates dropped", after.len()),
+        };
+    }
+
+    /// `gq` - those lines, wrapped to `textwidth`.
+    pub fn reflow_lines(&mut self, first: usize, last: usize) {
+        let before = self.lines_of(first, last);
+        let after = crate::reflow::reflow(&before, self.textwidth);
+        let text = match after.is_empty() {
+            true => String::new(),
+            false => format!("{}\n", after.join("\n")),
+        };
+        let width = self.textwidth;
+        if !self.put_lines(first, last, &text) {
+            self.message = format!("already within {width} columns");
+            return;
+        }
+        // The cursor goes to the end of what was reflowed, as vim leaves it:
+        // `gqap` then `j` is the next paragraph.
+        let landed = first + after.len().saturating_sub(1);
+        self.goto_line(landed.min(self.last_line()));
+        self.clamp_cursor();
+        self.message = match before.len() == after.len() {
+            true => format!("{} lines wrapped to {width}", after.len()),
+            false => format!("{} lines became {} at {width} columns", before.len(), after.len()),
+        };
+    }
+
+    /// The lines a selection covers, for visual `gq`.
+    pub fn reflow_selection(&mut self) {
+        let (first, last) = self.selection_lines();
+        self.reflow_lines(first, last);
+    }
+
+    /// The lines a motion covered, for `gqap` and `gqj`.
+    pub fn reflow_motion(&mut self) {
+        let view = self.view();
+        let (first, _) = view.doc.coords(view.sel.anchor.min(view.sel.head));
+        let (last, _) = view.doc.coords(view.sel.anchor.max(view.sel.head));
+        self.reflow_lines(first, last);
+    }
+
+    /// `:diff` - this buffer against another one, written into a third.
+    ///
+    /// The argument is a buffer number, as `:b` takes one, or any part of a
+    /// name. With nothing after it, the buffer in the other window, or the
+    /// only other buffer open - which is the case the command is for.
+    pub fn diff_with(&mut self, which: &str) {
+        let Some(other) = self.buffer_named(which) else {
+            return;
+        };
+        if other == self.current {
+            self.message = "that is this buffer".into();
+            return;
+        }
+        let (left, right) = (&self.views[other], &self.views[self.current]);
+        let lines = crate::diff::unified(
+            left.doc.display_name(),
+            &left.doc.text.to_string(),
+            right.doc.display_name(),
+            &right.doc.text.to_string(),
+        );
+        if lines.is_empty() {
+            self.message = format!(
+                "{} and {} are the same",
+                self.views[other].doc.display_name(),
+                self.views[self.current].doc.display_name()
+            );
+            return;
+        }
+        let changed = lines.iter().filter(|line| line.starts_with(['-', '+'])).count() - 2;
+        let index = self.blank_answer();
+        self.views[index].doc.text = ropey::Rope::from_str(&format!("{}\n", lines.join("\n")));
+        self.views[index].sel = crate::view::Selection::point(0);
+        self.clamp_cursor();
+        self.message = format!("{changed} lines differ");
+    }
+
+    /// Which buffer a name or a number means. `None` when nothing does, and
+    /// the message says so.
+    fn buffer_named(&mut self, which: &str) -> Option<usize> {
+        let which = which.trim();
+        if which.is_empty() {
+            // The other window first: two windows side by side is how you
+            // came to want a diff in the first place.
+            let elsewhere =
+                self.windows.iter().map(|window| window.view).find(|view| *view != self.current);
+            if let Some(view) = elsewhere {
+                return Some(view);
+            }
+            return match self.views.len() {
+                2 => Some(1 - self.current),
+                _ => {
+                    self.message = "which buffer? :diff 2, or :diff name".into();
+                    None
+                }
+            };
+        }
+        if let Ok(number) = which.parse::<usize>() {
+            return match number >= 1 && number <= self.views.len() {
+                true => Some(number - 1),
+                false => {
+                    self.message = format!("no buffer {number}");
+                    None
+                }
+            };
+        }
+        let found = self
+            .views
+            .iter()
+            .position(|view| view.doc.display_name().contains(which))
+            .or_else(|| {
+                self.views.iter().position(|view| {
+                    view.doc.path.as_ref().is_some_and(|p| p.to_string_lossy().contains(which))
+                })
+            });
+        if found.is_none() {
+            self.message = format!("no buffer called {which}");
+        }
+        found
     }
 
     /// The lines of the item the cursor is in, from the grammar: the function
@@ -6183,6 +6398,97 @@ two
         let picker = e.picker.as_ref().expect("a picker");
         assert!(picker.prompt_text().ends_with("undo"), "{}", picker.prompt_text());
         assert!(!picker.matches().is_empty(), "and something matches it");
+    }
+
+    #[test]
+    fn sort_without_a_range_is_the_whole_buffer() {
+        let mut e = editor("pear\napple\nfig\n");
+        e.run_command("sort");
+        assert_eq!(e.view().doc.text.to_string(), "apple\nfig\npear\n");
+        assert_eq!(e.message, "3 lines sorted");
+        // And it says so rather than making an undo step out of nothing.
+        e.run_command("sort");
+        assert_eq!(e.message, "3 lines, already sorted");
+        // `u` in one file is a whole command undone, however many lines moved.
+        let mut e = editor("b\na\nb\n");
+        e.run_command("sort u");
+        assert_eq!(e.view().doc.text.to_string(), "a\nb\n");
+        assert_eq!(e.message, "2 lines sorted, one duplicate dropped");
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "b\na\nb\n");
+    }
+
+    #[test]
+    fn a_range_sorts_those_lines_and_leaves_the_rest_alone() {
+        let mut e = editor("keep\nc\na\nb\nkeep too\n");
+        e.run_command("2,4sort");
+        assert_eq!(e.view().doc.text.to_string(), "keep\na\nb\nc\nkeep too\n");
+        e.run_command("2,4sort!");
+        assert_eq!(e.view().doc.text.to_string(), "keep\nc\nb\na\nkeep too\n");
+        // A flag nobody has heard of is worth saying out loud.
+        e.run_command("sort z");
+        assert!(e.message.starts_with("not a sort flag: z"), "{}", e.message);
+    }
+
+    #[test]
+    fn sorting_the_last_line_of_a_file_without_a_break_does_not_add_one() {
+        let mut e = editor("b\na");
+        e.run_command("sort");
+        assert_eq!(e.view().doc.text.to_string(), "a\nb");
+    }
+
+    #[test]
+    fn gq_wraps_a_paragraph_to_the_width_you_set() {
+        let mut e = editor("// one two three four five six seven eight nine\n\nnext\n");
+        e.textwidth = 20;
+        e.reflow_lines(0, 0);
+        assert_eq!(
+            e.view().doc.text.to_string(),
+            "// one two three\n// four five six\n// seven eight nine\n\nnext\n"
+        );
+        // The cursor ends on the last line of what was wrapped, so `j` is the
+        // next paragraph rather than the middle of this one.
+        assert_eq!(e.view().cursor_coords().0, 2);
+        e.undo();
+        assert_eq!(e.view().doc.text.to_string(), "// one two three four five six seven eight nine\n\nnext\n");
+    }
+
+    #[test]
+    fn textwidth_is_a_setting_like_any_other() {
+        let mut e = Editor::scratch();
+        assert_eq!(e.textwidth, DEFAULT_TEXTWIDTH);
+        e.run_command("set textwidth=40");
+        assert_eq!(e.textwidth, 40);
+        e.run_command("set tw=0");
+        assert!(e.message.starts_with("textwidth wants 1 to 1000"), "{}", e.message);
+        assert_eq!(e.textwidth, 40, "and it is left as it was");
+        e.run_command("set");
+        assert!(e.message.contains("textwidth=40"), "{}", e.message);
+    }
+
+    #[test]
+    fn diff_puts_what_is_different_between_two_buffers_in_a_third() {
+        let mut e = editor("one\nTWO\nthree\n");
+        let mut other = Document::scratch();
+        other.text = Rope::from_str("one\ntwo\nthree\n");
+        e.views.push(View::new(other));
+        // Two buffers open and nothing said: the other one is the one meant.
+        e.run_command("diff");
+        let text = e.view().doc.text.to_string();
+        assert!(text.contains("-two\n+TWO\n"), "{text}");
+        assert_eq!(e.message, "2 lines differ");
+        // It went into a buffer of its own rather than over either of them.
+        assert_eq!(e.views.len(), 3);
+
+        // The same two buffers, once they say the same thing.
+        e.switch_to(0);
+        e.views[1].doc.text = Rope::from_str("one\nTWO\nthree\n");
+        e.run_command("diff 2");
+        assert_eq!(e.message, "[scratch] and [scratch] are the same");
+        e.run_command("diff 1");
+        assert_eq!(e.message, "that is this buffer");
+        e.run_command("diff nowhere");
+        assert_eq!(e.message, "no buffer called nowhere");
     }
 
     #[test]
