@@ -691,7 +691,16 @@ impl View {
         let (line, column) = self.cursor_coords();
         let len = self.doc.line_len_chars(line);
         if column >= len && len > 0 {
-            self.sel.head = self.grapheme_left(self.doc.line_to_char(line) + len);
+            let head = self.grapheme_left(self.doc.line_to_char(line) + len);
+            // An empty selection has to stay empty. `$` puts the head one
+            // past the last character and this pulls it back; if the anchor
+            // were left where it was, the cursor would be sitting on a
+            // one-character selection nobody asked for - which the window
+            // paints reversed, cancelling out the block cursor drawn over it.
+            if self.sel.anchor == self.sel.head {
+                self.sel.anchor = head;
+            }
+            self.sel.head = head;
         }
     }
 
@@ -1939,5 +1948,23 @@ end\n");
         let mut view = wrapped_view();
         view.scroll_lines(true, 2, 8, None);
         assert_eq!(view.scroll_top, 2);
+    }
+
+    #[test]
+    fn the_end_of_a_line_is_a_cursor_and_not_a_selection() {
+        let mut view = wrapped_view();
+        // `$` lands one past the last character and the clamp pulls it back;
+        // the anchor has to come with it, or the cursor sits on a selection
+        // of one character that nobody asked for - and the window paints a
+        // selected cell reversed, which hides the block cursor on it.
+        view.move_cursor(Move::LineEnd, false, 8, None);
+        view.clamp_cursor();
+        assert!(view.sel.is_empty(), "{:?}", view.sel);
+
+        // Extending still extends: `v$` selects to the end of the line.
+        view.sel = Selection::point(0);
+        view.move_cursor(Move::LineEnd, true, 8, None);
+        view.clamp_cursor();
+        assert_eq!((view.sel.anchor, view.sel.head), (0, 22));
     }
 }

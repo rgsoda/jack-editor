@@ -210,17 +210,29 @@ impl Painter {
         }
     }
 
-    /// A cell's two colours, with `reverse` and `dim` applied - and with the
-    /// cursor counting as one more reverse, which is how a block cursor shows
-    /// the character it is sitting on rather than hiding it.
+    /// A cell's two colours, with `reverse` and `dim` applied, and then the
+    /// block cursor on top: the screen's own two colours the other way up, so
+    /// that the character the cursor sits on still shows through it.
+    ///
+    /// The cursor is not simply one more `reverse`. A cell the theme has
+    /// already reversed - one inside a selection - would cancel it out, and
+    /// the cursor would be nowhere to be seen; a cell that is already painted
+    /// in what the block would be painted in stands out by going the other
+    /// way instead, as a plain hole in the selection.
     fn colors(&self, style: Style, at_cursor: bool) -> (Rgb, Rgb) {
         let mut fg = colors::rgb(style.fg, self.fg);
         let mut bg = colors::rgb(style.bg, self.bg);
         if style.dim {
             fg = fg.dimmed(bg);
         }
-        if style.reverse != at_cursor {
+        if style.reverse {
             std::mem::swap(&mut fg, &mut bg);
+        }
+        if at_cursor {
+            return match bg == self.fg {
+                true => (self.fg, self.bg),
+                false => (self.bg, self.fg),
+            };
         }
         (fg, bg)
     }
@@ -551,6 +563,74 @@ mod tests {
         let (bar, _) = painted(&surface, &mut painter, (0, 0), true);
         assert_eq!(bar[0], painter.fg.pixel(), "the stripe");
         assert_eq!(bar[painter.cell.0 - 1], painter.bg.pixel(), "the rest of the cell is not filled");
+    }
+
+    /// Whether the window draws a block cursor on `at`: the cell has to come
+    /// out with a background it would not have had without the cursor, and a
+    /// glyph that is not the same colour as that background.
+    fn cursor_shows(surface: &Surface, painter: &Painter, at: (usize, usize)) -> bool {
+        let style = surface.get(at.0, at.1).style;
+        let (_, plain) = painter.colors(style, false);
+        let (fg, bg) = painter.colors(style, true);
+        bg != plain && bg != fg
+    }
+
+    /// A frame drawn as the window would draw it, for a buffer of `text`
+    /// after `keys`, and whether the block cursor shows where it landed.
+    fn cursor_visible(text: &str, cols: usize, wrap: bool, keys: &str) -> bool {
+        use crate::editor::Editor;
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str(text);
+        editor.wrap = wrap;
+        editor.set_viewport(cols, 6);
+        let mut pressed = crate::keys::Keys::default();
+        for ch in keys.chars() {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            pressed.handle(&mut editor, key);
+        }
+        editor.scroll_to_cursor();
+        let mut screen = crate::screen::Screen::new();
+        let surface = screen.begin(cols, 6);
+        crate::ui::draw(&editor, &pressed, surface);
+        let (x, y) = editor.cursor_screen();
+        cursor_shows(surface, &painter(), (x as usize, y as usize))
+    }
+
+    #[test]
+    fn the_block_cursor_shows_wherever_it_lands() {
+        let long = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+        for (what, shown) in [
+            ("on a character", cursor_visible("hello world\n", 30, false, "")),
+            ("at the end of a line", cursor_visible("hello world\n", 30, false, "$")),
+            ("on an empty line", cursor_visible("\nsecond\n", 30, false, "")),
+            ("on a line below an empty one", cursor_visible("\nsecond\n", 30, false, "j$")),
+            ("at the end of a long line", cursor_visible(long, 20, false, "$")),
+            ("at the end of a wrapped line", cursor_visible(long, 20, true, "$")),
+            ("at the end of a selection", cursor_visible("hello world\n", 30, false, "v$")),
+            ("at the end of a line of tabs", cursor_visible("a\tb\tc\n", 30, false, "$")),
+            ("after a wide glyph", cursor_visible("ab😀cd\n", 30, false, "$")),
+        ] {
+            assert!(shown, "the cursor is invisible {what}");
+        }
+    }
+
+    #[test]
+    fn the_block_cursor_shows_on_a_cell_that_is_already_reversed() {
+        let painter = painter();
+        let mut surface = Surface::new(3, 1);
+        // A selected cell, which the theme draws by reversing it, and the one
+        // past the end of a line - selected, with nothing written on it.
+        let selected = Style { reverse: true, ..Style::default() };
+        surface.put(0, 0, 'M', 1, selected);
+        surface.put(1, 0, ' ', 1, selected);
+        surface.put(2, 0, 'M', 1, Style::default());
+
+        assert!(cursor_shows(&surface, &painter, (2, 0)), "on an ordinary cell");
+        assert!(cursor_shows(&surface, &painter, (0, 0)), "on a selected character");
+        assert!(cursor_shows(&surface, &painter, (1, 0)), "past the end of a selected line");
     }
 
     #[test]

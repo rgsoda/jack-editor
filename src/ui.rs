@@ -1732,3 +1732,4 @@ mod tests {
         assert_eq!(editor.view().scroll_top, 0, "three lines kept above it, as without wrap");
     }
 }
+
