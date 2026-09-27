@@ -51,6 +51,9 @@ impl Session {
         editor.lsp_sync();
         // And hints for whatever was just synced, outside insert mode.
         editor.lsp_hints();
+        // Cheap too: a revision, and a diff of a small buffer when it has
+        // moved on.
+        editor.refresh_hits_display();
     }
 
     /// One message. Everything that has arrived should be delivered before a

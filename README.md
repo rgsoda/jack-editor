@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 71: `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 71: `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -121,6 +121,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>S` | pick a symbol anywhere in the project, as the language server finds them |
 | `<space>e` | pick a diagnostic, in any open buffer |
 | `<space>q` | the quickfix list, as a picker |
+| `:hits` | the whole quickfix list in one buffer, grouped by file — edit them and `:w` |
 | `<space>c` | the files git says you have changed, as a picker |
 | `<space>h` | what the hunk under the cursor was, and is |
 | `<space>B` `:blame` | who last changed this line, when, and the commit's first line |
@@ -424,6 +425,10 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   No running in it; that is a background job like any other.
 - `quickfix.rs` — the quickfix list: the places `]q` walks, and the walk. No
   document and no files: the arithmetic is the part worth testing on its own.
+- `hits.rs` — `:hits`: the gathered places as text, which line of which file
+  each row came from, and what a changed row means to the files. The reading
+  and the writing are handed in, so the arithmetic is testable with a
+  `HashMap`.
 - `session.rs` — what happens between one frame and the next: the work due
   before a frame, and what each message means. It is what the terminal and the
   window share, so a frontend is a keyboard and a painter and decides nothing.
@@ -2538,6 +2543,61 @@ walk is on. Choosing one is where the walk carries on from.
 
 One list, replaced whole. Vim keeps ten of them and has `:colder` to move
 between them, which is an answer to a question nobody asks twice.
+
+## Every hit in one buffer
+
+`:hits` puts the whole quickfix list in one buffer, grouped by file, with two
+lines of context either side — and lets you *edit* it:
+
+```
+src/editor.rs
+  1247 pub fn load_config(&mut self) {
+  1248     let Some(path) = crate::theme::config_dir().map(|dir| dir.join("init")) else {
+  1249         return;
+
+src/theme.rs
+    98 /// Where a config file lives, whatever the platform calls it.
+   100 pub fn config_dir() -> Option<PathBuf> {
+```
+
+The quickfix list walks the places one at a time; a project-wide replace changes
+all of them without showing you any. This is the middle, and it is the one most
+of the work actually wants: see them together, fix the seven that need fixing,
+leave the other nineteen alone, `:w`.
+
+It is a buffer, so it is *editing*. `cw`, `.`, visual mode, `u`, `/`, `:s` on a
+line — nothing new to learn, because there is nothing new here. `<enter>` on a
+row goes to that line of that file, and `^o` comes back. The gutter shows each
+line's own number in its own file, which is how you know which line you are
+about to change; a heading and the gaps have no number because they are not
+lines of anything. A line you type in has no number either, until it is written
+and gathered again.
+
+`:w` works out what you did the way a directory listing does: it diffs the
+buffer against what was gathered, and each changed row is an edit to that line
+of that file. Deleted rows delete lines, and want `:w!` — a line going is worth
+saying twice. Lines typed in go in after the row above them. What cannot be
+meant exactly is refused rather than guessed: editing a file's name is not a
+rename (the listing is where you do that), and a line typed in above every
+heading has no file to belong to.
+
+Nothing happens until `:w`, and then each file gets one write. A file that has
+moved on since the hits were gathered — changed by something else, or by you in
+another buffer — is refused whole, naming the line that no longer reads the way
+the row says it did, and the other files still go through. A file that is open
+in a buffer is changed *through* the buffer, as one undo step, and then written,
+so the buffer and the file never disagree about what just happened. That is also
+why the gathering reads from an open buffer rather than from disk: what you see
+is what you would see if you went there, unsaved changes and all.
+
+After a write the places below what moved are still the places — the list's line
+numbers are shifted by what was inserted and deleted above them, and rows whose
+line went are dropped — and then the hits are gathered again, so a second `:w`
+has nothing to do rather than trying it all again.
+
+`:set hitcontext=4` for more context, `0` for the hit lines alone. The buffer is
+not highlighted as source, because it is lines from several languages at once
+and a grammar would have to pick one.
 
 ## Running a build
 

@@ -28,6 +28,7 @@ use crate::window::{self, Direction, Layout, Rect, Window};
 
 mod block;
 mod git;
+pub(crate) mod hits;
 pub(crate) mod listing;
 mod lsp;
 mod replace;
@@ -42,6 +43,10 @@ const DEFAULT_AUTOCOMPLETE: usize = 2;
 /// The column `gq` wraps at when nothing has said otherwise. Eighty, which is
 /// what every comment in this repository is already written to.
 const DEFAULT_TEXTWIDTH: usize = 80;
+
+/// Lines either side of a place in a `:hits` buffer, before `:set hitcontext`
+/// says otherwise.
+const DEFAULT_HITCONTEXT: usize = 2;
 
 /// A line of text being typed into the status line. Only search uses it so
 /// far; `:` would be the second.
@@ -428,6 +433,10 @@ pub struct Editor {
     /// Which server to start for a language: what `:server` has been told,
     /// in front of the table jack ships with.
     pub server_specs: crate::lsp::Servers,
+    /// `:hits`: how many lines either side of a place to gather. Two is
+    /// enough to see what a line is part of and few enough that twenty places
+    /// still fit on a screen.
+    pub hitcontext: usize,
     /// `:hook`: commands to run when a file is opened or written.
     pub hooks: Vec<crate::hook::Hook>,
     /// Whether a hook's command is running. Hooks do not fire while one is
@@ -692,6 +701,7 @@ impl Editor {
             grouped_view: None,
             servers: Vec::new(),
             server_specs: crate::lsp::Servers::default(),
+            hitcontext: DEFAULT_HITCONTEXT,
             hooks: Vec::new(),
             in_hook: false,
             lsp_enabled: true,
@@ -1454,6 +1464,7 @@ impl Editor {
             ("lsp", _) => self.lsp_report(),
             ("server", rest) => self.configure_server(rest),
             ("hook", rest) => self.hook_command(rest),
+            ("hits", _) => self.open_hits(),
             ("stage", _) => self.stage_hunk(),
             ("revert", _) => self.revert_hunk(),
             ("hunk", _) => self.preview_hunk(),
@@ -2000,6 +2011,10 @@ impl Editor {
                 ("dogname", _) => self.dogname = value.trim().to_string(),
                 ("aiprg", _) => self.aiprg = value.trim().to_string(),
                 ("agentprg", _) => self.agentprg = value.trim().to_string(),
+                ("hitcontext" | "hc", _) => match value.trim().parse::<usize>() {
+                    Ok(lines) if lines <= 100 => self.hitcontext = lines,
+                    _ => self.message = format!("{value:?} is not a number of lines (0 to 100)"),
+                },
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -2088,7 +2103,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2108,6 +2123,7 @@ impl Editor {
                     self.tabline.name(),
                     self.autocomplete,
                     self.textwidth,
+                    self.hitcontext,
                     self.semicolon.name(),
                     match self.makeprg.is_empty() {
                         true => "(what builds this project)",
@@ -2881,7 +2897,7 @@ impl Editor {
         self.retire();
         let count = entries.len();
         let s = if count == 1 { "" } else { "s" };
-        self.message = format!("{count} place{s} in the quickfix list");
+        self.message = format!("{count} place{s} in the quickfix list - ]q to walk them, :hits to edit them");
         self.quickfix.fill(entries);
     }
 
@@ -4037,7 +4053,7 @@ impl Editor {
         let numbers = match self.numbers {
             Numbers::Off => 0,
             // A space either side of the number.
-            _ => (view.doc.len_lines()).max(1).to_string().len().max(2) + 2,
+            _ => view.gutter_lines().max(1).to_string().len().max(2) + 2,
         };
         self.sign_width() + numbers
     }
@@ -5014,6 +5030,12 @@ impl Editor {
         // not a thing a directory can be.
         if self.view().listing && path.is_none() {
             self.write_listing(force);
+            return;
+        }
+        // A hits buffer is written by doing to the files what was done to its
+        // rows, which is the same bargain a listing makes with its directory.
+        if self.view().hits.is_some() && path.is_none() {
+            self.write_hits(force);
             return;
         }
         if let Some(path) = path {

@@ -310,7 +310,22 @@ fn draw_gutter(editor: &Editor, surface: &mut Surface, view: &crate::view::View,
         surface.put(x, row, ch, 1, under(here, style));
     }
 
-    if let Some(number) = editor.numbers.label(line, cursor_line) {
+    // A hits buffer numbers its rows by the line of the file each came from,
+    // and leaves the headings and the gaps unnumbered: the number is the only
+    // way to tell which line of the file you are about to change.
+    let label = match &view.hits {
+        Some(hits) => match editor.numbers {
+            crate::editor::Numbers::Off => None,
+            // `hits_shown` is the mapping as the buffer now reads; the
+            // gathered rows are what it was opened with.
+            _ => match view.hits_shown.get(line).or_else(|| hits.rows.get(line)) {
+                Some(crate::hits::Row::Line { line, .. }) => Some(line + 1),
+                _ => None,
+            },
+        },
+        None => editor.numbers.label(line, cursor_line),
+    };
+    if let Some(number) = label {
         let style = match line == cursor_line {
             true => under(here, editor.theme.style("ui.linenr.selected")),
             false => editor.theme.style("ui.linenr"),

@@ -147,6 +147,18 @@ pub struct View {
     /// The listing as it was read, which is what `:w` compares the buffer
     /// against to work out what you did to it. Empty for everything else.
     pub listing_was: Vec<String>,
+    /// The gathered places this buffer is showing, when it is a `:hits`
+    /// buffer: which line of which file each of its rows came from, and what
+    /// each row said when it was gathered. `:w` is a diff against that.
+    pub hits: Option<Box<crate::hits::Hits>>,
+    /// What the gutter should say about each line of a `:hits` buffer *now*,
+    /// which is not what it was gathered saying once lines have been typed in
+    /// or taken out. Display only: the gathered rows are the truth a write is
+    /// worked out from, and they do not move.
+    pub hits_shown: Vec<crate::hits::Row>,
+    /// The revision `hits_shown` was worked out from, so it is worked out again
+    /// when the buffer changes and not once a frame.
+    pub hits_shown_at: Option<(usize, usize)>,
     /// The program this buffer is a terminal for, when it is one. The text is
     /// what the program has drawn, redrawn from its screen as it arrives; the
     /// pty goes when the buffer does.
@@ -268,6 +280,9 @@ impl View {
             lsp: Lsp::Untried,
             listing: false,
             listing_was: Vec::new(),
+            hits: None,
+            hits_shown: Vec::new(),
+            hits_shown_at: None,
             terminal: None,
             doc,
             sel: Selection::point(0),
@@ -727,9 +742,34 @@ impl View {
     /// terminal buffer, which has no file - what the program running in it
     /// calls itself.
     pub fn name(&self) -> String {
-        match &self.terminal {
-            Some(terminal) => terminal.name(),
-            None => self.doc.display_name().to_string(),
+        match (&self.terminal, &self.hits) {
+            (Some(terminal), _) => terminal.name(),
+            (_, Some(hits)) => {
+                let places = hits.places;
+                let files = hits.files.len();
+                let s = if places == 1 { "" } else { "s" };
+                let of = if files == 1 { "file" } else { "files" };
+                format!("[hits: {places} place{s} in {files} {of}]")
+            }
+            _ => self.doc.display_name().to_string(),
+        }
+    }
+
+    /// The largest line number the gutter has to fit. A `:hits` buffer numbers
+    /// its rows by the line of the file each came from, so a buffer of thirty
+    /// rows can still need four columns.
+    pub fn gutter_lines(&self) -> usize {
+        match &self.hits {
+            Some(hits) => hits
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    crate::hits::Row::Line { line, .. } => Some(line + 1),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(1),
+            None => self.doc.len_lines(),
         }
     }
 

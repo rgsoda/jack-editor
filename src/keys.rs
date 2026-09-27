@@ -1159,6 +1159,8 @@ impl Keys {
             // the picker's split chords open it in a window - before `^v`,
             // which is the paste everywhere else and means nothing here.
             KeyCode::Enter if editor.in_listing() => editor.listing_enter(Open::Here),
+            // In a hits buffer, enter goes to the line the row came from.
+            KeyCode::Enter if editor.in_hits() => editor.hits_enter(),
             KeyCode::Char('v') if ctrl && editor.in_listing() => editor.listing_enter(Open::Beside),
             // `-` is the way out of a file into the directory it is in, and
             // out of a directory into the one above it.

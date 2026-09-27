@@ -58,6 +58,28 @@ impl Quickfix {
         self.started = false;
     }
 
+    /// Lines in `path` have been added and taken away: the places below them
+    /// are not where they were any more.
+    ///
+    /// `deleted` and `inserted` are as the write made them - line numbers as
+    /// the file read *before* the write, an insertion counted as going in after
+    /// the line it names. A place whose own line went is dropped, because the
+    /// place went with it.
+    pub fn adjust(&mut self, path: &str, deleted: &[usize], inserted: &[(usize, usize)]) {
+        self.list.retain(|entry| entry.path != path || !deleted.contains(&entry.line));
+        for entry in self.list.iter_mut().filter(|entry| entry.path == path) {
+            let gone = deleted.iter().filter(|line| **line < entry.line).count();
+            let added: usize = inserted
+                .iter()
+                .filter(|(after, _)| *after < entry.line)
+                .map(|(_, count)| count)
+                .sum();
+            entry.line = entry.line + added - gone;
+        }
+        // The walk's index could now be past the end of a shorter list.
+        self.index = self.index.min(self.list.len());
+    }
+
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
@@ -201,5 +223,30 @@ mod tests {
         q.fill(vec![Entry { path: "x".into(), line: 0, text: "x".into() }]);
         assert!(q.current().is_none(), "a new list is a new question");
         assert_eq!(q.step(true, 1).expect("an entry").0.path, "x");
+    }
+
+    #[test]
+    fn places_below_a_write_move_with_the_lines() {
+        let mut list = Quickfix::default();
+        let place = |path: &str, line: usize| Entry {
+            path: path.to_string(),
+            line,
+            text: format!("hit in {path}"),
+        };
+        list.fill(vec![
+            place("a.rs", 2),
+            place("a.rs", 10),
+            place("a.rs", 20),
+            place("b.rs", 10),
+        ]);
+        // Line 10 of a.rs went, and two lines went in after line 2.
+        list.adjust("a.rs", &[10], &[(2, 2)]);
+        let lines: Vec<(String, usize)> =
+            list.entries().iter().map(|entry| (entry.path.clone(), entry.line)).collect();
+        assert_eq!(lines, [
+            ("a.rs".to_string(), 2),
+            ("a.rs".to_string(), 21),
+            ("b.rs".to_string(), 10),
+        ], "the deleted place is gone, the one below it is two down and one up, b.rs is untouched");
     }
 }

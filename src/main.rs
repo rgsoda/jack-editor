@@ -11,6 +11,7 @@ mod diff;
 mod editor;
 mod info;
 mod history;
+mod hits;
 mod hook;
 mod jump;
 mod keys;

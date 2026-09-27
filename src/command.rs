@@ -41,6 +41,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "lsp", argument: Argument::None },
     Command { name: "server", argument: Argument::None },
     Command { name: "hook", argument: Argument::None },
+    Command { name: "hits", argument: Argument::None },
     Command { name: "delete", argument: Argument::None },
     Command { name: "global", argument: Argument::None },
     Command { name: "format", argument: Argument::None },
@@ -260,6 +261,11 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Value(&["72", "80", "100", "120"], "80"),
         about: "The column `gq` wraps a paragraph to. Nothing happens at that \
                 width until you ask for it: it is not a limit on what you type.",
+    },
+    Setting {
+        name: "hitcontext",
+        kind: Kind::Value(&["2", "0", "4"], "2"),
+        about: "Lines either side of each place in a `:hits` buffer.",
     },
     Setting {
         name: "makeprg",
