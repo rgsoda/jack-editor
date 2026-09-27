@@ -83,6 +83,23 @@ pub fn prompt(ask: &Ask) -> String {
     out
 }
 
+/// What to send a program that edits the project itself rather than
+/// answering about it: `:agent`.
+///
+/// Almost nothing, deliberately. An agent reads the files it needs and is
+/// told by its own flags what it may write; the one thing it cannot work out
+/// for itself is which file you were looking at when you asked, so that is
+/// what this adds. Everything else would be an editor guessing at a prompt
+/// that the program's own instructions already cover.
+pub fn errand(instruction: &str, looking_at: Option<(&str, usize)>) -> String {
+    let mut out = instruction.trim().to_string();
+    out.push('\n');
+    if let Some((path, line)) = looking_at {
+        out.push_str(&format!("\nI am looking at {path}, line {line}.\n"));
+    }
+    out
+}
+
 /// What came back, ready to go into the buffer.
 ///
 /// Models put a code fence around code however plainly they are asked not to,
@@ -165,6 +182,17 @@ mod tests {
     fn a_bare_ask_is_your_words_and_nothing_else() {
         let ask = Ask { instruction: "what does `impl Trait` mean?", context: None, replacing: false };
         assert_eq!(prompt(&ask), "what does `impl Trait` mean?\n");
+    }
+
+    #[test]
+    fn an_errand_says_what_you_want_and_where_you_are() {
+        let sent = errand("  add a test for cleaned()  ", Some(("src/ai.rs", 92)));
+        assert!(sent.starts_with("add a test for cleaned()\n"), "{sent}");
+        assert!(sent.contains("I am looking at src/ai.rs, line 92."), "{sent}");
+        // And nothing else: what an agent may do is its own flags' business,
+        // not an editor's to put words to.
+        assert_eq!(sent.lines().count(), 3, "{sent}");
+        assert_eq!(errand("tidy up", None), "tidy up\n");
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "pwd", argument: Argument::None },
     Command { name: "dog", argument: Argument::None },
     Command { name: "ai", argument: Argument::None },
+    Command { name: "agent", argument: Argument::None },
     Command { name: "cancel", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
@@ -229,6 +230,14 @@ pub static SETTINGS: &[Setting] = &[
         about: "What `:ai` runs: a program that reads a prompt on stdin and \
                 writes an answer on stdout. Empty means `:ai` does nothing, \
                 which is how it stays until you name one.",
+    },
+    Setting {
+        name: "agentprg",
+        kind: Kind::Value(&["claude -p --permission-mode acceptEdits", "aider --yes --message"], ""),
+        about: "What `:agent` runs: a program that may change the files in \
+                the project itself. A separate setting from `aiprg` because \
+                the flags that let something write are not the ones you want \
+                on a question. Empty, and `:agent` does nothing.",
     },
     Setting {
         name: "dogname",

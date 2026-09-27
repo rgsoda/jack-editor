@@ -590,6 +590,13 @@ pub struct Editor {
     /// The column `gq` wraps to. Not a limit on what you may type: nothing
     /// happens at this width until you ask for it.
     pub textwidth: usize,
+    /// What `:agent` runs: a program allowed to change the files itself,
+    /// which is a different program, or at least different flags, from the
+    /// one that answers questions. Empty until you name one.
+    pub agentprg: String,
+    /// Whether the answer being waited on is an errand rather than a
+    /// question: when it lands, the files it changed have to be read back.
+    ai_errand: bool,
     /// What `:ai` runs. Empty until you name something, which is what keeps
     /// the feature off until you have asked for it - nothing is ever sent
     /// anywhere by an editor that has not been told what to send it to.
@@ -731,6 +738,8 @@ impl Editor {
             back_from_terminal: None,
             terms: 0,
             textwidth: DEFAULT_TEXTWIDTH,
+            agentprg: String::new(),
+            ai_errand: false,
             aiprg: String::new(),
             ai: 0,
             ai_awaited: 0,
@@ -1439,6 +1448,7 @@ impl Editor {
             ("make", command) => self.make(command),
             ("cd", dir) => self.change_directory(dir),
             ("pwd", _) => self.print_working_directory(),
+            ("agent", what) => self.agent(what),
             ("diff", which) => self.diff_with(which),
             ("term" | "terminal", command) => self.open_terminal(command),
             // Everything, rather than this window: `:q` closes a window when
@@ -1946,6 +1956,7 @@ impl Editor {
                 ("makeprg", _) => self.makeprg = value.trim().to_string(),
                 ("dogname", _) => self.dogname = value.trim().to_string(),
                 ("aiprg", _) => self.aiprg = value.trim().to_string(),
+                ("agentprg", _) => self.agentprg = value.trim().to_string(),
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -2032,7 +2043,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2059,6 +2070,10 @@ impl Editor {
                     match self.aiprg.is_empty() {
                         true => "(nothing to ask)",
                         false => &self.aiprg,
+                    },
+                    match self.agentprg.is_empty() {
+                        true => "(nothing to send on an errand)",
+                        false => &self.agentprg,
                     },
                     match self.dogname.is_empty() {
                         true => "(unnamed)",
@@ -2234,6 +2249,75 @@ impl Editor {
         });
     }
 
+    /// `:agent {what you want}` - hand the job to a program that can change
+    /// the files itself.
+    ///
+    /// The difference from `:ai` is what the program is allowed to do, and
+    /// that is the program's business rather than the editor's: `agentprg` is
+    /// a separate setting because the flags that let something write to your
+    /// project are not flags you want on a question. Nothing here writes
+    /// anything; the program does, and jack reads the files back afterwards.
+    ///
+    /// What it says arrives in a buffer as it is said, so a long job can be
+    /// watched, and `:cancel` stops it.
+    pub fn agent(&mut self, instruction: &str) {
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        if instruction.trim().is_empty() {
+            self.message = "tell it what to do: :agent {what you want}".into();
+            return;
+        }
+        let command = self.agentprg.trim().to_string();
+        if command.is_empty() {
+            self.message =
+                "nothing to send it to: :set agentprg=..., a program that may edit files".into();
+            return;
+        }
+        let Some(jobs) = self.jobs.clone() else {
+            return;
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        // Where you are, which is the one thing a program that reads the
+        // project for itself cannot work out.
+        let (line, _) = self.view().cursor_coords();
+        let path = self.view().doc.path.clone();
+        let here = path.as_deref().map(|path| {
+            (crate::workdir::shortened(path), line + 1)
+        });
+        let prompt = crate::ai::errand(instruction, here.as_ref().map(|(p, l)| (p.as_str(), *l)));
+
+        // Unsaved work is the thing to say out loud before anything else
+        // touches the files: what is on the disk is what the program will
+        // read, and what is in the buffer is not that.
+        let unsaved = self.views.iter().filter(|view| view.is_modified()).count();
+
+        self.ai += 1;
+        self.ai_awaited = self.ai;
+        self.ai_lines = 0;
+        self.ai_errand = true;
+        self.ai_target = None;
+        self.ai_into = Some(self.blank_answer());
+
+        let name = command.split_whitespace().next().unwrap_or("it").to_string();
+        self.message = match unsaved {
+            0 => format!("{name} is on it - :cancel stops it"),
+            1 => format!("{name} is on it - one buffer is unsaved, and it reads the disk"),
+            n => format!("{name} is on it - {n} buffers are unsaved, and it reads the disk"),
+        };
+        self.dog_thinks();
+        crate::stream::spawn_ask(crate::stream::Asking {
+            command,
+            prompt,
+            root,
+            token: self.ai,
+            tx: jobs,
+            group: self.ai_group.clone(),
+        });
+    }
+
     /// `:cancel` - stop whatever is running in the background: a question
     /// that is taking longer than it is worth, or a build that will not
     /// finish. Not `:stop`, which vim has already given to `^z`.
@@ -2248,6 +2332,10 @@ impl Editor {
             self.ai_awaited = 0;
             self.ai_target = None;
             self.ai_into = None;
+            // Stopped halfway, it may have written some of what it meant to.
+            if std::mem::take(&mut self.ai_errand) {
+                self.reload_changed_files();
+            }
             self.dog_stops_thinking();
         }
         if building {
@@ -2534,6 +2622,11 @@ impl Editor {
         let view = &mut self.views[index];
         let end = view.doc.len_chars();
         view.edit_at(end, 0, &chunk, None);
+        // What a program is saying is not work of yours to lose: the buffer
+        // does not count as unsaved, and `u` does not unpick what arrived
+        // while you watched. Typing into it yourself starts a history that
+        // does behave like one.
+        view.forget_history();
         // Following it down, but only while you have not gone somewhere else
         // in it yourself: an answer that drags your cursor back is worse than
         // one you have to scroll.
@@ -2552,9 +2645,19 @@ impl Editor {
         }
         self.ai_awaited = 0;
         self.dog_stops_thinking();
-        let name = self.aiprg.split_whitespace().next().unwrap_or("it").to_string();
+        // An errand was sent to the other program, and a complaint about it
+        // should say which one could not do it.
+        let ran = match self.ai_errand {
+            true => &self.agentprg,
+            false => &self.aiprg,
+        };
+        let name = ran.split_whitespace().next().unwrap_or("it").to_string();
         if !ok {
             self.ai_target = None;
+            // It may well have changed files before it fell over.
+            if std::mem::take(&mut self.ai_errand) {
+                self.reload_changed_files();
+            }
             // What it managed to say before it failed is not an answer, and a
             // buffer of half of one is worse than none.
             if let Some(index) = self.ai_into.take() {
@@ -2575,8 +2678,22 @@ impl Editor {
         // fence taking off the buffer it went into.
         if let Some(index) = self.ai_into.take() {
             self.views[index].doc.text = ropey::Rope::from_str(&answer);
+            self.views[index].forget_history();
             self.views[index].sel = crate::view::Selection::point(0);
             self.clamp_cursor();
+            if std::mem::take(&mut self.ai_errand) {
+                // It has been writing to the files this whole time. What is
+                // open and unmodified is read back; what is modified is named
+                // rather than overwritten, which is what the disk watch
+                // already does for `:!git checkout` and a rebase.
+                self.reload_changed_files();
+                let reloaded = std::mem::take(&mut self.message);
+                self.message = match reloaded.is_empty() {
+                    true => format!("{name} is done - <space>c for what it changed"),
+                    false => format!("{reloaded} - <space>c for what it changed"),
+                };
+                return;
+            }
             self.message = format!("{name} answered - {} lines", answer.lines().count());
             return;
         }
@@ -6644,6 +6761,84 @@ two
         e.run_command("ai fix it");
         assert_eq!(e.message, "not from a config file");
         assert_eq!(e.ai, 0);
+    }
+
+    #[test]
+    fn an_errand_needs_its_own_program_named_before_it_goes_anywhere() {
+        let mut e = opened("fn main() {}\n");
+        e.run_command("agent add a test");
+        assert!(e.message.contains(":set agentprg="), "{}", e.message);
+        assert_eq!(e.ai, 0, "and nothing was sent");
+
+        // Naming the one that answers questions is not naming this one:
+        // what a program may do to your files is a separate decision.
+        e.run_command("set aiprg=true");
+        e.run_command("agent add a test");
+        assert!(e.message.contains(":set agentprg="), "{}", e.message);
+        assert_eq!(e.ai, 0);
+
+        e.run_command("set agentprg=true");
+        e.run_command("agent");
+        assert_eq!(e.message, "tell it what to do: :agent {what you want}");
+        assert_eq!(e.ai, 0);
+
+        e.from_config = true;
+        e.run_command("agent add a test");
+        assert_eq!(e.message, "not from a config file");
+        assert_eq!(e.ai, 0);
+    }
+
+    #[test]
+    fn an_errand_reads_back_what_it_changed_on_the_disk() {
+        let dir = std::env::temp_dir().join(format!("jack_errand_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("a file");
+
+        let mut e = Editor::open(&[path.display().to_string()]).expect("the file opens");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set agentprg=true");
+        e.run_command("agent add a test");
+        assert_eq!(e.ai, 1, "it went out");
+        assert!(e.message.contains(":cancel stops it"), "{}", e.message);
+        // What it says arrives in a buffer of its own, as it is said.
+        assert_eq!(e.views.len(), 2, "a transcript buffer");
+        e.ai_saying(1, "working...\n".into());
+        assert_eq!(e.view().doc.text.to_string(), "working...\n");
+
+        // The program wrote to the file while it was thinking, the way an
+        // agent does. Nothing here writes: the file is read back.
+        std::fs::write(&path, "fn main() {}\n\n#[test]\nfn works() {}\n").expect("its edit");
+        // The stamp is a modified time and a length, and a file written
+        // twice in the same instant needs the length to differ - it does.
+        e.ai_answered(1, "done: added a test\n".into(), true);
+
+        assert_eq!(e.views[0].doc.text.to_string(), "fn main() {}\n\n#[test]\nfn works() {}\n");
+        assert!(e.message.contains("<space>c"), "and points at what changed: {}", e.message);
+        assert_eq!(e.view().doc.text.to_string(), "done: added a test\n", "the transcript stays");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_errand_that_fell_over_still_reads_back_what_it_managed() {
+        let dir = std::env::temp_dir().join(format!("jack_errand_broke_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "one\n").expect("a file");
+
+        let mut e = Editor::open(&[path.display().to_string()]).expect("the file opens");
+        e.jobs = Some(crate::stream::channels().0);
+        e.run_command("set agentprg=claude");
+        e.run_command("agent break something");
+        std::fs::write(&path, "one\ntwo\n").expect("half of what it meant to do");
+        e.ai_answered(1, "boom: out of credit\n".into(), false);
+
+        assert_eq!(e.views[0].doc.text.to_string(), "one\ntwo\n", "read back all the same");
+        assert_eq!(e.message, "claude: boom: out of credit");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
