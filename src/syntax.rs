@@ -1952,14 +1952,25 @@ mod tests {
         let cold = cold.elapsed();
         let parsed = f.syntax.parses.get();
 
-        let warm = std::time::Instant::now();
+        // The best of ten rather than the mean of ten. This runs on shared
+        // CI machines where any one run can be descheduled mid-measurement,
+        // and a mean carries that hiccup into the assertion below; the best
+        // run is the one that says what the work actually costs.
+        let mut best = std::time::Duration::MAX;
+        let mut total = std::time::Duration::ZERO;
         for _ in 0..10 {
+            let warm = std::time::Instant::now();
             f.syntax.highlights(&f.doc.text, whole.clone(), &f.theme);
+            let warm = warm.elapsed();
+            best = best.min(warm);
+            total += warm;
         }
-        let warm = warm.elapsed() / 10;
+        // The assertion that cannot flake, and the one that would actually
+        // catch the cache being switched off: painting the same frame again
+        // parses nothing.
         assert_eq!(f.syntax.parses.get(), parsed, "no reparsing while scrolling");
-        println!("{parsed} layers: cold {cold:?}, warm {warm:?}");
-        assert!(warm < cold, "the remembered frame is the cheaper one");
+        println!("{parsed} layers: cold {cold:?}, warm {:?} (best {best:?})", total / 10);
+        assert!(best < cold, "the remembered frame is the cheaper one");
     }
 
     #[test]
