@@ -106,6 +106,14 @@
 "ui.bracket.4" = { fg = "#50fa7b" }
 "ui.bracket.5" = { fg = "#ffb86c" }
 "ui.bracket.6" = { fg = "#bd93f9" }
+# `:set branch`: the git branch in the status line, on the bar's background.
+"ui.statusline.branch" = { fg = "#bd93f9" }
+# `:set cursorword`: the other uses of the word the cursor is on. Underlined
+# rather than coloured, so it reads over whatever the grammar made of them.
+"ui.cursorword" = { underline = true }
+# `:set list`: the arrow a tab becomes and the dot a trailing space becomes.
+# Dim on purpose - it is there to be found, not to be read.
+"ui.whitespace" = { fg = "#44475a" }
 "ui.gutter.added" = { fg = "#50fa7b" }
 "ui.gutter.modified" = { fg = "#ffb86c" }
 "ui.gutter.deleted" = { fg = "#ff5555" }

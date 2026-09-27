@@ -15,8 +15,10 @@ mod hits;
 mod hook;
 mod jump;
 mod keys;
+mod link;
 mod lsp;
 mod indent;
+mod number;
 mod object;
 mod picker;
 #[cfg(feature = "gui")]

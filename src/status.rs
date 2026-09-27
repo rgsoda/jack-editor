@@ -45,6 +45,8 @@ pub struct Glyphs {
     pub warning: &'static str,
     /// Marks a diagnostic in the gutter and in front of its message.
     pub diagnostic: &'static str,
+    /// In front of the git branch.
+    pub branch: &'static str,
 }
 
 /// The dog: side-on while it runs, sitting when it stops. Material Design
@@ -86,6 +88,7 @@ pub const NERD: Glyphs = Glyphs {
     error: "E",
     warning: "W",
     diagnostic: "\u{25cf}",
+    branch: "\u{e0a0}",
 };
 
 pub const PLAIN: Glyphs = Glyphs {
@@ -103,6 +106,7 @@ pub const PLAIN: Glyphs = Glyphs {
     error: "E",
     warning: "W",
     diagnostic: "!",
+    branch: "@",
 };
 
 pub fn glyphs(editor: &Editor) -> &'static Glyphs {
@@ -234,6 +238,14 @@ pub fn build(editor: &Editor, keys: &Keys) -> Status {
             let style = Style { bg: bar.bg, ..editor.theme.style(key) };
             left.push(Segment { text: format!("{glyph}{count}"), style });
         }
+    }
+
+    // The branch, after what git says about this file: the same subject, going
+    // from the file outwards. It is read from `.git/HEAD` a second after a
+    // keystroke at the most, so it costs nothing here.
+    if let Some(branch) = editor.branch.as_deref() {
+        let style = Style { bg: bar.bg, ..editor.theme.style("ui.statusline.branch") };
+        left.push(Segment { text: format!("{} {branch}", glyphs.branch), style });
     }
 
     // What the language server found, counted the same way.

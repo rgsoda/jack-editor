@@ -67,6 +67,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "== ={motion}", what: "re-indent: ask the grammar where lines go", mode: "normal" },
     Binding { keys: "gcc gc{motion}", what: "comment lines out, or back in", mode: "normal" },
     Binding { keys: "gqq gq{motion}", what: "wrap lines to textwidth", mode: "normal" },
+    Binding { keys: "^a g+ g-", what: "the number under the cursor, one more or one less", mode: "normal" },
+    Binding { keys: "gx", what: "open the link under the cursor", mode: "normal" },
     Binding { keys: "d c y + iw aw", what: "the word under the cursor, with its space", mode: "normal" },
     Binding { keys: "d c y + iW aW", what: "the same, counting punctuation as word", mode: "normal" },
     Binding { keys: "d c y + i\" i' i`", what: "inside the quotes (a\" takes them too)", mode: "normal" },
@@ -681,6 +683,12 @@ impl Keys {
                     KeyCode::Char('a') => editor.code_actions(),
                     KeyCode::Char('r') => editor.references(),
                     KeyCode::Char('R') => editor.start_rename(),
+                    // `gx` is vim's. The pair `g+` / `g-` is not: `^x` is the
+                    // cut here, so the decrement needs somewhere else to live,
+                    // and a pair reads better than a lone `^a`.
+                    KeyCode::Char('x') => editor.open_link(),
+                    KeyCode::Char('+') => editor.bump_number(count.unwrap_or(1) as i64),
+                    KeyCode::Char('-') => editor.bump_number(-(count.unwrap_or(1) as i64)),
                     // A count on `gn`/`gp` is a buffer number, as in vim's `:b`.
                     KeyCode::Char('n') => match count {
                         Some(n) => editor.switch_to(n - 1),
@@ -1166,6 +1174,9 @@ impl Keys {
             // out of a directory into the one above it.
             KeyCode::Char('-') if !ctrl => editor.listing_up(),
 
+            // Vim's increment. Its decrement is `^x`, which is the cut here,
+            // so that one is `g-` - and `g+` is this key's other spelling.
+            KeyCode::Char('a') if ctrl => editor.bump_number(repeat as i64),
             KeyCode::Char('c') if ctrl => editor.clip_copy(),
             KeyCode::Char('x') if ctrl => editor.clip_cut(),
             KeyCode::Char('v') if ctrl => editor.clip_paste(),
@@ -2668,6 +2679,24 @@ mod tests {
         // And an operator over it does what the same keys did in normal mode.
         vim.press("y");
         assert!(vim.editor.registers.get(None).text.starts_with("fn one()"));
+    }
+
+    #[test]
+    fn control_a_increments_and_g_minus_decrements_with_a_count() {
+        let mut vim = Vim::new("let n = 41;\n");
+        vim.at(1, 1).press("<C-a>");
+        assert_eq!(vim.text(), "let n = 42;\n");
+
+        // A count is how far, both ways, and `.` does it again.
+        vim.press("10g+");
+        assert_eq!(vim.text(), "let n = 52;\n");
+        vim.press("2g-");
+        assert_eq!(vim.text(), "let n = 50;\n");
+
+        // `^x` is still the cut, which is why the decrement lives on `g-`.
+        let mut vim = Vim::new("one\ntwo\n");
+        vim.at(1, 1).press("<C-x>");
+        assert_eq!(vim.text(), "two\n", "the line was cut, not decremented");
     }
 
     #[test]

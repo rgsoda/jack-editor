@@ -205,6 +205,24 @@ pub enum What {
 
 /// A number with its thousands split up, because `4112` is a number and
 /// `4,112` is a distance.
+/// The branch a `.git` is on: the name in `HEAD`, or a detached commit short.
+/// `.git` is a file rather than a directory in a worktree, and says where the
+/// real one is.
+fn head_of(git: &Path) -> Option<String> {
+    let git = match std::fs::read_to_string(git) {
+        // A worktree's `.git` is a line saying `gitdir: /path/to/the/real/one`.
+        Ok(line) => PathBuf::from(line.strip_prefix("gitdir:")?.trim()),
+        Err(_) => git.to_path_buf(),
+    };
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_string()),
+        None if head.len() >= 7 => Some(head[..7].to_string()),
+        None => None,
+    }
+}
+
 fn grouped(number: usize) -> String {
     let digits = number.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -433,6 +451,20 @@ pub struct Editor {
     /// Which server to start for a language: what `:server` has been told,
     /// in front of the table jack ships with.
     pub server_specs: crate::lsp::Servers,
+    /// `:set list`: draw a tab as an arrow and a trailing space as a dot, so
+    /// the whitespace that matters can be seen rather than guessed at.
+    pub show_whitespace: bool,
+    /// `:set cursorword`: underline the other uses of the word the cursor is
+    /// on, which is `gr` for the impatient and costs no server.
+    pub cursorword: bool,
+    /// `:set branch`: the git branch in the status line, and what it was when
+    /// it was last looked at. Read from `.git/HEAD` rather than by running
+    /// git, because it is read a second after every keystroke.
+    pub show_branch: bool,
+    pub branch: Option<String>,
+    /// `gx`: what opens a link here. Empty means the platform's own - `open`
+    /// on macOS, `xdg-open` everywhere else.
+    pub opener: String,
     /// `:hits`: how many lines either side of a place to gather. Two is
     /// enough to see what a line is part of and few enough that twenty places
     /// still fit on a screen.
@@ -701,6 +733,11 @@ impl Editor {
             grouped_view: None,
             servers: Vec::new(),
             server_specs: crate::lsp::Servers::default(),
+            show_whitespace: false,
+            cursorword: false,
+            show_branch: true,
+            branch: None,
+            opener: String::new(),
             hitcontext: DEFAULT_HITCONTEXT,
             hooks: Vec::new(),
             in_hook: false,
@@ -1663,6 +1700,7 @@ impl Editor {
         }
         self.disk_checked = Some(now);
         self.reload_changed_files();
+        self.refresh_branch();
     }
 
     /// The terminal has the focus back, which is the likeliest moment for a
@@ -2011,6 +2049,7 @@ impl Editor {
                 ("dogname", _) => self.dogname = value.trim().to_string(),
                 ("aiprg", _) => self.aiprg = value.trim().to_string(),
                 ("agentprg", _) => self.agentprg = value.trim().to_string(),
+                ("opener", _) => self.opener = value.trim().to_string(),
                 ("hitcontext" | "hc", _) => match value.trim().parse::<usize>() {
                     Ok(lines) if lines <= 100 => self.hitcontext = lines,
                     _ => self.message = format!("{value:?} is not a number of lines (0 to 100)"),
@@ -2083,6 +2122,12 @@ impl Editor {
             "notrim" => self.trim_on_save = false,
             "dog" => self.show_dog = true,
             "nodog" => self.show_dog = false,
+            "list" => self.show_whitespace = true,
+            "nolist" => self.show_whitespace = false,
+            "cursorword" => self.cursorword = true,
+            "nocursorword" => self.cursorword = false,
+            "branch" => self.show_branch = true,
+            "nobranch" => self.show_branch = false,
             "cursorline" => self.cursorline = true,
             "nocursorline" => self.cursorline = false,
             "rainbow" => self.rainbow = true,
@@ -2103,7 +2148,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2124,6 +2169,13 @@ impl Editor {
                     self.autocomplete,
                     self.textwidth,
                     self.hitcontext,
+                    self.show_whitespace,
+                    self.cursorword,
+                    self.show_branch,
+                    match self.opener.is_empty() {
+                        true => "(the platform's own)",
+                        false => &self.opener,
+                    },
                     self.semicolon.name(),
                     match self.makeprg.is_empty() {
                         true => "(what builds this project)",
@@ -5608,6 +5660,92 @@ impl Editor {
         self.switch_to(was);
     }
 
+    /// `^a`, `g+` and `g-`: the number under the cursor, `by` further on.
+    ///
+    /// The number the cursor is in, else the next one along the line - the
+    /// rule vim settled on, because the cursor is hardly ever on the digit you
+    /// mean. Nothing on the line is nothing done, rather than a number made up
+    /// somewhere else.
+    pub fn bump_number(&mut self, by: i64) {
+        let (line, column) = self.cursor_coords();
+        let text = self.view().doc.line_str(line);
+        let Some(number) = crate::number::find(&text, column) else {
+            self.message = "no number on this line".into();
+            return;
+        };
+        let replacement = number.bumped(by);
+        let start = self.view().doc.line_to_char(line) + number.start;
+        let length = number.end - number.start;
+        // The cursor lands on the last character of what it now says, as vim
+        // leaves it: `10^a` then `.` walks a column of numbers up.
+        let cursor = start + replacement.chars().count() - 1;
+        self.view_mut().edit_at(start, length, &replacement, Some(cursor));
+    }
+
+    /// `gx`: hand the link under the cursor to whatever opens links here.
+    ///
+    /// Spawned and forgotten rather than run with the terminal handed over:
+    /// opening a browser is not something to wait for, and `xdg-open` returns
+    /// long before the window it asked for appears. A thread waits on it so
+    /// that nothing is left lying about for the kernel.
+    pub fn open_link(&mut self) {
+        let (line, column) = self.cursor_coords();
+        let text = self.view().doc.line_str(line);
+        let Some((_, _, link)) = crate::link::find(&text, column) else {
+            self.message = "no link on this line".into();
+            return;
+        };
+        let opener = match self.opener.trim() {
+            "" => match cfg!(target_os = "macos") {
+                true => "open".to_string(),
+                false => "xdg-open".to_string(),
+            },
+            named => named.to_string(),
+        };
+        if self.from_config {
+            self.message = "not from a config file".into();
+            return;
+        }
+        match std::process::Command::new(&opener)
+            .arg(&link)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                self.message = format!("{opener} {link}");
+            }
+            Err(err) => self.message = format!("{opener}: {err}"),
+        }
+    }
+
+    /// The branch the repository above the file is on, read out of
+    /// `.git/HEAD`.
+    ///
+    /// A file read rather than `git rev-parse`, because this is looked at
+    /// every time jack looks at the disk - a second after every keystroke -
+    /// and a process per second to draw six characters is not a trade worth
+    /// making. A detached head has no branch name, so it says the commit
+    /// short, which is what git itself shows.
+    pub fn refresh_branch(&mut self) {
+        if !self.show_branch {
+            self.branch = None;
+            return;
+        }
+        let start = match self.view().doc.path.as_deref().and_then(Path::parent) {
+            Some(dir) if dir.as_os_str().is_empty() => PathBuf::from("."),
+            Some(dir) => dir.to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        self.branch = start.canonicalize().ok().and_then(|dir| {
+            dir.ancestors().find_map(|above| head_of(&above.join(".git")))
+        });
+    }
+
     /// `:stats` - what this session has amounted to.
     ///
     /// Nothing here is measured for anybody's benefit but yours: no counter
@@ -7354,6 +7492,93 @@ two
         e.run_hooks(crate::hook::Event::Open);
         assert_eq!(e.textwidth, DEFAULT_TEXTWIDTH);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn control_a_and_g_minus_walk_the_number_under_the_cursor() {
+        let mut e = editor("let width = 78;\nno numbers\n");
+        e.goto_line(0);
+        e.bump_number(1);
+        assert_eq!(e.view().doc.line_str(0), "let width = 79;");
+        // The cursor lands on the last digit, so `.` would do it again.
+        assert_eq!(e.cursor_coords(), (0, 13));
+
+        // A count is how far, and a negative count is `g-`.
+        e.bump_number(21);
+        assert_eq!(e.view().doc.line_str(0), "let width = 100;");
+        e.bump_number(-58);
+        assert_eq!(e.view().doc.line_str(0), "let width = 42;");
+
+        // A line with nothing to bump says so rather than reaching elsewhere.
+        e.goto_line(1);
+        e.bump_number(1);
+        assert_eq!(e.message, "no number on this line");
+        assert_eq!(e.view().doc.line_str(1), "no numbers");
+
+        // One edit, one undo.
+        e.goto_line(0);
+        e.undo();
+        assert_eq!(e.view().doc.line_str(0), "let width = 100;");
+    }
+
+    #[test]
+    fn gx_says_what_it_would_open_and_complains_when_there_is_nothing_to() {
+        let mut e = editor("see https://example.com/x for it\nnothing here\n");
+        e.opener = "echo".into();
+        e.goto_line(0);
+        e.open_link();
+        assert_eq!(e.message, "echo https://example.com/x");
+
+        e.goto_line(1);
+        e.open_link();
+        assert_eq!(e.message, "no link on this line");
+
+        // An opener that is not there is said, not swallowed.
+        e.opener = "/nowhere/no-such-opener".into();
+        e.goto_line(0);
+        e.open_link();
+        assert!(e.message.starts_with("/nowhere/no-such-opener:"), "{}", e.message);
+    }
+
+    #[test]
+    fn the_branch_is_read_from_the_git_directory_above_the_file() {
+        let dir = std::env::temp_dir().join(format!("jack_branch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let file = dir.join("src/deep/a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+
+        let mut e = Editor::open(std::slice::from_ref(&file)).unwrap();
+        e.refresh_branch();
+        assert_eq!(e.branch.as_deref(), Some("main"), "however deep the file is");
+
+        // A detached head has no name, so it says the commit, as git does.
+        std::fs::write(dir.join(".git/HEAD"), "9f1c0de2b4a7e5c3\n").unwrap();
+        e.refresh_branch();
+        assert_eq!(e.branch.as_deref(), Some("9f1c0de"));
+
+        // Off means off, and nothing is read.
+        e.run_command("set nobranch");
+        e.refresh_branch();
+        assert_eq!(e.branch, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_and_cursorword_are_settings_like_any_other() {
+        let mut e = editor("one\n");
+        assert!(!e.show_whitespace && !e.cursorword);
+        e.run_command("set list");
+        e.run_command("set cursorword");
+        assert!(e.show_whitespace && e.cursorword);
+        e.run_command("set");
+        assert!(e.message.contains("list=true"), "{}", e.message);
+        assert!(e.message.contains("cursorword=true"), "{}", e.message);
+        e.run_command("set nolist");
+        e.run_command("set nocursorword");
+        assert!(!e.show_whitespace && !e.cursorword);
     }
 
     #[test]

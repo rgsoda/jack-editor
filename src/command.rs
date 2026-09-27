@@ -136,6 +136,26 @@ pub static SETTINGS: &[Setting] = &[
         about: "Tint the row the cursor is on, the whole width of the screen.",
     },
     Setting {
+        name: "list",
+        kind: Kind::Flag(false),
+        about: "Draw a tab as an arrow and a trailing space as a dot.",
+    },
+    Setting {
+        name: "cursorword",
+        kind: Kind::Flag(false),
+        about: "Underline the other uses of the word the cursor is on.",
+    },
+    Setting {
+        name: "branch",
+        kind: Kind::Flag(true),
+        about: "The git branch in the status line, read from `.git/HEAD`.",
+    },
+    Setting {
+        name: "opener",
+        kind: Kind::Value(&["xdg-open", "open"], ""),
+        about: "What `gx` hands a link to. Empty means the platform's own.",
+    },
+    Setting {
         name: "signs",
         kind: Kind::Flag(true),
         about: "Git signs in the gutter: + ~ _ for added, changed and deleted.",

@@ -119,6 +119,14 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         false => Vec::new(),
     };
 
+    // The other uses of the word the cursor is on. The visible rows only, and
+    // a plain scan of them rather than a pattern: it runs every frame, and
+    // what it is looking for is one word.
+    let words = match editor.cursorword && focused {
+        true => word_uses(editor, view, scroll_top, last_row),
+        false => Vec::new(),
+    };
+
     // The bracket under the cursor and its mate, so a pair can be seen at a
     // glance rather than counted.
     let brackets = editor.bracket_pair().filter(|_| focused);
@@ -170,6 +178,9 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         bracket_style: editor.theme.style("ui.bracket.match"),
         diagnostics: &underlines,
         hint_style: editor.theme.style("ui.inlayhint"),
+        words: &words,
+        word_style: editor.theme.style("ui.cursorword"),
+        whitespace: editor.show_whitespace.then(|| editor.theme.style("ui.whitespace")),
     };
 
     // Wrapped, a line takes as many rows as it needs and nothing scrolls
@@ -249,6 +260,9 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                     selection: sel.map(|(a, b)| (a.saturating_sub(from), b.saturating_sub(from))),
                     cursorline: here,
                     hints: &piece_hints,
+                    trailing: (styling.whitespace.is_some() && last)
+                        .then(|| piece.trim_end_matches([' ', '\t']).chars().count())
+                        .filter(|blank| *blank < piece.chars().count()),
                 },
                 &styling,
             );
@@ -269,6 +283,48 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         }
         line += 1;
     }
+}
+
+/// Where else the word the cursor is on is used, among the rows on screen.
+///
+/// The word itself is in the list too: underlining every use and leaving the
+/// one you are on bare would say that it is not one of them. A word has to be
+/// a whole word, so `count` does not light up `counted`.
+fn word_uses(
+    editor: &Editor,
+    view: &crate::view::View,
+    first_row: usize,
+    last_row: usize,
+) -> Vec<(usize, usize)> {
+    let Some(word) = view.word_under_cursor() else {
+        return Vec::new();
+    };
+    let _ = editor;
+    let width = word.chars().count();
+    let mut found = Vec::new();
+    let last_row = last_row.min(view.doc.len_lines());
+    for line in first_row..last_row {
+        let text = view.doc.line_str(line);
+        if !text.contains(&word) {
+            continue;
+        }
+        let start = view.doc.line_to_char(line);
+        let chars: Vec<char> = text.chars().collect();
+        let mut at = 0;
+        while at + width <= chars.len() {
+            let matches = chars[at..at + width].iter().copied().eq(word.chars());
+            let bounded = matches
+                && (at == 0 || !crate::view::is_word(chars[at - 1]))
+                && (at + width == chars.len() || !crate::view::is_word(chars[at + width]));
+            if bounded {
+                found.push((start + at, start + at + width));
+                at += width;
+                continue;
+            }
+            at += 1;
+        }
+    }
+    found
 }
 
 /// The byte offset of char `index` in `text`, or its length past the end.
@@ -652,6 +708,12 @@ struct LineStyling<'a> {
     /// Ranges a diagnostic covers, with the style to underline them in.
     diagnostics: &'a [(usize, usize, Style)],
     hint_style: Style,
+    /// The other uses of the word the cursor is on, as absolute character
+    /// ranges, and how to mark them. Empty unless `:set cursorword`.
+    words: &'a [(usize, usize)],
+    word_style: Style,
+    /// How to draw a tab and a trailing space, under `:set list`.
+    whitespace: Option<Style>,
 }
 
 /// `style` over the cursor line's tint, when this row has one. The tint is a
@@ -678,10 +740,13 @@ struct Row<'a> {
     cursorline: Option<Style>,
     /// Inlay hints, as columns in the line and their text.
     hints: &'a [(usize, &'a str)],
+    /// The char offset in this piece from which the rest is trailing blanks,
+    /// when this is the last piece of the line and `:set list` is on.
+    trailing: Option<usize>,
 }
 
 fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
-    let Row { y: row, text, byte: line_byte, start: line_start, selection: sel, cursorline, hints } = line;
+    let Row { y: row, text, byte: line_byte, start: line_start, selection: sel, cursorline, hints, trailing } = line;
     let scroll_left = styling.scroll_left;
     // Columns here are the text's own, with the gutter added only when a cell
     // is actually written.
@@ -745,6 +810,11 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         if styling.brackets.is_some_and(|(a, b)| at == a || at == b) {
             style = style.patch(styling.bracket_style);
         }
+        // Under a search match, which is the more urgent thing to see, and
+        // under the selection, which is the thing you are holding.
+        if styling.words.iter().any(|&(s, e)| at >= s && at < e) {
+            style = style.patch(styling.word_style);
+        }
         if sel.is_some_and(|(s, e)| char_idx >= s && char_idx < e) {
             style = style.patch(styling.selection);
         }
@@ -752,7 +822,27 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         let visible_width = end.min(right) - visible_start;
         let x = visible_start - scroll_left + styling.left;
 
-        if ch == '\t' || start < scroll_left || end > right {
+        // `:set list`: a tab is an arrow and the blanks after the last
+        // character are dots, so the whitespace that matters can be seen. Only
+        // the trailing blanks: a dot under every space between words would be
+        // a page of dots, which is a different file.
+        let mark = styling.whitespace.and_then(|blank| match ch {
+            '\t' => Some(('\u{2192}', blank)),
+            ' ' if trailing.is_some_and(|from| char_idx >= from) => Some(('\u{00b7}', blank)),
+            _ => None,
+        });
+
+        if let Some((glyph, blank)) = mark {
+            // The arrow at the tab's first cell, the rest of its width blank.
+            let style = style.patch(blank);
+            for offset in 0..visible_width {
+                let ch = match offset == 0 && start >= scroll_left {
+                    true => glyph,
+                    false => ' ',
+                };
+                surface.put(x + offset, row, ch, 1, style);
+            }
+        } else if ch == '\t' || start < scroll_left || end > right {
             // Tabs, and wide glyphs straddling an edge, become blanks.
             for offset in 0..visible_width {
                 surface.put(x + offset, row, ' ', 1, style);
@@ -1746,6 +1836,54 @@ mod tests {
         // Two rows repaint rather than none, which is the whole cost of it.
         assert!(on > off, "on {on} vs off {off}");
         assert!(on < off + 2000, "a cursor move costs {} bytes more", on - off);
+    }
+
+    #[test]
+    fn set_list_shows_the_tabs_and_the_trailing_spaces() {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str("a\tb  \nplain line\n");
+        editor.set_viewport(40, 4);
+        let keys = Keys::default();
+
+        // Off, a tab is blank and a trailing space is a space.
+        let plain = row_text(&editor, &keys, 0);
+        assert!(!plain.contains('\u{2192}'), "{plain}");
+        assert!(!plain.contains('\u{00b7}'), "{plain}");
+
+        editor.run_command("set list");
+        let row = row_text(&editor, &keys, 0);
+        assert!(row.contains('\u{2192}'), "the tab: {row:?}");
+        assert!(row.contains("\u{00b7}\u{00b7}"), "the two trailing spaces: {row:?}");
+        // The space between words is a space: a page of dots is a different
+        // file.
+        let row = row_text(&editor, &keys, 1);
+        assert!(!row.contains('\u{00b7}'), "{row:?}");
+    }
+
+    #[test]
+    fn set_cursorword_underlines_the_other_uses_of_the_word() {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str("count = 1\ncounted = count\n");
+        editor.set_viewport(40, 4);
+        let keys = Keys::default();
+        let underlined = |editor: &Editor, y: usize, x: usize| {
+            let mut screen = Screen::new();
+            let surface = screen.begin(40, 5);
+            draw(editor, &keys, surface);
+            surface.get(editor.gutter_width() + x, y).style.underline
+        };
+
+        editor.run_command("set cursorword");
+        // The cursor is on `count` at the top left.
+        assert!(underlined(&editor, 0, 0), "the word itself");
+        // The other whole-word use, on the line below.
+        assert!(underlined(&editor, 1, 10), "`count` in `counted = count`");
+        // `counted` is a different word and keeps out of it.
+        assert!(!underlined(&editor, 1, 0), "`counted` is not `count`");
+
+        // Off again, and nothing is marked.
+        editor.run_command("set nocursorword");
+        assert!(!underlined(&editor, 0, 0));
     }
 
     #[test]

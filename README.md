@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 71: `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 72: `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -101,6 +101,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `%` | jump to the matching bracket |
 | `gd` `gD` | go to the definition: the language server's, or in scope / in the file |
 | `gr` `gR` | every use of the name, in a picker / rename it everywhere |
+| `gx` | open the link under the cursor, with `xdg-open`, `open` or `:set opener=` |
 | `ga` | what the server can do here: fixes, imports, refactors |
 | `K` | what the language server says the thing under the cursor is |
 | `]d` `[d` | next / previous diagnostic, and what it says |
@@ -143,6 +144,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `o` `O` | open a line below / above |
 | `x` `D` `C` | delete character / to line end / change to line end |
 | `r{c}` `~` | replace the character under the cursor / swap its case |
+| `^a` `g+` `g-` | add one to the number under the cursor, or take one away (`10g+`) |
 | `J` | join the line below onto this one (`{n}J` joins n lines) |
 | `dd` `d{motion}` | delete lines / over a motion |
 | `dG` `dgg` `d{n}G` | an operator over lines, to either end of the file |
@@ -221,6 +223,11 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:hook save *.rs format` | run a command when a file is opened or written; `:hook clear` to forget |
 | `:set dog` | `nodog`: the dog in the status line |
 | `:set rainbow` | `norainbow`: colour brackets by how deep they are nested |
+| `:set list` | `nolist`: draw tabs as `→` and trailing spaces as `·` |
+| `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
+| `:set branch` | `nobranch`: the git branch in the status line |
+| `:set opener=xdg-open` | what `gx` hands a link to; empty means the platform's own |
+| `:set hitcontext=2` | `hc`: lines of context around each place in a `:hits` buffer |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set lsp` | `nolsp`: start language servers for files that have one |
@@ -409,6 +416,11 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 - `reflow.rs` — `gq`: the prefix a paragraph's lines share - the indent and
   the `//` - taken off, the words wrapped to a width, and the prefix put back
   on every line of the answer. Strings only.
+- `number.rs` — `^a`, `g+` and `g-`: which number on the line the cursor
+  counts as being on, and what it looks like once it has been added to.
+  Zero padding and a leading `-` are the whole of the difficulty.
+- `link.rs` — `gx`: where a link under the cursor starts and ends, which is
+  mostly the question of which trailing punctuation belongs to the prose.
 - `sort.rs` — `:sort`: what "in order" means once `u`, `n`, `i` and `!` have
   had their say, and a stable sort by that.
 - `hook.rs` — `:hook`: one rule - an event, a glob and a command - and the
@@ -1881,6 +1893,45 @@ being replaced.
 Nothing is said when a mapping works. A config file is read by running its
 lines, so anything said there reads as a complaint about the line and stops the
 file - which is the same silence `:set` keeps, for the same reason.
+
+## Five small things
+
+**`^a` adds one to the number under the cursor**, `g-` takes one away, and a
+count says how far: `10g+` on `41` gives `51`. The number the cursor is *in*,
+else the next one along the line, which is vim's rule and the right one — the
+cursor is hardly ever on the digit you mean. Padding is kept until the number
+outgrows it (`007` → `008` → … → `1000`), and the cursor lands on the last
+digit, so `.` walks a column of numbers.
+
+Vim spells the decrement `^x`. Here that is the cut, so it is `g-`, and `g+` is
+the increment's other spelling so the pair reads. A `-` immediately in front is
+part of the number, as in vim, with one difference: a `-` with a *digit* in
+front of it is a subtraction, so `9-1` goes to `9-2` rather than to vim's `90`.
+That is the one place where matching vim would mean quietly changing what a line
+says.
+
+**`gx` opens the link under the cursor** — `xdg-open` on Linux, `open` on macOS,
+or whatever `:set opener=` names. Spawned and forgotten rather than handed the
+terminal: opening a browser is not something to wait for. Finding where a URL
+ends is the fiddly part, and the rule is that the punctuation prose leaves
+against one is not part of it — `see https://example.com/x.` loses the full
+stop, `(https://example.com/x)` loses the brackets, and a wikipedia address with
+`(disambiguation)` in it keeps its own.
+
+**`:set list`** draws a tab as `→` and the blanks at the end of a line as `·`.
+Only the trailing ones: a dot between every word is a page of dots, which is a
+different file.
+
+**`:set cursorword`** underlines the other uses of the word the cursor is on.
+Whole words, so `count` does not light up `counted`, and the visible rows only —
+it runs every frame, and what it is looking for is one word. It is `gr` for the
+impatient, and it costs no language server.
+
+**The git branch is in the status line**, after what git says about the file.
+Read out of `.git/HEAD` rather than by running git, because it is looked at a
+second after every keystroke and a process per second to draw six characters is
+not a trade worth making. A detached head shows the commit short, as git does.
+`:set nobranch` if you would rather not.
 
 ## Hooks
 
