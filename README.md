@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 69: `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 70: brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -129,6 +129,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `<space>x` | close this buffer |
 | `<space>p` | pet the dog |
 | `:dog` | how far it has run, and what it fetched and buried |
+| `:dog fetch` | and `sit`, `speak`, `run`, `sleep`, `good` — tricks it can do |
+| `:stats` | what this session amounted to: keys, changes, files, minutes |
 | `^c` `^x` `^v` | copy / cut / paste the line, through the system clipboard |
 | `"+y` `"+d` `"+p` | the same, spelled as a register |
 | `^d` `^u`, page up/down | scroll |
@@ -215,6 +217,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
 | `:set dog` | `nodog`: the dog in the status line |
+| `:set rainbow` | `norainbow`: colour brackets by how deep they are nested |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
 | `:set glyphs` | `noglyphs`: Nerd Font status line, or plain ASCII |
 | `:set lsp` | `nolsp`: start language servers for files that have one |
@@ -612,6 +615,25 @@ from ever going stale, and the expensive part - the root tree - stays
 incremental. Compiled grammars and queries are shared, so a file with many
 macros pays for parses, not for query compilation.
 
+## Brackets by depth
+
+`:set rainbow` colours every bracket by how deeply it is nested: the outermost
+pair pink, the next yellow, then cyan, green, orange, purple, and round again.
+It is the fastest way to see which `)` closes which `(` in a line like
+`one(two(three(4)), 5)`, and in a lisp or a deeply generic Rust type it is the
+difference between reading the line and counting it.
+
+The depths come from the tree, not from counting characters, which is the whole
+point: a `{` inside a string or a comment is not a bracket, and a pair is one
+colour because both halves belong to the same node. Only the brackets in the
+visible byte range are asked for — the walk stops descending as soon as a node
+cannot overlap the screen — so a 500-line file costs what one screen costs, per
+frame.
+
+The colours are `ui.bracket.1` through `ui.bracket.6` in the theme, so a theme
+can say what the rounds are. It is off by default; the matching-bracket
+highlight under the cursor (`ui.bracket.match`) is separate and stays on.
+
 ## Highlighting cost
 
 Per viewport query, release build:
@@ -973,6 +995,21 @@ the quit.
 since the first one and nothing ever asked: *the dog has run 4,112 cells,
 fetched 9 and buried 3*. `:set dogname=Rex` gives it a name, and then it is Rex
 who has run 4,112 cells and Rex who barks at your build.
+
+It takes commands as well as hints. `:dog fetch` sends it off after a bone,
+`:dog speak` gets a `woof`, `:dog run` is a lap of the lane, `:dog sit` drops
+whatever it was doing, `:dog sleep` puts it to bed and `:dog good` pets it. A
+trick it does not know says so and lists the ones it does. The rule for what is
+in that list is that the dog has to actually do it: there is no `:dog rollover`,
+because a command whose whole effect is a sentence about a dog rolling over is a
+sentence, not a dog.
+
+And `:stats` reads the session back — *2,481 keys, 37 changes, 4 files written,
+12 commands, 3 buffers, Rex ran 4,112 cells, in 38 minutes*. The order is
+deliberate: a status line is narrow and its right-hand end is the part you never
+see, so what you would want first is first and the clock is last. None of it
+leaves the machine, none of it is written down, and quitting forgets all of it —
+the same arrangement as the dog's pedometer.
 
 None of them needed a clock of their own. The run loop already waits with a
 rest's timeout while the dog is running, so a rest that arrives during a build

@@ -97,6 +97,15 @@
 "ui.listing.parent" = { fg = "#6272a4", bold = true }
 "ui.search.match" = { fg = "#282a36", bg = "#f1fa8c" }
 "ui.bracket.match" = { fg = "#ff79c6", bold = true, underline = true }
+# `:set rainbow`: brackets coloured by how deeply nested they are, and round
+# again after six. Six of the palette that are not any of the syntax colours
+# a bracket sits next to, so the depth is what you notice.
+"ui.bracket.1" = { fg = "#ff79c6" }
+"ui.bracket.2" = { fg = "#f1fa8c" }
+"ui.bracket.3" = { fg = "#8be9fd" }
+"ui.bracket.4" = { fg = "#50fa7b" }
+"ui.bracket.5" = { fg = "#ffb86c" }
+"ui.bracket.6" = { fg = "#bd93f9" }
 "ui.gutter.added" = { fg = "#50fa7b" }
 "ui.gutter.modified" = { fg = "#ffb86c" }
 "ui.gutter.deleted" = { fg = "#ff5555" }

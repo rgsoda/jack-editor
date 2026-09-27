@@ -1235,6 +1235,19 @@ impl Syntax {
         enclosing_item(self.tree.root_node(), at)
     }
 
+    /// Every bracket in the range, with how deeply nested it is, counting
+    /// from one: what rainbow brackets colour by.
+    ///
+    /// From the tree rather than by counting characters, so a brace in a
+    /// string or a comment is not a brace, and only the nodes overlapping the
+    /// range are walked - this runs once per frame and must cost what the
+    /// screen costs, not what the file costs.
+    pub fn bracket_depths(&self, range: Range<usize>) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        depths(self.tree.root_node(), &range, 0, &mut found);
+        found
+    }
+
     /// The function the cursor is in, and the inside of it: what `af` and
     /// `if` select. The nearest one rather than the outermost, so `af` on a
     /// method is the method and not the `impl` block it is in.
@@ -1251,6 +1264,25 @@ impl Syntax {
             node = node.parent()?;
         }
     }
+}
+
+/// Whether a bracket opens or closes, as the grammar spells the token.
+fn opens(kind: &str) -> bool {
+    matches!(kind, "(" | "[" | "{")
+}
+
+fn closes(kind: &str) -> bool {
+    matches!(kind, ")" | "]" | "}")
+}
+
+/// Whether a node of this shape is one pair of brackets round something: its
+/// first child opens and its last child closes. A stray brace inside an error
+/// node is not, which is what keeps a half-typed file from turning colours
+/// inside out.
+fn bracketed(children: &[Node]) -> bool {
+    children.len() >= 2
+        && children.first().is_some_and(|child| opens(child.kind()))
+        && children.last().is_some_and(|child| closes(child.kind()))
 }
 
 /// Whether a node is a function, by the name the grammar gives it.
@@ -1276,6 +1308,28 @@ fn inside_body(body: Node) -> Range<usize> {
             open.end_byte()..close.start_byte()
         }
         _ => body.byte_range(),
+    }
+}
+
+/// The walk behind `bracket_depths`. Depth goes up for each pair of brackets
+/// the node is inside, and the brackets themselves wear the depth of the pair
+/// they are, so `(` and its `)` are always the same colour.
+fn depths(node: Node, range: &Range<usize>, depth: usize, found: &mut Vec<(usize, usize)>) {
+    if node.end_byte() <= range.start || node.start_byte() >= range.end {
+        return;
+    }
+    let mut cursor = node.walk();
+    let children: Vec<Node> = node.children(&mut cursor).collect();
+    let here = depth + usize::from(bracketed(&children));
+    for child in children {
+        let kind = child.kind();
+        if here > depth && (opens(kind) || closes(kind)) && child.child_count() == 0 {
+            if range.contains(&child.start_byte()) {
+                found.push((child.start_byte(), here));
+            }
+            continue;
+        }
+        depths(child, range, here, found);
     }
 }
 
@@ -1357,6 +1411,17 @@ impl Highlights {
 
     pub fn style_at(&self, byte: usize) -> Option<Style> {
         self.styles.get(byte.checked_sub(self.start)?).copied().flatten()
+    }
+
+    /// Put a style on one byte, over whatever the grammar said about it.
+    /// Rainbow brackets are the only caller: a bracket's colour comes from how
+    /// deep it is, which is not something a highlight query can express.
+    pub fn set(&mut self, byte: usize, style: Style) {
+        if let Some(at) = byte.checked_sub(self.start)
+            && let Some(slot) = self.styles.get_mut(at)
+        {
+            *slot = Some(style);
+        }
     }
 }
 
@@ -1971,6 +2036,59 @@ mod tests {
         assert_eq!(f.syntax.parses.get(), parsed, "no reparsing while scrolling");
         println!("{parsed} layers: cold {cold:?}, warm {:?} (best {best:?})", total / 10);
         assert!(best < cold, "the remembered frame is the cheaper one");
+    }
+
+    #[test]
+    fn brackets_know_how_deep_they_are() {
+        let f = Fixture::new("fn main() {\n    one(two(3), [4]);\n}\n");
+        let whole = 0..f.doc.text.len_bytes();
+        let depths = f.syntax.bracket_depths(whole);
+        let text = f.doc.text.to_string();
+        let at = |byte: usize| text.as_bytes()[byte] as char;
+
+        // Every bracket in the file, and nothing else.
+        assert!(depths.iter().all(|&(byte, _)| "()[]{}".contains(at(byte))), "{depths:?}");
+        assert_eq!(depths.len(), 10, "five pairs: {depths:?}");
+
+        // A pair is one colour: the `(` and the `)` of the same node agree.
+        let one = text.find("one(").expect("the call") + 3;
+        let shut = text.find(");").expect("its close");
+        let depth_of = |byte: usize| depths.iter().find(|&&(at, _)| at == byte).map(|&(_, d)| d);
+        assert_eq!(depth_of(one), depth_of(shut), "a pair is one depth");
+
+        // And nesting counts: the block is 1, the call inside it 2, the call
+        // inside that 3.
+        assert_eq!(depth_of(text.find('{').expect("the block")), Some(1));
+        assert_eq!(depth_of(one), Some(2));
+        assert_eq!(depth_of(text.find("two(").expect("the inner call") + 3), Some(3));
+        assert_eq!(depth_of(text.find('[').expect("the array")), Some(3));
+    }
+
+    #[test]
+    fn a_brace_in_a_string_is_not_a_bracket() {
+        // The reason this asks the tree rather than counting characters.
+        let f = Fixture::new("fn main() {\n    let s = \"a { b\";\n}\n");
+        let whole = 0..f.doc.text.len_bytes();
+        let depths = f.syntax.bracket_depths(whole);
+        let text = f.doc.text.to_string();
+        let in_string = text.find("a {").expect("the string") + 2;
+        assert!(depths.iter().all(|&(byte, _)| byte != in_string), "{depths:?}");
+    }
+
+    #[test]
+    fn only_the_brackets_on_screen_are_looked_at() {
+        // One line of a long file: what this costs has to be what the screen
+        // costs, since it runs once per frame.
+        let mut text = String::from("fn main() {\n");
+        for i in 0..500 {
+            text.push_str(&format!("    call(nested({i}));\n"));
+        }
+        text.push_str("}\n");
+        let f = Fixture::new(&text);
+        let line = f.doc.text.line_to_byte(250);
+        let next = f.doc.text.line_to_byte(251);
+        let depths = f.syntax.bracket_depths(line..next);
+        assert_eq!(depths.len(), 4, "the four on that line: {depths:?}");
     }
 
     #[test]

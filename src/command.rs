@@ -62,6 +62,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "cd", argument: Argument::Path },
     Command { name: "pwd", argument: Argument::None },
     Command { name: "dog", argument: Argument::None },
+    Command { name: "stats", argument: Argument::None },
     Command { name: "ai", argument: Argument::None },
     Command { name: "agent", argument: Argument::None },
     Command { name: "cancel", argument: Argument::None },
@@ -147,6 +148,13 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Flag(true),
         about: "A dog in the status line. It runs while the cursor moves and \
                 sits down where it stopped. Needs glyphs.",
+    },
+    Setting {
+        name: "rainbow",
+        kind: Kind::Flag(false),
+        about: "Colour brackets by how deeply they are nested, six deep and \
+                then round again. From the grammar, so a brace in a string is \
+                not a brace.",
     },
     Setting {
         name: "tabline",

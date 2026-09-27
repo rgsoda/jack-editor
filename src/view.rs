@@ -503,6 +503,16 @@ impl View {
         }
     }
 
+    /// Every bracket on screen and how deep it is, for rainbow brackets.
+    /// Empty without a grammar: counting characters would colour the braces
+    /// in strings and comments, which is worse than not colouring any.
+    pub fn bracket_depths(&self, range: Range<usize>) -> Vec<(usize, usize)> {
+        match &self.syntax {
+            Some(syntax) => syntax.bracket_depths(range),
+            None => Vec::new(),
+        }
+    }
+
     /// Whether there is an indent query for this file at all, as opposed to
     /// there being one that has nothing to say about a particular line.
     pub fn has_indent_rules(&self) -> bool {

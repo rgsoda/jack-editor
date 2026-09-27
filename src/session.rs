@@ -58,6 +58,7 @@ impl Session {
     pub fn deliver(&mut self, editor: &mut Editor, message: Message) -> Flow {
         match message {
             Message::Key(key) => {
+                editor.keys_pressed += 1;
                 editor.message.clear();
                 // A pat lasts until the next key, the same as a message does.
                 editor.dog_forgets();

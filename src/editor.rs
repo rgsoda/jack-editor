@@ -582,11 +582,20 @@ pub struct Editor {
     /// Whether the last build failed, which is what makes the next clean one
     /// worth more than a bark.
     build_broke: bool,
+    /// When this session started, for `:stats`.
+    started: std::time::Instant,
+    /// Keys handled this session, commands run, and files written. Three
+    /// counters and nothing hangs off them: `:stats` is the only reader.
+    pub keys_pressed: u64,
+    commands_run: u64,
+    files_written: u64,
     /// The buffer `<space>t` came from, so the same key goes back to it.
     back_from_terminal: Option<usize>,
     /// Terminals opened this session, counting from one: what tells one
     /// `:term` buffer's output from another's.
     terms: u64,
+    /// Whether brackets are coloured by how deep they are.
+    pub rainbow: bool,
     /// The column `gq` wraps to. Not a limit on what you may type: nothing
     /// happens at this width until you ask for it.
     pub textwidth: usize,
@@ -735,8 +744,13 @@ impl Editor {
             build_group: crate::stream::pgid(),
             ai_group: crate::stream::pgid(),
             build_broke: false,
+            started: std::time::Instant::now(),
+            keys_pressed: 0,
+            commands_run: 0,
+            files_written: 0,
             back_from_terminal: None,
             terms: 0,
+            rainbow: false,
             textwidth: DEFAULT_TEXTWIDTH,
             agentprg: String::new(),
             ai_errand: false,
@@ -1268,6 +1282,9 @@ impl Editor {
         if line.is_empty() {
             return;
         }
+        if !self.from_config {
+            self.commands_run += 1;
+        }
         // `:s` before anything else: it has no whitespace to split on, and a
         // pattern is allowed to contain any of the characters a command name
         // is looked up by.
@@ -1454,7 +1471,8 @@ impl Editor {
             // Everything, rather than this window: `:q` closes a window when
             // there are several, and sometimes what you meant was all of it.
             ("qa" | "qall" | "quitall", _) => self.quit = Some(force),
-            ("dog", _) => self.dog_report(),
+            ("dog", trick) => self.dog_command(trick),
+            ("stats", _) => self.session_report(),
             ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
@@ -2027,6 +2045,8 @@ impl Editor {
             "nodog" => self.show_dog = false,
             "cursorline" => self.cursorline = true,
             "nocursorline" => self.cursorline = false,
+            "rainbow" => self.rainbow = true,
+            "norainbow" => self.rainbow = false,
             "glyphs" => self.glyphs = true,
             "noglyphs" => self.glyphs = false,
             "signs" => self.signs_enabled = true,
@@ -2043,10 +2063,11 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
+                    self.rainbow,
                     self.trim_on_save,
                     self.signs_enabled,
                     self.glyphs,
@@ -4993,6 +5014,7 @@ impl Editor {
                     1 => format!("wrote {name}, trimmed 1 line"),
                     n => format!("wrote {name}, trimmed {n} lines"),
                 };
+                self.files_written += 1;
                 self.lsp_saved();
                 self.write_undo();
             }
@@ -5410,17 +5432,118 @@ impl Editor {
         }
     }
 
-    /// `:dog`. It has been counting steps since it came in at the left of the
-    /// lane, and nothing has ever read the number back.
+    /// `:stats` - what this session has amounted to.
+    ///
+    /// Nothing here is measured for anybody's benefit but yours: no counter
+    /// leaves the machine, nothing is written down, and closing jack forgets
+    /// all of it. It is the same reason the dog has a pedometer.
+    pub fn session_report(&mut self) {
+        let minutes = self.started.elapsed().as_secs() / 60;
+        let open = self.views.len();
+        let changes: u64 = self.views.iter().map(|view| view.edits()).sum();
+        // What you would actually want to know first, because a status line is
+        // narrow and the end of a long line is the part you never see.
+        let mut parts = vec![
+            match self.keys_pressed {
+                1 => "1 key".to_string(),
+                n => format!("{} keys", grouped(n as usize)),
+            },
+            match changes {
+                0 => "no changes".to_string(),
+                1 => "1 change".to_string(),
+                n => format!("{} changes", grouped(n as usize)),
+            },
+            match self.files_written {
+                0 => "nothing written".to_string(),
+                1 => "1 file written".to_string(),
+                n => format!("{n} files written"),
+            },
+            match self.commands_run {
+                1 => "1 command".to_string(),
+                n => format!("{n} commands"),
+            },
+            match open {
+                1 => "1 buffer".to_string(),
+                n => format!("{n} buffers"),
+            },
+        ];
+        // The dog gets a word when there is a dog and it has moved.
+        if self.show_dog && self.dog.steps > 0 {
+            parts.push(match self.dog.steps {
+                1 => format!("{} ran a cell", self.dog_name()),
+                n => format!("{} ran {} cells", self.dog_name(), grouped(n)),
+            });
+        }
+        parts.push(match minutes {
+            0 => "in under a minute".to_string(),
+            1 => "in one minute".to_string(),
+            n => format!("in {n} minutes"),
+        });
+        self.message = parts.join(", ");
+    }
+
+    /// `:dog`, and `:dog sit` and the rest. The report on its own, and a
+    /// trick when you name one.
+    ///
+    /// Tricks a dog in a status line can actually do, and nothing it cannot:
+    /// there is no point in a command that prints a sentence about a dog
+    /// rolling over when the dog does not move.
+    pub fn dog_command(&mut self, trick: &str) {
+        if !self.show_dog {
+            self.message = "there is no dog: :set dog".into();
+            return;
+        }
+        let name = self.dog_name();
+        match trick.trim() {
+            "" => self.dog_report(),
+            "sit" | "stay" | "down" => {
+                self.dog.errand = Errand::None;
+                self.dog.running = false;
+                self.dog.asleep = false;
+                self.message = format!("{name} sits");
+            }
+            "fetch" => {
+                self.dog_fetches(What::Bone);
+                self.message = format!("{name} is off after a bone");
+            }
+            "speak" | "bark" => {
+                self.dog_barks();
+                self.message = format!("{name}: woof");
+            }
+            "run" | "lap" | "walk" => {
+                self.dog_laps();
+                self.message = format!("{name} takes a lap");
+            }
+            "sleep" | "bed" => {
+                self.dog.errand = Errand::None;
+                self.dog_sleeps();
+                self.message = format!("{name} settles down");
+            }
+            "good" | "good dog" => {
+                self.pet_dog();
+                self.message = format!("{name} knew that already");
+            }
+            other => {
+                self.message =
+                    format!("{name} does not know {other:?} (sit, fetch, speak, run, sleep)");
+            }
+        }
+    }
+
+    /// What to call it: the name you gave it, or what a dog with no name is.
+    fn dog_name(&self) -> String {
+        match self.dogname.trim() {
+            "" => "the dog".to_string(),
+            named => named.to_string(),
+        }
+    }
+
     pub fn dog_report(&mut self) {
         if !self.show_dog {
             self.message = "there is no dog: :set dog".into();
             return;
         }
-        let name = match self.dogname.trim() {
-            "" => "the dog".to_string(),
-            named => named.to_string(),
-        };
+        let name = self.dog_name();
         let dog = &self.dog;
         if dog.steps == 0 {
             self.message = format!("{name} has not moved yet");
@@ -6968,6 +7091,71 @@ two
         // And an answer that arrives anyway is not wanted any more.
         e.ai_answered(1, "too late\n".into(), true);
         assert_eq!(e.views[0].doc.text.to_string(), "one\n");
+    }
+
+    #[test]
+    fn the_dog_takes_commands_as_well_as_hints() {
+        let mut e = Editor::scratch();
+        e.run_command("set dogname=Rex");
+
+        // A trick the dog can actually do moves the dog.
+        e.run_command("dog fetch");
+        assert_eq!(e.message, "Rex is off after a bone");
+        assert_eq!(e.dog.errand, Errand::Fetching(What::Bone));
+
+        e.run_command("dog speak");
+        assert_eq!(e.message, "Rex: woof");
+        assert_eq!(e.dog.errand, Errand::Barking);
+
+        e.run_command("dog run");
+        assert_eq!(e.message, "Rex takes a lap");
+
+        // Sitting clears whatever it was doing, and sleep is its own state.
+        e.run_command("dog sit");
+        assert_eq!(e.message, "Rex sits");
+        assert_eq!(e.dog.errand, Errand::None);
+        assert!(!e.dog.running);
+
+        e.run_command("dog sleep");
+        assert_eq!(e.message, "Rex settles down");
+        assert!(e.dog.asleep);
+
+        // A trick it does not know says so, and lists the ones it does.
+        e.run_command("dog rollover");
+        assert!(e.message.starts_with("Rex does not know \"rollover\""), "{}", e.message);
+        assert!(e.message.contains("fetch"), "the tricks it does know: {}", e.message);
+
+        // With no dog, none of it applies.
+        e.run_command("set nodog");
+        e.run_command("dog fetch");
+        assert_eq!(e.message, "there is no dog: :set dog");
+    }
+
+    #[test]
+    fn stats_counts_the_session_up() {
+        let mut e = editor("one\ntwo\n");
+        e.keys_pressed = 2_500;
+        e.run_command("stats");
+
+        let said = e.message.clone();
+        // Keys first, the clock last: the end of the line is what a narrow
+        // status line drops.
+        assert!(said.starts_with("2,500 keys"), "{said}");
+        assert!(said.ends_with("in under a minute"), "{said}");
+        assert!(said.contains("no changes"), "{said}");
+        assert!(said.contains("1 command"), "{said}");
+        assert!(said.contains("nothing written"), "{said}");
+        assert!(said.contains("1 buffer"), "{said}");
+        // A dog that has not moved has nothing to add.
+        assert!(!said.contains("ran"), "{said}");
+
+        // Editing is counted as changes, and a dog that ran gets the last word.
+        e.set_mode(Mode::Insert);
+        e.insert("x");
+        e.dog_runs();
+        e.run_command("stats");
+        assert!(e.message.contains("1 change"), "{}", e.message);
+        assert!(e.message.contains("the dog ran a cell"), "{}", e.message);
     }
 
     #[test]

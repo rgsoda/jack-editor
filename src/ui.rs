@@ -12,6 +12,10 @@ use crate::keys::Keys;
 use crate::picker::{Layout, Picker};
 use crate::complete::{Candidate, Completion};
 use crate::info::Info;
+
+/// How many bracket colours there are before they come round again. Six is
+/// deeper than any nest worth reading, and a palette a theme can choose.
+const RAINBOW: usize = 6;
 use crate::screen::{Style, Surface};
 use crate::status::{self, Glyphs, Segment};
 use crate::stream::Sign;
@@ -82,12 +86,22 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     } else {
         view.doc.line_to_byte(last_row)
     };
-    let highlights = match view.listing {
+    let mut highlights = match view.listing {
         // A listing's colours come from what the lines name, not from a
         // grammar - but they arrive in the same shape.
         true => crate::editor::listing::highlights(view, first_byte..last_byte, &editor.theme),
         false => view.highlights(first_byte..last_byte, &editor.theme),
     };
+
+    // Brackets by depth, over whatever the grammar said about them. Six
+    // colours and then round again, which is deeper than any nest worth
+    // reading and keeps the palette to one a theme can actually choose.
+    if editor.rainbow && !view.listing {
+        for (byte, depth) in view.bracket_depths(first_byte..last_byte) {
+            let colour = (depth - 1) % RAINBOW + 1;
+            highlights.set(byte, editor.theme.style(&format!("ui.bracket.{colour}")));
+        }
+    }
 
     let gutter = editor.gutter_width_for(view);
     let signs = editor.sign_width();
@@ -1717,6 +1731,48 @@ mod tests {
         // Two rows repaint rather than none, which is the whole cost of it.
         assert!(on > off, "on {on} vs off {off}");
         assert!(on < off + 2000, "a cursor move costs {} bytes more", on - off);
+    }
+
+    #[test]
+    fn set_rainbow_colours_the_brackets_by_how_deep_they_are() {
+        let dir = std::env::temp_dir().join(format!("jack_rainbow_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nest.rs");
+        std::fs::write(&path, "fn main() {\n    one(two(3));\n}\n").unwrap();
+        let mut editor = Editor::open(&[path]).unwrap();
+        editor.set_viewport(60, 6);
+        let keys = Keys::default();
+
+        let colour_of = |editor: &Editor, y: usize, x: usize| {
+            let mut screen = Screen::new();
+            let surface = screen.begin(60, 7);
+            draw(editor, &keys, surface);
+            surface.get(editor.gutter_width() + x, y).style.fg
+        };
+
+        // Off, the brackets are whatever the grammar makes them: the two
+        // opening brackets of different depths look the same.
+        assert!(!editor.rainbow);
+        let plain = (colour_of(&editor, 1, 7), colour_of(&editor, 1, 11));
+        assert_eq!(plain.0, plain.1, "the same colour until rainbow is on");
+
+        editor.run_command("set rainbow");
+        assert!(editor.rainbow);
+        // `{` is depth one, `one(` two, `two(` three - three colours.
+        let block = colour_of(&editor, 0, 10);
+        let outer = colour_of(&editor, 1, 7);
+        let inner = colour_of(&editor, 1, 11);
+        assert_ne!(block, outer, "a nested bracket is a different colour");
+        assert_ne!(outer, inner, "and so is the one nested in that");
+        assert_eq!(outer, Some(editor.theme.style("ui.bracket.2").fg.unwrap()));
+        assert_eq!(inner, Some(editor.theme.style("ui.bracket.3").fg.unwrap()));
+        // A pair agrees: the `)` closing `one(` is the colour of its `(`.
+        assert_eq!(colour_of(&editor, 1, 14), outer);
+        // And the text between them is untouched.
+        assert_ne!(colour_of(&editor, 1, 8), outer, "`t` of `two` is not a bracket");
+
+        editor.run_command("set norainbow");
+        assert_eq!((colour_of(&editor, 1, 7), colour_of(&editor, 1, 11)), plain);
     }
 
     #[test]
