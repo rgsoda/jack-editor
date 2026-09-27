@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 70: brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 71: `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -216,6 +216,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:preview` | a markdown buffer rendered in a pane down the right, following the cursor; again to close it |
 | `:set number` | `nonumber`, `relativenumber`, `hybrid` |
 | `:set cursorline` | `nocursorline`: tint the row the cursor is on |
+| `:server yaml root=.yamllint yamlls` | a language server jack does not ship knowing about, or one in front of the one it does; `:server rust off` for none |
+| `:hook save *.rs format` | run a command when a file is opened or written; `:hook clear` to forget |
 | `:set dog` | `nodog`: the dog in the status line |
 | `:set rainbow` | `norainbow`: colour brackets by how deep they are nested |
 | `:set trim` `:set signs` | `notrim`, `nosigns` |
@@ -408,6 +410,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   on every line of the answer. Strings only.
 - `sort.rs` — `:sort`: what "in order" means once `u`, `n`, `i` and `!` have
   had their say, and a stable sort by that.
+- `hook.rs` — `:hook`: one rule - an event, a glob and a command - and the
+  glob matcher, which is `*` and nothing else. No editor in it, so the part
+  with the awkward cases is testable on its own.
 - `diff.rs` — `:diff`: two buffers as a unified diff, in the format every
   other tool in the terminal writes.
 - `ai.rs` — what gets sent to the program that answers questions about code,
@@ -1759,6 +1764,42 @@ What it gives you, so far:
 - **What it is doing.** A server that is indexing says so in the status line,
   which is why `gd` is not answering yet. `:lsp` lists the servers running.
 
+### Your own server
+
+The table above is what jack ships knowing about, not what it can run. `:server`
+says the rest, and belongs in the config file:
+
+```
+server yaml root=.yamllint yaml-language-server --stdio
+server rust ra-multiplex
+server python off
+```
+
+A line goes *in front* of the built-in table rather than editing an entry in it,
+which is why overriding rust-analyzer and adding a server for a language nobody
+shipped one for are the same thing to type. `root=` names the files that mark
+the top of a project the server understands, comma separated, and only means
+that at the front of the line - after the command it is the server's own
+argument. Everything after the command is passed through as given.
+
+The rule for which server is used is the one it always was: the first in order
+of preference that is actually installed. So a `:server` line naming something
+that is not on the `PATH` falls through to the built-in one rather than to
+nothing, and `:server` says so when you type it - *not installed, so the
+built-in one stands*. `:server python off` is how to say that a language is to
+have no server however many are installed, which `:set nolsp` cannot, because
+it turns off all of them.
+
+`:server` on its own lists what you have said. `:server rust` says what would be
+started for one language. Nothing is restarted: a server already running for a
+project goes on running, and the new line is used for the next buffer that asks
+- which is why this belongs in the config file, where it runs before anything is
+open.
+
+The language has to be one of the grammars, because the grammar is what names a
+language. A file jack cannot tell the language of would never reach a server
+keyed to it, and nothing would ever say why.
+
 ### Completion from a server
 
 The popup does not wait for anybody. The buffer's own words are there in the
@@ -1835,6 +1876,52 @@ being replaced.
 Nothing is said when a mapping works. A config file is read by running its
 lines, so anything said there reads as a complaint about the line and stops the
 file - which is the same silence `:set` keeps, for the same reason.
+
+## Hooks
+
+`:hook` runs a command when something happens to a file:
+
+```
+hook open *.md set tw=72
+hook save *.rs format
+hook save *.py !ruff check .
+hook save !cargo test
+```
+
+Two events, `open` and `save`, because those are the two moments where what you
+want done depends on *which* file it is. `open` is a file read into a buffer,
+`save` is a file successfully written - not a write that failed, and not a
+listing written back to its directory.
+
+What it runs is a command, written as it would be typed after `:`, the same
+latitude `:map` gives. That is the whole reason there is no scripting language
+here: everything jack can do already has a name, and a hook is a name plus a
+condition.
+
+The pattern is a glob, and `*` is the only special character in it - `?` is not
+worth the line it would cost, and a `.` is a dot rather than any character at
+all, so `a.b` is a file with a dot in it. A glob with no `/` is about the file's
+name, so `*.rs` matches however deep the file is; one with a `/` is about the
+path, so `src/*.rs` means what it looks like. No pattern at all is every file.
+
+`:hook` on its own lists them, `:hook clear` forgets them and `:hook clear save`
+forgets that event's. Saying the same hook twice leaves one.
+
+Hooks do not fire while a hook is running. A `save` hook that writes would
+otherwise be a loop, and it would be a loop that ate the file it was writing.
+A buffer with no name never fires one either: there is nothing for a pattern to
+be about, and a rule with no file to match is not what `*.rs` said.
+
+The files named on the command line are opened *before* the config file is read,
+so the `open` hooks it registers would have missed them. They are run for what
+is already open once the config file has been read, which is the only reason
+`:hook open` is worth having - without it the hook would fire for the second
+file you opened and never the first.
+
+One honest limit: jack's settings are global, not per buffer. `hook open *.md
+set tw=72` sets the text width for as long as it stands, not only while you are
+in the markdown file, so a pair of hooks is sometimes the way to say what you
+mean.
 
 ## A terminal in a buffer
 

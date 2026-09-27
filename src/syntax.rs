@@ -274,7 +274,7 @@ pub fn language_for_path(path: Option<&Path>) -> Option<&'static LanguageConfig>
     LANGUAGES.iter().find(|l| l.extensions.contains(&extension))
 }
 
-fn language_by_name(name: &str) -> Option<&'static LanguageConfig> {
+pub fn language_named(name: &str) -> Option<&'static LanguageConfig> {
     LANGUAGES.iter().find(|l| l.name == name)
 }
 
@@ -1161,7 +1161,7 @@ impl Syntax {
             .into_iter()
             .rev()
             .find(|layer| {
-                language_by_name(&layer.language).is_some_and(|c| !c.extensions.is_empty())
+                language_named(&layer.language).is_some_and(|c| !c.extensions.is_empty())
             })
             .map(|layer| layer.language)
     }
@@ -1201,7 +1201,7 @@ impl Syntax {
         if let Some(entry) = self.compiled.borrow().get(name) {
             return entry.clone();
         }
-        let entry = language_by_name(name).and_then(|config| compile(config, theme).ok());
+        let entry = language_named(name).and_then(|config| compile(config, theme).ok());
         self.compiled
             .borrow_mut()
             .insert(name.to_string(), entry.clone());
@@ -1477,7 +1477,7 @@ mod tests {
             let mut doc = Document::scratch();
             doc.text = Rope::from_str(text);
             let theme = Theme::built_in();
-            let config = language_by_name(language).expect("unregistered language");
+            let config = language_named(language).expect("unregistered language");
             let syntax = Syntax::new(config, &doc.text, &theme).unwrap();
             Fixture { doc, syntax, theme }
         }

@@ -11,6 +11,7 @@ use crate::clipboard;
 use crate::command;
 use crate::comment::{self, Marker, Toggled};
 use crate::complete::{self, Completion, Pick};
+use crate::hook::Hook;
 use crate::info::{self, Info};
 use crate::jump::{Jump, Jumps};
 use crate::quickfix::{Entry, Quickfix};
@@ -424,6 +425,15 @@ pub struct Editor {
     /// Running language servers. Indexes stay put: a stopped one is kept,
     /// marked, so the buffers pointing at it can tell.
     servers: Vec<crate::lsp::Client>,
+    /// Which server to start for a language: what `:server` has been told,
+    /// in front of the table jack ships with.
+    pub server_specs: crate::lsp::Servers,
+    /// `:hook`: commands to run when a file is opened or written.
+    pub hooks: Vec<crate::hook::Hook>,
+    /// Whether a hook's command is running. Hooks do not fire while one is
+    /// running: a `save` hook that writes would otherwise be a loop, and it
+    /// would be a loop that ate the file it was writing.
+    in_hook: bool,
     /// Start language servers for the files that have one.
     pub lsp_enabled: bool,
     pub width: usize,
@@ -681,6 +691,9 @@ impl Editor {
             screen: (80, 25),
             grouped_view: None,
             servers: Vec::new(),
+            server_specs: crate::lsp::Servers::default(),
+            hooks: Vec::new(),
+            in_hook: false,
             lsp_enabled: true,
             width: 80,
             height: 24,
@@ -1439,6 +1452,8 @@ impl Editor {
             ("on" | "only", _) => self.only_window(),
             ("bd" | "bdelete", _) => self.close_buffer(force),
             ("lsp", _) => self.lsp_report(),
+            ("server", rest) => self.configure_server(rest),
+            ("hook", rest) => self.hook_command(rest),
             ("stage", _) => self.stage_hunk(),
             ("revert", _) => self.revert_hunk(),
             ("hunk", _) => self.preview_hunk(),
@@ -1937,6 +1952,16 @@ impl Editor {
     /// overruled it, which is what typing one is for.
     pub fn indent(&self) -> Indent {
         self.view().indent.unwrap_or(self.indent)
+    }
+
+    /// Something to report, unless a config file is talking. `apply_config`
+    /// stops at the first line that had anything to say, so a line that worked
+    /// has to work quietly - a complaint still goes through, because that is
+    /// the one thing a config file wants to be stopped by.
+    pub(crate) fn said(&mut self, message: String) {
+        if !self.from_config {
+            self.message = message;
+        }
     }
 
     /// A `:set` that names an indent option means it for every buffer, so what
@@ -3919,6 +3944,7 @@ impl Editor {
             self.restore_position(0);
             self.read_undo(0);
             self.switch_to(0);
+            self.run_hooks(crate::hook::Event::Open);
             return Ok(());
         }
 
@@ -3928,6 +3954,7 @@ impl Editor {
         self.restore_position(index);
         self.read_undo(index);
         self.switch_to(index);
+        self.run_hooks(crate::hook::Event::Open);
         Ok(())
     }
 
@@ -5017,6 +5044,7 @@ impl Editor {
                 self.files_written += 1;
                 self.lsp_saved();
                 self.write_undo();
+                self.run_hooks(crate::hook::Event::Save);
             }
             Err(err) => self.message = format!("{err:#}"),
         }
@@ -5430,6 +5458,132 @@ impl Editor {
             self.dog.errand = Errand::None;
             self.dog.running = false;
         }
+    }
+
+    /// `:hook`, which is jack's whole answer to vim's autocommands:
+    ///
+    /// ```text
+    /// :hook                        what is hooked
+    /// :hook save *.rs format       on writing a rust file, ask the server to format it
+    /// :hook save !cargo test       on writing anything, run the tests
+    /// :hook open *.md set tw=72    on opening markdown, wrap at 72
+    /// :hook clear [event]          forget them
+    /// ```
+    ///
+    /// Two events, `open` and `save`, because those are the two moments where
+    /// what you want done depends on which file it is. The command is written
+    /// as it would be typed after `:`, so everything jack can do is available
+    /// and nothing new had to be invented to say it.
+    pub fn hook_command(&mut self, rest: &str) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            self.message = match self.hooks.is_empty() {
+                true => "nothing hooked (:hook save *.rs format)".into(),
+                false => {
+                    self.hooks.iter().map(Hook::line).collect::<Vec<String>>().join("; ")
+                }
+            };
+            return;
+        }
+        let (event, rest) = match rest.split_once(char::is_whitespace) {
+            Some((event, rest)) => (event, rest.trim()),
+            None => (rest, ""),
+        };
+        if event == "clear" {
+            let before = self.hooks.len();
+            match rest.is_empty() {
+                true => self.hooks.clear(),
+                false => match crate::hook::Event::named(rest) {
+                    Some(event) => self.hooks.retain(|hook| hook.event != event),
+                    None => {
+                        self.message = format!("no event called {rest:?} (open, save)");
+                        return;
+                    }
+                },
+            }
+            self.said(match before - self.hooks.len() {
+                0 => "nothing was hooked".into(),
+                1 => "1 hook forgotten".into(),
+                n => format!("{n} hooks forgotten"),
+            });
+            return;
+        }
+        let Some(event) = crate::hook::Event::named(event) else {
+            self.message = format!("no event called {event:?} (open, save)");
+            return;
+        };
+        if rest.is_empty() {
+            self.message = "nothing to run".into();
+            return;
+        }
+        // A glob or a command, and telling them apart without guessing: a glob
+        // is the word with a `*` in it, and a command never has one at the
+        // front. `:hook save *.rs !make` and `:hook save !make` both read.
+        let (glob, command) = match rest.split_once(char::is_whitespace) {
+            Some((first, tail)) if first.contains('*') => (first.to_string(), tail.trim()),
+            _ => (String::new(), rest),
+        };
+        if command.is_empty() {
+            self.message = "nothing to run, after the pattern".into();
+            return;
+        }
+        // Written as it would be typed, `:` and all, or without - the same
+        // latitude `:map` gives.
+        let command = command.trim_start_matches(':').to_string();
+        let hook = Hook { event, glob, command };
+        let line = hook.line();
+        self.hooks.retain(|other| other.line() != line);
+        self.hooks.push(hook);
+        self.said(line);
+    }
+
+    /// Something happened to the buffer in front of you: run what was hooked
+    /// to it.
+    ///
+    /// The buffer's own path decides which hooks are about it, so a hook is
+    /// never run for a scratch buffer - there is no name to match, and a rule
+    /// with no file to be about is a rule about everything, which is not what
+    /// `*.rs` said.
+    pub(crate) fn run_hooks(&mut self, event: crate::hook::Event) {
+        if self.in_hook || self.hooks.is_empty() {
+            return;
+        }
+        let Some(path) = self.view().doc.path.clone() else {
+            return;
+        };
+        let name = path.to_string_lossy().replace('\\', "/");
+        let commands: Vec<String> = self
+            .hooks
+            .iter()
+            .filter(|hook| hook.about(event, &name))
+            .map(|hook| hook.command.clone())
+            .collect();
+        if commands.is_empty() {
+            return;
+        }
+        self.in_hook = true;
+        for command in commands {
+            self.run_command(&command);
+        }
+        self.in_hook = false;
+    }
+
+    /// The files named on the command line were opened before the config file
+    /// was read, so the `open` hooks it registers have already missed them.
+    /// This is that catch-up, and the reason `:hook open` is worth having at
+    /// all: without it the hook would only ever fire for the second file.
+    pub fn run_startup_hooks(&mut self) {
+        if self.hooks.iter().all(|hook| hook.event != crate::hook::Event::Open) {
+            return;
+        }
+        let was = self.current;
+        for index in 0..self.views.len() {
+            if self.views[index].doc.path.is_some() {
+                self.switch_to(index);
+                self.run_hooks(crate::hook::Event::Open);
+            }
+        }
+        self.switch_to(was);
     }
 
     /// `:stats` - what this session has amounted to.
@@ -7091,6 +7245,93 @@ two
         // And an answer that arrives anyway is not wanted any more.
         e.ai_answered(1, "too late\n".into(), true);
         assert_eq!(e.views[0].doc.text.to_string(), "one\n");
+    }
+
+    #[test]
+    fn a_hook_runs_when_the_file_it_is_about_is_written() {
+        let dir = std::env::temp_dir().join(format!("jack_hooks_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rust = dir.join("a.rs");
+        let text = dir.join("b.txt");
+        std::fs::write(&rust, "one\n").unwrap();
+        std::fs::write(&text, "one\n").unwrap();
+
+        let mut e = Editor::open(&[rust.clone(), text.clone()]).unwrap();
+        // A command as it would be typed, with or without the colon.
+        e.run_command("hook save *.rs :set number");
+        assert_eq!(e.message, "save *.rs set number");
+        e.numbers = Numbers::Off;
+
+        // Writing the text file is not what the hook was about.
+        e.switch_to(1);
+        e.run_command("w");
+        assert_eq!(e.numbers, Numbers::Off, "b.txt is not *.rs");
+
+        // Writing the rust file is.
+        e.switch_to(0);
+        e.run_command("w");
+        assert_eq!(e.numbers, Numbers::Absolute, "the hook ran");
+
+        // Listed, and forgotten.
+        e.run_command("hook");
+        assert_eq!(e.message, "save *.rs set number");
+        e.run_command("hook clear open");
+        assert_eq!(e.message, "nothing was hooked", "a save hook is not an open hook");
+        e.run_command("hook clear");
+        assert_eq!(e.message, "1 hook forgotten");
+        e.run_command("hook");
+        assert_eq!(e.message, "nothing hooked (:hook save *.rs format)");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_hook_cannot_set_itself_off() {
+        // A `save` hook that writes would write for ever. It writes once.
+        let dir = std::env::temp_dir().join(format!("jack_hookloop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.rs");
+        std::fs::write(&path, "one\n").unwrap();
+
+        let mut e = Editor::open(std::slice::from_ref(&path)).unwrap();
+        e.run_command("hook save w");
+        e.run_command("w");
+        assert_eq!(e.files_written, 2, "the write, and the hook's write, and no more");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_open_hook_runs_for_a_file_opened_and_for_the_ones_already_there() {
+        let dir = std::env::temp_dir().join(format!("jack_hookopen_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("a.md");
+        let second = dir.join("b.md");
+        std::fs::write(&first, "one\n").unwrap();
+        std::fs::write(&second, "two\n").unwrap();
+
+        // The config file is read after the files named on the command line
+        // are opened, so this is the catch-up.
+        let mut e = Editor::open(&[first]).unwrap();
+        e.apply_config("hook open *.md set tw=72\n");
+        assert_eq!(e.textwidth, DEFAULT_TEXTWIDTH, "not yet: nothing has been opened since");
+        e.run_startup_hooks();
+        assert_eq!(e.textwidth, 72, "the file that was already open");
+
+        // And a file opened afterwards, the ordinary way.
+        e.textwidth = DEFAULT_TEXTWIDTH;
+        e.open_file(&second).unwrap();
+        assert_eq!(e.textwidth, 72);
+
+        // A buffer with no name has nothing for a pattern to be about.
+        e.textwidth = DEFAULT_TEXTWIDTH;
+        e.views.push(View::new(Document::scratch()));
+        e.switch_to(e.views.len() - 1);
+        e.run_hooks(crate::hook::Event::Open);
+        assert_eq!(e.textwidth, DEFAULT_TEXTWIDTH);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

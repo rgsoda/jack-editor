@@ -97,11 +97,11 @@ impl Editor {
         let Some(language) = language_for_path(Some(&path)).map(|config| config.name) else {
             return;
         };
-        let Some(spec) = lsp::spec_for(language) else {
+        let Some(spec) = self.server_specs.for_language(language) else {
             return;
         };
         let absolute = absolute(&path);
-        let root = lsp::root_for(spec, &absolute);
+        let root = lsp::root_for(&spec, &absolute);
 
         let running = self
             .servers
@@ -110,7 +110,7 @@ impl Editor {
         let server = match running {
             Some(server) if self.servers[server].state == State::Exited => return,
             Some(server) => server,
-            None => match Client::spawn(spec, root, self.servers.len(), jobs) {
+            None => match Client::spawn(&spec, root, self.servers.len(), jobs) {
                 Ok(client) => {
                     self.servers.push(client);
                     self.servers.len() - 1
@@ -1102,6 +1102,107 @@ impl Editor {
         };
     }
 
+    /// `:server`, which is the whole of configuring a language server:
+    ///
+    /// ```text
+    /// :server                                     what is configured
+    /// :server rust                                what would be started for rust
+    /// :server rust off                            nothing, for rust
+    /// :server yaml root=.yamllint yamlls        a server for a language jack ships none for
+    /// :server rust ra-multiplex                   in front of the built-in rust-analyzer
+    /// ```
+    ///
+    /// A line goes in front of the built-in table rather than editing it, so
+    /// overriding a server jack knows and adding one it does not are the same
+    /// thing to type. Nothing is restarted: a server already running for a
+    /// project goes on running, and the new line is used for the next buffer
+    /// that asks - which is why this belongs in the config file, where it runs
+    /// before anything is open.
+    ///
+    /// The language has to be one of the grammars, because the grammar is what
+    /// names a language: a file jack cannot tell the language of would never
+    /// reach a server keyed to it, and nothing would ever say why.
+    pub(super) fn configure_server(&mut self, rest: &str) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            self.message = match self.server_specs.is_empty() {
+                true => "nothing configured (:server yaml root=.yamllint yamlls)".into(),
+                false => self.server_specs.configured().join("; "),
+            };
+            return;
+        }
+        let (languages, rest) = match rest.split_once(char::is_whitespace) {
+            Some((languages, rest)) => (languages, rest.trim()),
+            None => (rest, ""),
+        };
+        // Every name has to be one of the grammars, because a server keyed to
+        // a language jack cannot recognise would never be started and nothing
+        // would ever say why.
+        let names: Vec<String> = languages.split(',').map(|name| name.trim().to_string()).collect();
+        if let Some(unknown) = names.iter().find(|name| crate::syntax::language_named(name).is_none())
+        {
+            self.message = format!("no language called {unknown:?}");
+            return;
+        }
+
+        // Nothing at all for these languages.
+        if rest == "off" || rest == "none" {
+            for name in &names {
+                self.server_specs.silence(name);
+            }
+            self.said(format!("no server for {}", names.join(", ")));
+            return;
+        }
+
+        // What would be used, when a language was named and nothing else was.
+        if rest.is_empty() {
+            self.message = match self.server_specs.for_language(&names[0]) {
+                Some(spec) => format!("{}: {}", names[0], spec.line()),
+                None => format!("nothing installed for {}", names[0]),
+            };
+            return;
+        }
+
+        // `root=` markers, which only mean that at the front of the line: after
+        // the command they are the server's own argument.
+        let mut roots = Vec::new();
+        let mut rest = rest;
+        while let Some(markers) = rest.strip_prefix("root=") {
+            let (markers, tail) = match markers.split_once(char::is_whitespace) {
+                Some((markers, tail)) => (markers, tail.trim()),
+                None => (markers, ""),
+            };
+            roots.extend(markers.split(',').filter(|m| !m.is_empty()).map(str::to_string));
+            rest = tail;
+        }
+        let mut words = rest.split_whitespace().map(str::to_string);
+        let Some(command) = words.next() else {
+            self.message = "a command to run, after the root markers".into();
+            return;
+        };
+        let spec = crate::lsp::Spec {
+            name: std::path::Path::new(&command)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&command)
+                .to_string(),
+            args: words.collect(),
+            languages: names.clone(),
+            roots,
+            command,
+        };
+        let installed = crate::lsp::installed(&spec.command);
+        let line = spec.line();
+        self.server_specs.configure(spec);
+        // Buffers that were opened before this was said can be looked at
+        // again, the same way `:set lsp` reconsiders them.
+        self.lsp_turned_on();
+        self.said(match installed {
+            true => format!("{line} - for the next buffer that wants one"),
+            false => format!("{line} - not installed, so the built-in one stands"),
+        });
+    }
+
     /// `:set lsp` again after `:set nolsp`: buffers passed over while it was
     /// off get looked at again.
     pub(super) fn lsp_turned_on(&mut self) {
@@ -1153,6 +1254,47 @@ mod tests {
 
     fn raw(start: (u32, u32), end: (u32, u32), severity: Severity, message: &str) -> RawDiagnostic {
         RawDiagnostic { start, end, severity, message: message.into(), raw: Value::Null }
+    }
+
+    #[test]
+    fn the_server_command_says_what_it_did_and_refuses_what_it_cannot_do() {
+        let mut e = Editor::scratch();
+        e.run_command("server");
+        assert_eq!(e.message, "nothing configured (:server yaml root=.yamllint yamlls)");
+
+        // A language, root markers, a command and its arguments.
+        e.run_command("server yaml root=.yamllint,.yamlfmt /bin/sh -c zls");
+        assert!(e.message.starts_with("yaml root=.yamllint,.yamlfmt /bin/sh -c zls"), "{}", e.message);
+        let chosen = e.server_specs.for_language("yaml").expect("configured and installed");
+        assert_eq!(chosen.command, "/bin/sh");
+        assert_eq!(chosen.args, ["-c", "zls"]);
+        assert_eq!(chosen.roots, [".yamllint", ".yamlfmt"]);
+
+        // Reading it back, as a line and as one language.
+        e.run_command("server");
+        assert_eq!(e.message, "yaml root=.yamllint,.yamlfmt /bin/sh -c zls");
+        e.run_command("server yaml");
+        assert_eq!(e.message, "yaml: yaml root=.yamllint,.yamlfmt /bin/sh -c zls");
+
+        // A command that is not there is said so rather than silently ignored.
+        e.run_command("server rust /nowhere/no-such-server");
+        assert!(e.message.ends_with("not installed, so the built-in one stands"), "{}", e.message);
+
+        // Off, and off reads back.
+        e.run_command("server yaml off");
+        assert_eq!(e.message, "no server for yaml");
+        assert_eq!(e.server_specs.for_language("yaml"), None);
+        e.run_command("server");
+        assert!(e.message.contains("yaml off"), "{}", e.message);
+
+        // A language jack has no grammar for is a typo, not a configuration.
+        e.run_command("server rustt /bin/sh");
+        assert_eq!(e.message, "no language called \"rustt\"");
+
+        // Several languages at once, one server.
+        e.run_command("server javascript,html /bin/sh --stdio");
+        assert_eq!(e.server_specs.for_language("html").map(|spec| spec.name), Some("sh".into()));
+        assert_eq!(e.server_specs.for_language("javascript").map(|spec| spec.args), Some(vec!["--stdio".to_string()]));
     }
 
     #[test]

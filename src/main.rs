@@ -11,6 +11,7 @@ mod diff;
 mod editor;
 mod info;
 mod history;
+mod hook;
 mod jump;
 mod keys;
 mod lsp;
@@ -211,6 +212,7 @@ fn main() -> Result<()> {
     let mut editor = Editor::open(files)?;
     editor.set_adrift(adrift && files.is_empty());
     editor.load_config();
+    editor.run_startup_hooks();
     editor.set_positions(positions::Positions::load(positions::store_path()));
     editor.set_undo_dir(undofile::store_dir());
 

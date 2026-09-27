@@ -21,55 +21,101 @@ use std::thread;
 use crate::stream::Message;
 
 /// A server jack knows how to start, and which files it is for.
+///
+/// Owned rather than `&'static str`, because the interesting ones come from
+/// the config file: a built-in table cannot know about the server you wrote
+/// last week.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spec {
-    pub name: &'static str,
-    command: &'static str,
-    args: &'static [&'static str],
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
     /// Language names as the grammar registry has them.
-    languages: &'static [&'static str],
+    pub languages: Vec<String>,
     /// Files that mark the top of a project this server understands. The
     /// nearest one above the file wins; failing that, the repository.
+    pub roots: Vec<String>,
+}
+
+impl Spec {
+    /// How it would be written as a `:server` line, for `:server` to read the
+    /// configured ones back.
+    pub fn line(&self) -> String {
+        let mut line = self.languages.join(",");
+        if !self.roots.is_empty() {
+            line.push_str(&format!(" root={}", self.roots.join(",")));
+        }
+        line.push(' ');
+        line.push_str(&self.command);
+        for arg in &self.args {
+            line.push(' ');
+            line.push_str(arg);
+        }
+        line
+    }
+}
+
+/// One of the servers jack ships knowing about. The same fields as a `Spec`
+/// and none of the allocation: a table of them is a `const`, and one becomes
+/// a `Spec` when a file that wants it is opened.
+struct Builtin {
+    name: &'static str,
+    command: &'static str,
+    args: &'static [&'static str],
+    languages: &'static [&'static str],
     roots: &'static [&'static str],
 }
 
+impl Builtin {
+    fn spec(&self) -> Spec {
+        Spec {
+            name: self.name.to_string(),
+            command: self.command.to_string(),
+            args: self.args.iter().map(|arg| arg.to_string()).collect(),
+            languages: self.languages.iter().map(|name| name.to_string()).collect(),
+            roots: self.roots.iter().map(|marker| marker.to_string()).collect(),
+        }
+    }
+}
+
 /// In order of preference: for a language with two, the first one installed.
-pub const SERVERS: &[Spec] = &[
-    Spec {
+const BUILT_IN: &[Builtin] = &[
+    Builtin {
         name: "rust-analyzer",
         command: "rust-analyzer",
         args: &[],
         languages: &["rust"],
         roots: &["Cargo.toml"],
     },
-    Spec {
+    Builtin {
         name: "clangd",
         command: "clangd",
         args: &[],
         languages: &["c", "cpp"],
         roots: &["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt"],
     },
-    Spec {
+    Builtin {
         name: "gopls",
         command: "gopls",
         args: &[],
         languages: &["go"],
         roots: &["go.mod", "go.work"],
     },
-    Spec {
+    Builtin {
         name: "pyright",
         command: "pyright-langserver",
         args: &["--stdio"],
         languages: &["python"],
         roots: &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
     },
-    Spec {
+    Builtin {
         name: "pylsp",
         command: "pylsp",
         args: &[],
         languages: &["python"],
         roots: &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
     },
-    Spec {
+    Builtin {
         name: "typescript-language-server",
         command: "typescript-language-server",
         args: &["--stdio"],
@@ -78,15 +124,85 @@ pub const SERVERS: &[Spec] = &[
     },
 ];
 
-/// The server for a language, if one is installed.
-pub fn spec_for(language: &str) -> Option<&'static Spec> {
-    SERVERS
-        .iter()
-        .filter(|spec| spec.languages.contains(&language))
-        .find(|spec| on_path(spec.command))
+/// The servers jack will start: what the config file said, and then what it
+/// ships knowing about.
+///
+/// A `:server` line goes in front of the built-in table rather than replacing
+/// an entry in it, so overriding rust-analyzer and adding a server for a
+/// language nobody wrote one for are the same operation. The rule for which
+/// one is used stays what it was - the first one in order of preference that
+/// is actually installed - which is why a configured server that is not on
+/// the `PATH` falls through to the built-in one rather than to nothing.
+#[derive(Default)]
+pub struct Servers {
+    /// Most recently configured first: saying it twice means the second one.
+    configured: Vec<Spec>,
+    /// Languages that are to have no server at all, whatever is installed.
+    silenced: Vec<String>,
+}
+
+impl Servers {
+    /// A `:server` line. It goes to the front, and a second line about the
+    /// same command replaces the first rather than shadowing it.
+    pub fn configure(&mut self, spec: Spec) {
+        self.configured.retain(|other| other.command != spec.command);
+        self.silenced.retain(|language| !spec.languages.contains(language));
+        self.configured.insert(0, spec);
+    }
+
+    /// `:server rust off`: no server for this language, however many are
+    /// installed. The way to say that a language server is not wanted here
+    /// without turning every language server off.
+    pub fn silence(&mut self, language: &str) {
+        self.configured.retain(|spec| !spec.languages.iter().any(|name| name == language));
+        if !self.silenced.iter().any(|name| name == language) {
+            self.silenced.push(language.to_string());
+        }
+    }
+
+    /// The server to start for a language, if there is one installed.
+    pub fn for_language(&self, language: &str) -> Option<Spec> {
+        if self.silenced.iter().any(|name| name == language) {
+            return None;
+        }
+        let wants = |spec: &&Spec| spec.languages.iter().any(|name| name == language);
+        if let Some(spec) = self.configured.iter().filter(wants).find(|spec| on_path(&spec.command))
+        {
+            return Some(spec.clone());
+        }
+        BUILT_IN
+            .iter()
+            .filter(|spec| spec.languages.contains(&language))
+            .find(|spec| on_path(spec.command))
+            .map(Builtin::spec)
+    }
+
+    /// What has been configured, as `:server` lines, for `:server` to list.
+    /// The built-in table is not in here: it is the same in every jack, and
+    /// what a listing is for is seeing what *you* said.
+    pub fn configured(&self) -> Vec<String> {
+        let silenced = self.silenced.iter().map(|language| format!("{language} off"));
+        self.configured.iter().map(Spec::line).chain(silenced).collect()
+    }
+
+    /// Whether anything has been said at all, so `:server` can say so rather
+    /// than printing nothing.
+    pub fn is_empty(&self) -> bool {
+        self.configured.is_empty() && self.silenced.is_empty()
+    }
+}
+
+/// Whether a command would run, for the "first one installed" rule. An
+/// absolute path is asked about directly; a bare name is looked for on the
+/// `PATH`, which is what a shell would do with it.
+pub fn installed(command: &str) -> bool {
+    on_path(command)
 }
 
 fn on_path(command: &str) -> bool {
+    if command.contains(std::path::MAIN_SEPARATOR) {
+        return Path::new(command).is_file();
+    }
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
@@ -98,10 +214,10 @@ fn on_path(command: &str) -> bool {
 /// file's own directory.
 pub fn root_for(spec: &Spec, file: &Path) -> PathBuf {
     let start = file.parent().unwrap_or(Path::new("."));
-    let nearest = |markers: &[&str]| {
+    let nearest = |markers: &[String]| {
         start.ancestors().find(|dir| markers.iter().any(|marker| dir.join(marker).exists()))
     };
-    nearest(spec.roots).or_else(|| nearest(&[".git"])).unwrap_or(start).to_path_buf()
+    nearest(&spec.roots).or_else(|| nearest(&[".git".to_string()])).unwrap_or(start).to_path_buf()
 }
 
 /// How the server counts columns. The protocol's default is UTF-16 code units;
@@ -422,7 +538,7 @@ pub enum State {
 
 /// One running server.
 pub struct Client {
-    pub name: &'static str,
+    pub name: String,
     pub root: PathBuf,
     pub state: State,
     pub encoding: Encoding,
@@ -442,9 +558,9 @@ pub struct Client {
 impl Client {
     /// Start `spec` in `root`. `index` is how its messages will be labelled on
     /// the channel.
-    pub fn spawn(spec: &'static Spec, root: PathBuf, index: usize, tx: Sender<Message>) -> Result<Client> {
-        let mut child = Command::new(spec.command)
-            .args(spec.args)
+    pub fn spawn(spec: &Spec, root: PathBuf, index: usize, tx: Sender<Message>) -> Result<Client> {
+        let mut child = Command::new(&spec.command)
+            .args(&spec.args)
             .current_dir(&root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -477,7 +593,7 @@ impl Client {
         });
 
         let mut client = Client {
-            name: spec.name,
+            name: spec.name.clone(),
             root,
             state: State::Starting,
             encoding: Encoding::Utf16,
@@ -496,10 +612,10 @@ impl Client {
     /// A client with no process behind it, and the bytes it would have
     /// written: for tests that play the server's part by hand.
     #[cfg(test)]
-    pub fn detached(name: &'static str) -> (Client, std::sync::mpsc::Receiver<Vec<u8>>) {
+    pub fn detached(name: &str) -> (Client, std::sync::mpsc::Receiver<Vec<u8>>) {
         let (writer, written) = channel();
         let client = Client {
-            name,
+            name: name.to_string(),
             root: PathBuf::from("/"),
             state: State::Starting,
             encoding: Encoding::Utf16,
@@ -1385,13 +1501,79 @@ pub(crate) mod tests {
         assert_eq!(units_to_chars(label, 99), label.chars().count());
     }
 
+    /// A spec for something that is certainly installed, and one for
+    /// something that is certainly not.
+    fn spec(languages: &[&str], command: &str, roots: &[&str]) -> Spec {
+        Spec {
+            name: command.rsplit('/').next().unwrap_or(command).to_string(),
+            command: command.to_string(),
+            args: Vec::new(),
+            languages: languages.iter().map(|name| name.to_string()).collect(),
+            roots: roots.iter().map(|marker| marker.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_configured_server_goes_in_front_of_the_built_in_one() {
+        let mut servers = Servers::default();
+        // Nothing said: the table jack ships with, if it is installed.
+        let built_in = servers.for_language("rust");
+        assert!(servers.is_empty());
+
+        // Said: in front, when it is installed.
+        servers.configure(spec(&["rust"], "/bin/sh", &["Cargo.toml"]));
+        let chosen = servers.for_language("rust").expect("the configured one");
+        assert_eq!(chosen.command, "/bin/sh");
+        assert_eq!(chosen.name, "sh", "named after the command it runs");
+
+        // A second line about the same command replaces the first rather than
+        // stacking behind it.
+        servers.configure(spec(&["rust"], "/bin/sh", &["Cargo.toml", "rust-project.json"]));
+        assert_eq!(servers.configured().len(), 1);
+        assert_eq!(servers.for_language("rust").map(|spec| spec.roots.len()), Some(2));
+
+        // Not installed: the built-in one stands, rather than nothing at all.
+        let mut servers = Servers::default();
+        servers.configure(spec(&["rust"], "/nowhere/no-such-server", &[]));
+        assert_eq!(servers.for_language("rust"), built_in);
+
+        // And a language nobody ships a server for is exactly as configurable.
+        let mut servers = Servers::default();
+        assert_eq!(servers.for_language("yaml"), None);
+        servers.configure(spec(&["yaml"], "/bin/sh", &[]));
+        assert!(servers.for_language("yaml").is_some());
+    }
+
+    #[test]
+    fn off_means_off_however_much_is_installed() {
+        let mut servers = Servers::default();
+        servers.configure(spec(&["rust"], "/bin/sh", &[]));
+        servers.silence("rust");
+        assert_eq!(servers.for_language("rust"), None, "installed and asked for, and still not");
+        assert_eq!(servers.configured(), ["rust off"]);
+
+        // Configuring one again is the way back: the two cannot both hold.
+        servers.configure(spec(&["rust"], "/bin/sh", &[]));
+        assert!(servers.for_language("rust").is_some());
+        assert_eq!(servers.configured(), ["rust /bin/sh"]);
+    }
+
+    #[test]
+    fn a_configured_server_reads_back_as_the_line_that_made_it() {
+        let mut spec = spec(&["zig"], "zls", &["build.zig", "build.zig.zon"]);
+        spec.args = vec!["--enable-debug-log".to_string()];
+        assert_eq!(spec.line(), "zig root=build.zig,build.zig.zon zls --enable-debug-log");
+        // No markers is the common case, and says nothing about them.
+        assert_eq!(self::spec(&["rust"], "ra-multiplex", &[]).line(), "rust ra-multiplex");
+    }
+
     #[test]
     fn a_root_is_the_nearest_marker_above_the_file() {
         let dir = std::env::temp_dir().join(format!("jack_lsp_root_{}", std::process::id()));
         let nested = dir.join("crate/src/deep");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(dir.join("crate/Cargo.toml"), "").unwrap();
-        let spec = &SERVERS[0];
+        let spec = &BUILT_IN[0].spec();
         assert_eq!(root_for(spec, &nested.join("x.rs")), dir.join("crate"));
         // Nothing marked: the file's own directory.
         let bare = dir.join("bare");
