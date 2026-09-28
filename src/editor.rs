@@ -3534,21 +3534,32 @@ impl Editor {
     /// character, because that is where visual mode's cursor lives.
     pub fn select_object(&mut self, object: Object, around: bool) -> bool {
         let view = self.view();
-        let found = match object {
-            // The one object that comes from the grammar rather than from
-            // the characters: `af` is the whole function, `if` its inside.
-            Object::Function => view.function_ranges(view.sel.head).map(|(whole, inside)| {
-                match around {
-                    true => whole,
-                    false => inside,
-                }
+        let at = view.sel.head;
+        // The objects that come from the grammar rather than from the
+        // characters: `af` is the whole function, `if` its inside, and the
+        // class and the argument read the same way.
+        let grammar = match object {
+            Object::Function => view.function_ranges(at),
+            Object::Class => view.class_ranges(at),
+            Object::Argument => view.argument_ranges(at),
+            _ => None,
+        };
+        let found = match object.needs_grammar() {
+            true => grammar.map(|(whole, inside)| match around {
+                true => whole,
+                false => inside,
             }),
-            _ => object::resolve(&view.doc, view.sel.head, object, around),
+            false => object::resolve(&view.doc, at, object, around),
         };
         let Some((start, end)) = found else {
-            if object == Object::Function {
+            if object.needs_grammar() {
+                let what = match object {
+                    Object::Class => "not in a class",
+                    Object::Argument => "not in an argument list",
+                    _ => "not in a function",
+                };
                 self.message = match self.view().has_grammar() {
-                    true => "not in a function".into(),
+                    true => what.into(),
                     false => "no grammar for this file".into(),
                 };
             }

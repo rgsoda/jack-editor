@@ -368,13 +368,41 @@ impl View {
     /// makes `daf` take the function's lines away rather than leaving an
     /// empty one behind, and `dif` leave the braces where they are.
     pub fn function_ranges(&self, at: usize) -> Option<((usize, usize), (usize, usize))> {
+        self.grammar_ranges(at, crate::syntax::Syntax::function_at, true)
+    }
+
+    /// The class the cursor is in, as char ranges: `ac` and `ic`. Snapped to
+    /// whole lines like a function, for the same reason.
+    pub fn class_ranges(&self, at: usize) -> Option<((usize, usize), (usize, usize))> {
+        self.grammar_ranges(at, crate::syntax::Syntax::class_at, true)
+    }
+
+    /// The argument the cursor is in, as char ranges: `aa` and `ia`. Not
+    /// snapped to lines - an argument is part of a line even when it has one
+    /// to itself, and growing it to the line would take the indentation of
+    /// the next argument with it.
+    pub fn argument_ranges(&self, at: usize) -> Option<((usize, usize), (usize, usize))> {
+        self.grammar_ranges(at, crate::syntax::Syntax::argument_at, false)
+    }
+
+    /// The shared half of the three: ask the grammar for two byte ranges and
+    /// hand them back as chars.
+    fn grammar_ranges(
+        &self,
+        at: usize,
+        ask: fn(&crate::syntax::Syntax, usize) -> Option<crate::syntax::Ranges>,
+        snap: bool,
+    ) -> Option<((usize, usize), (usize, usize))> {
         let syntax = self.syntax.as_ref()?;
         let text = &self.doc.text;
-        let (whole, inside) = syntax.function_at(text.char_to_byte(at))?;
+        let (whole, inside) = ask(syntax, text.char_to_byte(at))?;
         let chars = |range: std::ops::Range<usize>| {
             let start = text.byte_to_char(range.start.min(text.len_bytes()));
             let end = text.byte_to_char(range.end.min(text.len_bytes()));
-            self.snap_to_lines(start, end)
+            match snap {
+                true => self.snap_to_lines(start, end),
+                false => (start, end),
+            }
         };
         Some((chars(whole), chars(inside)))
     }

@@ -75,6 +75,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "d c y + i( i[ i{ i<", what: "inside the brackets (a( takes them too)", mode: "normal" },
     Binding { keys: "d c y + ip ap", what: "the paragraph, with the blank line after", mode: "normal" },
     Binding { keys: "d c y + if af", what: "the function from the grammar: its inside, or the whole of it", mode: "normal" },
+    Binding { keys: "d c y + ic ac", what: "the class, struct, impl or trait the cursor is in", mode: "normal" },
+    Binding { keys: "d c y + ia aa", what: "one argument of the call or signature; `aa` takes the comma too", mode: "normal" },
     Binding { keys: "\"x", what: "use register x (\"X appends)", mode: "normal" },
     Binding { keys: "\"+y \"+p", what: "yank to, put from the system clipboard", mode: "normal" },
     Binding { keys: ".", what: "do the last change again ({n}. counts it anew)", mode: "normal" },
@@ -123,6 +125,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "/ ? n N *", what: "search: the selection grows to the match", mode: "visual" },
     Binding { keys: "iw i\" i( ip ...", what: "select a text object (a for around)", mode: "visual" },
     Binding { keys: "if af", what: "select the function the cursor is in", mode: "visual" },
+    Binding { keys: "ic ac ia aa", what: "select the class, or one argument, from the grammar", mode: "visual" },
     Binding { keys: "v V", what: "characters, lines, or back to normal", mode: "visual" },
     Binding { keys: "d x", what: "delete the selection", mode: "visual" },
     Binding { keys: "J", what: "join the selected lines", mode: "visual" },
@@ -2679,6 +2682,65 @@ mod tests {
         // And an operator over it does what the same keys did in normal mode.
         vim.press("y");
         assert!(vim.editor.registers.get(None).text.starts_with("fn one()"));
+    }
+
+    #[test]
+    fn ac_is_the_class_the_cursor_is_in_and_ic_is_the_inside_of_it() {
+        let code = "struct S {\n    a: u8,\n}\n\nfn after() {}\n";
+        let mut vim = Vim::rust(code);
+        vim.at(2, 5).press("dac");
+        assert_eq!(vim.text(), "\nfn after() {}\n");
+
+        let mut vim = Vim::rust(code);
+        vim.at(2, 5).press("dic");
+        assert_eq!(vim.text(), "struct S {\n}\n\nfn after() {}\n");
+
+        // An `impl` block is what a method's class is, and from inside a
+        // method `ac` is the block rather than the method.
+        let method = "impl T {\n    fn a(&self) {\n        1\n    }\n}\n";
+        let mut vim = Vim::rust(method);
+        vim.at(3, 9).press("dic");
+        assert_eq!(vim.text(), "impl T {\n}\n");
+
+        // On the keyword itself, not only inside the body: the keyword is a
+        // token whose kind is the word, which is not a class of its own.
+        let mut vim = Vim::rust(code);
+        vim.at(1, 1).press("dac");
+        assert_eq!(vim.text(), "\nfn after() {}\n");
+
+        // Outside one, it says so rather than taking something nearby.
+        let mut vim = Vim::rust("fn one() {\n    1\n}\n");
+        vim.at(2, 5).press("dac");
+        assert_eq!(vim.text(), "fn one() {\n    1\n}\n");
+        assert_eq!(vim.editor.message, "not in a class");
+    }
+
+    #[test]
+    fn aa_is_one_argument_with_its_comma_and_ia_is_the_argument() {
+        // In the middle: the comma after it goes, and so does the space, so
+        // what is left is still a list.
+        let mut vim = Vim::rust("fn main() {\n    f(one, two, three);\n}\n");
+        vim.at(2, 12).press("daa");
+        assert_eq!(vim.text(), "fn main() {\n    f(one, three);\n}\n");
+
+        // `ia` leaves the commas where they are.
+        let mut vim = Vim::rust("fn main() {\n    f(one, two, three);\n}\n");
+        vim.at(2, 12).press("dia");
+        assert_eq!(vim.text(), "fn main() {\n    f(one, , three);\n}\n");
+
+        // The last one takes the comma in front of it instead.
+        let mut vim = Vim::rust("fn main() {\n    f(one, two);\n}\n");
+        vim.at(2, 12).press("daa");
+        assert_eq!(vim.text(), "fn main() {\n    f(one);\n}\n");
+
+        // A parameter in a signature is an argument too.
+        let mut vim = Vim::rust("fn f(a: u8, b: u8) {}\n");
+        vim.at(1, 6).press("daa");
+        assert_eq!(vim.text(), "fn f(b: u8) {}\n");
+
+        let mut vim = Vim::rust("fn main() {\n    let a = 1;\n}\n");
+        vim.at(2, 9).press("daa");
+        assert_eq!(vim.editor.message, "not in an argument list");
     }
 
     #[test]

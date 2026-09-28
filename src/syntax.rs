@@ -1224,6 +1224,10 @@ fn scope_of(root: Node, id: usize, start: usize, scopes: &HashSet<usize>) -> Opt
     Some(root.id())
 }
 
+/// A thing the grammar names and the inside of it: what `af`, `ac` and `aa`
+/// select, and what `if`, `ic` and `ia` select.
+pub type Ranges = (Range<usize>, Range<usize>);
+
 /// The byte range of the top-level item holding `at` - the function, `impl`
 /// or `mod` that a binding in scope has to be inside.
 impl Syntax {
@@ -1251,12 +1255,12 @@ impl Syntax {
     /// The function the cursor is in, and the inside of it: what `af` and
     /// `if` select. The nearest one rather than the outermost, so `af` on a
     /// method is the method and not the `impl` block it is in.
-    pub fn function_at(&self, at: usize) -> Option<(Range<usize>, Range<usize>)> {
+    pub fn function_at(&self, at: usize) -> Option<Ranges> {
         let root = self.tree.root_node();
         let end = (at + 1).min(root.end_byte());
         let mut node = root.descendant_for_byte_range(at, end)?;
         loop {
-            if is_function(node.kind()) {
+            if node.is_named() && is_function(node.kind()) {
                 let whole = node.byte_range();
                 let inside = node.child_by_field_name("body").map_or(whole.clone(), inside_body);
                 return Some((whole, inside));
@@ -1264,6 +1268,136 @@ impl Syntax {
             node = node.parent()?;
         }
     }
+
+    /// The class the cursor is in, and the inside of it: what `ac` and `ic`
+    /// select. A class in the wide sense - whatever a language calls the
+    /// thing a method lives in, which for Rust is an `impl` block and for Go
+    /// a type. The nearest one, so `ac` inside a nested class is the nested
+    /// one.
+    pub fn class_at(&self, at: usize) -> Option<Ranges> {
+        self.enclosing(at, is_class)
+    }
+
+    /// The nearest node the cursor is in whose kind `wanted` accepts, as the
+    /// whole of it and the inside of its body. Behind `af` and `ac`, which
+    /// differ only in what counts.
+    fn enclosing(
+        &self,
+        at: usize,
+        wanted: fn(&str) -> bool,
+    ) -> Option<Ranges> {
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(at, end)?;
+        loop {
+            // Named nodes only: the keyword that starts a class is a token
+            // whose kind is the keyword, and `struct` contains "struct".
+            if node.is_named() && wanted(node.kind()) {
+                let whole = node.byte_range();
+                let inside = node
+                    .child_by_field_name("body")
+                    .map_or_else(|| braced_child(node).unwrap_or(whole.clone()), inside_body);
+                return Some((whole, inside));
+            }
+            node = node.parent()?;
+        }
+    }
+
+    /// The argument the cursor is in: `ia` is the argument itself, `aa` takes
+    /// the comma with it. The list is whatever the grammar calls a run of
+    /// things between brackets - arguments, parameters, and the type
+    /// parameters that are spelled the same way.
+    pub fn argument_at(&self, at: usize) -> Option<Ranges> {
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(at, end)?;
+        let list = loop {
+            if node.is_named() && is_list(node.kind()) && encloses(node) {
+                break node;
+            }
+            node = node.parent()?;
+        };
+
+        let mut cursor = list.walk();
+        let parts: Vec<Node> = list
+            .children(&mut cursor)
+            .filter(|child| !matches!(child.kind(), "(" | ")" | "[" | "]" | "<" | ">" | "|"))
+            .collect();
+        let commas: Vec<Range<usize>> = parts
+            .iter()
+            .filter(|child| child.kind() == ",")
+            .map(Node::byte_range)
+            .collect();
+        let items: Vec<Range<usize>> = parts
+            .iter()
+            .filter(|child| child.kind() != ",")
+            .map(Node::byte_range)
+            .collect();
+
+        // The argument the cursor is in, else the next one along: on a comma
+        // or in the space after it, the one it is pointing at.
+        let which = items
+            .iter()
+            .position(|item| item.contains(&at) || item.start > at)?;
+        let inside = items[which].clone();
+
+        // `aa` is the argument and one comma: the one after it, with the
+        // space that follows, unless it is the last - then the one before,
+        // so that what is left is still a list.
+        let after = commas.iter().find(|comma| comma.start >= inside.end);
+        let before = commas.iter().rev().find(|comma| comma.end <= inside.start);
+        let whole = match (after, before) {
+            (Some(comma), _) => inside.start..next_start(&items, which).unwrap_or(comma.end),
+            (None, Some(comma)) => comma.start..inside.end,
+            (None, None) => inside.clone(),
+        };
+        Some((whole, inside))
+    }
+}
+
+/// Where the argument after this one begins, so that `daa` takes the space
+/// between them along with the comma.
+fn next_start(items: &[Range<usize>], which: usize) -> Option<usize> {
+    items.get(which + 1).map(|item| item.start)
+}
+
+/// Whether a node is a class in the wide sense: the thing methods live in.
+/// Read from the kind's name for the same reason `is_function` is - every
+/// grammar spells it `class_declaration`, `struct_item`, `impl_item`,
+/// `trait_item`, `enum_declaration` or `interface_declaration`.
+fn is_class(kind: &str) -> bool {
+    ["class", "struct", "impl", "trait", "enum", "interface", "object"]
+        .iter()
+        .any(|word| kind.contains(word))
+}
+
+/// Whether a node is a list of arguments, parameters or the type parameters
+/// spelled like them. `tuple` is in because a tuple's elements are a list in
+/// every way that matters to `daa`.
+fn is_list(kind: &str) -> bool {
+    kind.contains("argument") || kind.contains("parameter") || kind.contains("tuple")
+}
+
+/// Whether the node is the list itself rather than one thing in it: the list
+/// has the brackets. Rust calls one parameter a `parameter`, so the name is
+/// not enough to tell a list from its contents.
+fn encloses(node: Node) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .next()
+        .is_some_and(|child| matches!(child.kind(), "(" | "[" | "<" | "|"))
+}
+
+/// The braces a node holds directly, for a class whose grammar gives its body
+/// no field name: Rust's `impl` block is a `declaration_list` child.
+fn braced_child(node: Node) -> Option<Range<usize>> {
+    let mut cursor = node.walk();
+    let children: Vec<Node> = node.children(&mut cursor).collect();
+    children
+        .iter()
+        .rev()
+        .find(|child| child.kind().ends_with("_list") || child.kind() == "block")
+        .map(|child| inside_body(*child))
 }
 
 /// Whether a bracket opens or closes, as the grammar spells the token.

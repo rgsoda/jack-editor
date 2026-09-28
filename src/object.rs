@@ -15,10 +15,23 @@ pub enum Object {
     Pair(char, char),
     /// Lines up to the next blank one.
     Paragraph,
-    /// The function the cursor is in, from the grammar. The only object that
-    /// needs one, and so the only one this module cannot resolve on its own:
-    /// the editor asks the view's syntax tree instead.
+    /// The function the cursor is in, from the grammar. The objects below
+    /// need one too, and so are the ones this module cannot resolve on its
+    /// own: the editor asks the view's syntax tree instead.
     Function,
+    /// The class the cursor is in - or the struct, the `impl` block, the
+    /// trait: whatever the language calls the thing methods live in.
+    Class,
+    /// One argument of the call or the signature the cursor is in, with its
+    /// comma for `aa`.
+    Argument,
+}
+
+impl Object {
+    /// Whether resolving this one needs the grammar.
+    pub fn needs_grammar(self) -> bool {
+        matches!(self, Object::Function | Object::Class | Object::Argument)
+    }
 }
 
 /// Which object a key names. `b` and `B` are vim's aliases for the round and
@@ -36,6 +49,8 @@ pub fn from_key(key: char) -> Option<Object> {
         // `f` here is not the find-a-character motion: after `di` or `va`
         // the next key names an object, and nothing else is spelled `f`.
         'f' | 'm' => Object::Function,
+        'c' => Object::Class,
+        'a' => Object::Argument,
         _ => return None,
     })
 }
@@ -49,8 +64,8 @@ pub fn resolve(doc: &Document, at: usize, object: Object, around: bool) -> Optio
         Object::Quote(quote) => quoted(doc, at, quote, around),
         Object::Pair(open, close) => pair(doc, at, open, close, around),
         Object::Paragraph => paragraph(doc, at, around),
-        // Needs the grammar, which is the editor's to hand over.
-        Object::Function => None,
+        // Need the grammar, which is the editor's to hand over.
+        Object::Function | Object::Class | Object::Argument => None,
     }
 }
 
