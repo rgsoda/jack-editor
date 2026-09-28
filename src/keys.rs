@@ -46,6 +46,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
     Binding { keys: "{ }", what: "paragraph back, forward (d} y{ too)", mode: "normal" },
+    Binding { keys: "^n", what: "a cursor on the word, then on the next use of it, and the next", mode: "normal" },
+    Binding { keys: "c d x", what: "with more than one cursor: at every one of them", mode: "normal" },
+    Binding { keys: "gm gs", what: "cursors: one per line of the selection, or one at every search match in it", mode: "visual" },
     Binding { keys: "za zc zo", what: "fold what the cursor is in, or open it again", mode: "normal" },
     Binding { keys: "zM zR", what: "close every fold in the file, or open them all", mode: "normal" },
     Binding { keys: "zz zt zb", what: "this line to the middle, top, bottom", mode: "normal" },
@@ -621,8 +624,26 @@ impl Keys {
             self.count = None;
             self.pending = None;
             self.register = None;
+            editor.clear_cursors();
             editor.clear_search_highlight();
             return;
+        }
+
+        // With more than one cursor, the keys that change what each of them
+        // is on go to all of them; everything else is the one command it
+        // always was, at the cursor the terminal's is on.
+        if editor.has_cursors() && self.pending.is_none() {
+            match key.code {
+                KeyCode::Char('d') | KeyCode::Char('x') if !ctrl => {
+                    editor.delete_at_cursors();
+                    return;
+                }
+                KeyCode::Char('c') | KeyCode::Char('s') if !ctrl => {
+                    editor.change_at_cursors();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         if self.prefix(key, ctrl) {
@@ -941,6 +962,10 @@ impl Keys {
                 // The selection is what the server is asked about, so this is
                 // the one `g` command worth having in visual mode too.
                 KeyCode::Char('a') => editor.code_actions(),
+                // Cursors out of the selection: one per line, or one at every
+                // match of the last search inside it.
+                KeyCode::Char('m') => editor.cursors_on_lines(),
+                KeyCode::Char('s') => editor.cursors_on_search(),
                 _ => {}
             }
             self.finish();
@@ -1257,6 +1282,12 @@ impl Keys {
             KeyCode::Char('r') if !ctrl => {
                 self.pending = Some(Pending::Replace);
             }
+
+            // `^n` makes cursors: the word under this one, and then the next
+            // place it is used, and the next. With `:set emacs` this key is
+            // down-a-line, as `^b` is back-a-character there, and `gm` and
+            // `gs` are the other two ways to make them.
+            KeyCode::Char('n') if ctrl && !editor.emacs => editor.add_cursor_at_next_match(),
 
             KeyCode::Char(':') => editor.open_command(),
             KeyCode::Char('/') => editor.open_search(false),
@@ -1798,11 +1829,14 @@ fn insert(editor: &mut Editor, key: KeyEvent, ctrl: bool) {
         KeyCode::Char('t') if ctrl => editor.shift_current_line(true),
         KeyCode::Char('d') if ctrl => editor.shift_current_line(false),
         KeyCode::Esc => editor.set_mode(Mode::Normal),
-        KeyCode::Char(c) if !ctrl && !alt => editor.type_char(c),
-        KeyCode::Enter => editor.enter(),
-        KeyCode::Tab => editor.insert_tab(),
-        KeyCode::Backspace => editor.backspace(),
-        KeyCode::Delete => editor.delete_forward(),
+        // The five keys that change the text go to every cursor there is,
+        // which is all multiple cursors are for. The rest - moving about,
+        // the clipboard, the completion popup - stay about the one.
+        KeyCode::Char(c) if !ctrl && !alt => editor.at_every_cursor(|editor| editor.type_char(c)),
+        KeyCode::Enter => editor.at_every_cursor(Editor::enter),
+        KeyCode::Tab => editor.at_every_cursor(Editor::insert_tab),
+        KeyCode::Backspace => editor.at_every_cursor(Editor::backspace),
+        KeyCode::Delete => editor.at_every_cursor(Editor::delete_forward),
         KeyCode::Left => editor.move_cursor(Move::Left, extend),
         KeyCode::Right => editor.move_cursor(Move::Right, extend),
         KeyCode::Up => editor.move_cursor(Move::Up, extend),
@@ -1896,6 +1930,7 @@ mod tests {
                         "esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                         "cr" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                         "bs" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                        "del" => KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
                         "tab" => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
                         "space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
                         // `<<` would otherwise read as the start of a key name.
@@ -2690,6 +2725,65 @@ mod tests {
         // And an operator over it does what the same keys did in normal mode.
         vim.press("y");
         assert!(vim.editor.registers.get(None).text.starts_with("fn one()"));
+    }
+
+    #[test]
+    fn control_n_puts_a_cursor_on_the_next_use_of_the_word() {
+        let mut vim = Vim::new("count = 1\ncounted = count\nother = count\n");
+        // The first press is the word itself; the ones after it are the
+        // other places it is used, whole words only.
+        vim.at(1, 1).press("<C-n>");
+        assert!(vim.editor.view().extra.is_empty());
+        assert_eq!(vim.editor.view().sel.range(), (0, 5));
+
+        vim.press("<C-n>");
+        assert_eq!(vim.editor.view().extra.len(), 1);
+        vim.press("<C-n>");
+        assert_eq!(vim.editor.view().extra.len(), 2);
+        assert_eq!(vim.editor.message, "3 cursors - esc for one again");
+
+        // `c` changes all of them, and typing goes in at each.
+        vim.press("ctotal");
+        assert_eq!(vim.text(), "total = 1\ncounted = total\nother = total\n");
+
+        // `esc` puts them away.
+        vim.press("<esc><esc>");
+        assert!(!vim.editor.has_cursors());
+    }
+
+    #[test]
+    fn typing_backspacing_and_deleting_reach_every_cursor() {
+        let mut vim = Vim::new("a = 1\nb = 1\nc = 1\n");
+        vim.at(1, 1).press("Vjjgm");
+        assert_eq!(vim.editor.view().extra.len(), 2, "one cursor per line: {}", vim.editor.message);
+
+        vim.press("ilet ");
+        assert_eq!(vim.text(), "let a = 1\nlet b = 1\nlet c = 1\n");
+        vim.press("<bs><bs>");
+        assert_eq!(vim.text(), "lea = 1\nleb = 1\nlec = 1\n");
+        vim.press("<del>");
+        assert_eq!(vim.text(), "le = 1\nle = 1\nle = 1\n");
+
+        // One insert is one undo, in every place it happened in: the rule
+        // is vim's, and the cursors do not change it.
+        vim.press("<esc>u");
+        assert_eq!(vim.text(), "a = 1\nb = 1\nc = 1\n");
+    }
+
+    #[test]
+    fn gs_puts_a_cursor_at_every_match_of_the_search_in_the_selection() {
+        let mut vim = Vim::new("one two one\none two one\nlast one\n");
+        vim.press("/one<cr>");
+        vim.at(1, 1).press("Vj");
+        vim.press("gs");
+        assert_eq!(vim.editor.view().extra.len(), 3, "four in two lines");
+        vim.press("cX");
+        assert_eq!(vim.text(), "X two X\nX two X\nlast one\n");
+
+        // Nothing to split on says so rather than doing something else.
+        let mut vim = Vim::new("a\nb\n");
+        vim.press("Vjgs");
+        assert_eq!(vim.editor.message, "no search to split on");
     }
 
     #[test]

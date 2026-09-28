@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 74: folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 75: more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -138,6 +138,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^d` `^u`, page up/down | scroll |
 | `{` `}` | paragraph back / forward — motions, so `d}` and `y{` work |
 | `zz` `zt` `zb` | this line to the middle / top / bottom of the screen |
+| `^n` | a cursor on the word under this one, then on the next use of it |
+| `gm` `gs` | over a selection: a cursor per line, or one at every search match in it |
 | `za` `zc` `zo` | fold what the cursor is in, from the grammar, or open it again |
 | `zM` `zR` | close every fold in the file / open them all |
 | `H` `M` `L` | top / middle / bottom line of the screen (`3H`, `dL`) |
@@ -425,6 +427,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   Zero padding and a leading `-` are the whole of the difficulty.
 - `link.rs` — `gx`: where a link under the cursor starts and ends, which is
   mostly the question of which trailing punctuation belongs to the prose.
+- `editor/cursors.rs` — more than one cursor: where the others are, and how
+  one keystroke reaches all of them. Every command in it is the one-cursor
+  command, run once per cursor from the bottom of the buffer up.
 - `fold.rs` — which lines a closed fold hides, where they went after an
   edit, and how many drawn rows there are between two lines. Lines only: what
   is foldable comes from the grammar and the drawing is the screen's.
@@ -1955,6 +1960,41 @@ Read out of `.git/HEAD` rather than by running git, because it is looked at a
 second after every keystroke and a process per second to draw six characters is
 not a trade worth making. A detached head shows the commit short, as git does.
 `:set nobranch` if you would rather not.
+
+## More than one cursor
+
+`^n` puts a cursor on the word under the cursor; press it again and the next
+place that word is used gets one too, and again for the one after that. Then
+`c` changes all of them at once and what you type goes in at every cursor as
+you type it. `d` deletes what each one is on, `x` takes a character from each,
+and `esc` puts them away.
+
+Two other ways to make them, both over a selection: `gm` puts one on every line
+of it — at the first non-blank, or at the block's own column when the selection
+is a rectangle — and `gs` puts one at every match of the last search inside it.
+`/fn <cr>`, then a selection, then `gs`, and you are on every `fn` in those
+lines.
+
+None of this is a second editing engine. The view already carries positions
+through edits — a diagnostic stays on its word while you type above it — and
+the other cursors are carried exactly the same way. So a keystroke does not
+have to work out where anything ends up: it runs the ordinary command at each
+cursor in turn, from the bottom of the buffer upwards, and the edits below
+carry the cursors above along as they land. `at_every_cursor` is twenty lines,
+and autopairs, autoindent, `:set expandtab` and the rest work at every cursor
+without knowing there is more than one.
+
+What reaches all the cursors is the set of keys that change what each cursor is
+on: typing, `enter`, `tab`, `backspace`, `delete`, and `c`, `d` and `x` in
+normal mode. Everything else — moving about, the pickers, `:` commands, undo —
+is the one command it always was, at the cursor the terminal's is on. That is a
+line drawn on purpose rather than a stopping point: a `}` motion at eight
+cursors is eight jumps to nowhere in particular, and an editor that quietly
+does it is one you cannot predict.
+
+One insert is one undo, in every place it happened in, which is vim's rule
+already. With `:set emacs`, `^n` is down-a-line, as `^b` is back-a-character
+there — `gm` and `gs` are the other two ways in.
 
 ## Folding
 

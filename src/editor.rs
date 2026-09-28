@@ -27,6 +27,7 @@ use crate::view::{self, Find, Indent, Move, Reveal, Screen, Selection, TAB_WIDTH
 use crate::window::{self, Direction, Layout, Rect, Window};
 
 mod block;
+mod cursors;
 mod git;
 pub(crate) mod hits;
 pub(crate) mod listing;

@@ -111,6 +111,9 @@
 # `:set cursorword`: the other uses of the word the cursor is on. Underlined
 # rather than coloured, so it reads over whatever the grammar made of them.
 "ui.cursorword" = { underline = true }
+# `^n`, `gm`, `gs`: the cursors that are not the terminal's own. Reversed,
+# because a second cursor has to read as a cursor rather than as a selection.
+"ui.cursor.other" = { reverse = true }
 # A closed fold's count, on the line it leaves showing.
 "ui.fold" = { fg = "#6272a4", italic = true }
 # `:set list`: the arrow a tab becomes and the dot a trailing space becomes.

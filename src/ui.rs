@@ -139,6 +139,20 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     // glance rather than counted.
     let brackets = editor.bracket_pair().filter(|_| focused);
 
+    // The cursors that are not the terminal's own, each at least one
+    // character wide so that an empty one can still be seen.
+    let cursors: Vec<(usize, usize)> = match focused {
+        true => view
+            .extra
+            .iter()
+            .map(|sel| {
+                let (start, end) = sel.range();
+                (start, end.max(start + 1))
+            })
+            .collect(),
+        false => Vec::new(),
+    };
+
     let selection = editor.selection_range().filter(|_| focused);
     let (sel_start, sel_end) = selection.unwrap_or((0, 0));
     // A block is not one range but one per line, so it is carried alongside
@@ -189,6 +203,8 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         words: &words,
         word_style: editor.theme.style("ui.cursorword"),
         whitespace: editor.show_whitespace.then(|| editor.theme.style("ui.whitespace")),
+        cursors: &cursors,
+        cursor_style: editor.theme.style("ui.cursor.other"),
     };
 
     // Wrapped, a line takes as many rows as it needs and nothing scrolls
@@ -741,6 +757,10 @@ struct LineStyling<'a> {
     word_style: Style,
     /// How to draw a tab and a trailing space, under `:set list`.
     whitespace: Option<Style>,
+    /// The other cursors, as absolute character ranges. A cursor with nothing
+    /// selected is one character wide, so that it can be seen at all.
+    cursors: &'a [(usize, usize)],
+    cursor_style: Style,
 }
 
 /// `style` over the cursor line's tint, when this row has one. The tint is a
@@ -844,6 +864,11 @@ fn draw_line(surface: &mut Surface, line: Row, styling: &LineStyling) {
         }
         if sel.is_some_and(|(s, e)| char_idx >= s && char_idx < e) {
             style = style.patch(styling.selection);
+        }
+        // The other cursors last: the one thing that has to be visible over
+        // everything else is where typing will go.
+        if styling.cursors.iter().any(|&(s, e)| at >= s && at < e) {
+            style = style.patch(styling.cursor_style);
         }
         let visible_start = start.max(scroll_left);
         let visible_width = end.min(right) - visible_start;

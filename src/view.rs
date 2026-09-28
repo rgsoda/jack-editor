@@ -56,7 +56,7 @@ const SCROLLOFF: usize = 3;
 ///
 /// Every command operates on a `Selection`, so growing this into a
 /// `Vec<Selection>` for multi-cursor later is mechanical rather than a rewrite.
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub anchor: usize,
     pub head: usize,
@@ -217,6 +217,11 @@ pub struct View {
     /// behind. The history's depth cannot say, since undo takes it back down.
     edits: u64,
     pub lsp: Lsp,
+    /// The other cursors, when there are any: a selection each, sorted by
+    /// where they start, and the one the terminal's cursor is on is not among
+    /// them. Carried through edits like diagnostics, so an edit at one of
+    /// them moves the rest.
+    pub extra: Vec<Selection>,
     /// The folds that are closed, by line. Kept rather than worked out again
     /// each frame: which folds are closed is something you did, not something
     /// the file says.
@@ -300,6 +305,7 @@ impl View {
             hunks_revision: None,
             signs_revision: None,
             centre: false,
+            extra: Vec::new(),
             folds: crate::fold::Folds::default(),
         }
     }
@@ -1689,7 +1695,7 @@ impl View {
                 shift += change.inserted.chars().count() as isize - change.removed.chars().count() as isize;
             }
         }
-        if !self.watched && self.diagnostics.is_empty() && self.hints.is_empty() {
+        if !self.watched && self.diagnostics.is_empty() && self.hints.is_empty() && self.extra.is_empty() {
             return;
         }
         // In the coordinates of the text as each change found it, which is how
@@ -1707,6 +1713,12 @@ impl View {
             }
             for hint in &mut self.hints {
                 hint.at = carry_one(hint.at, pos, removed, inserted);
+            }
+            // The other cursors, so that typing at one of them moves the rest
+            // along: this is the whole of what keeps them in the right places.
+            for cursor in &mut self.extra {
+                cursor.anchor = carry_one(cursor.anchor, pos, removed, inserted);
+                cursor.head = carry_one(cursor.head, pos, removed, inserted);
             }
             shift += inserted as isize - removed as isize;
         }
