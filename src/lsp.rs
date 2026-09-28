@@ -122,6 +122,41 @@ const BUILT_IN: &[Builtin] = &[
         languages: &["javascript"],
         roots: &["package.json", "tsconfig.json", "jsconfig.json"],
     },
+    // The two servers VS Code's own HTML and CSS support was extracted into.
+    // They are packaged under two spellings - `vscode-html-language-server`
+    // from npm's `vscode-langservers-extracted`, `vscode-html-languageserver`
+    // from a distribution - and neither is more right than the other, so both
+    // are here and whichever is installed is the one that runs. `--stdio` is
+    // not optional for either: without it they wait on a socket nobody is
+    // going to connect to.
+    Builtin {
+        name: "vscode-html-language-server",
+        command: "vscode-html-language-server",
+        args: &["--stdio"],
+        languages: &["html"],
+        roots: &["package.json"],
+    },
+    Builtin {
+        name: "vscode-html-languageserver",
+        command: "vscode-html-languageserver",
+        args: &["--stdio"],
+        languages: &["html"],
+        roots: &["package.json"],
+    },
+    Builtin {
+        name: "vscode-css-language-server",
+        command: "vscode-css-language-server",
+        args: &["--stdio"],
+        languages: &["css"],
+        roots: &["package.json"],
+    },
+    Builtin {
+        name: "vscode-css-languageserver",
+        command: "vscode-css-languageserver",
+        args: &["--stdio"],
+        languages: &["css"],
+        roots: &["package.json"],
+    },
 ];
 
 /// The servers jack will start: what the config file said, and then what it
@@ -1511,6 +1546,28 @@ pub(crate) mod tests {
             languages: languages.iter().map(|name| name.to_string()).collect(),
             roots: roots.iter().map(|marker| marker.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn every_built_in_server_is_keyed_to_a_language_jack_has_a_grammar_for() {
+        // A server keyed to a name no grammar answers to would never start,
+        // and nothing would ever say why - which is the rule `:server`
+        // enforces for what you type, and the table has to keep too.
+        for builtin in BUILT_IN {
+            for language in builtin.languages {
+                assert!(
+                    crate::syntax::language_named(language).is_some(),
+                    "{} is keyed to {language}, which is not a grammar",
+                    builtin.name,
+                );
+            }
+        }
+
+        // The languages the table covers, so that dropping one is deliberate.
+        let mut covered: Vec<&str> = BUILT_IN.iter().flat_map(|one| one.languages).copied().collect();
+        covered.sort_unstable();
+        covered.dedup();
+        assert_eq!(covered, ["c", "cpp", "css", "go", "html", "javascript", "python", "rust"]);
     }
 
     #[test]

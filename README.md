@@ -1798,7 +1798,7 @@ one.
 
 Open a file that has a language server installed and jack starts it, in the
 project the file belongs to - the nearest `Cargo.toml`, `go.mod`,
-`pyproject.toml` or the like above it, else the repository. One server per
+`pyproject.toml`, `package.json` or the like above it, else the repository. One server per
 project, shared by every file in it. Nothing to configure; `:set nolsp` in the
 config file if you would rather not.
 
@@ -1809,6 +1809,18 @@ config file if you would rather not.
 | Go | `gopls` |
 | Python | `pyright-langserver`, else `pylsp` |
 | JavaScript | `typescript-language-server` |
+| HTML | `vscode-html-language-server`, else `vscode-html-languageserver` |
+| CSS | `vscode-css-language-server`, else `vscode-css-languageserver` |
+
+Two of those languages are listed twice because the same server is packaged
+under two names: `vscode-html-language-server` is what npm's
+`vscode-langservers-extracted` installs, `vscode-html-languageserver` is what a
+distribution's package installs, and neither is more right than the other. The
+rule for two entries is the rule it always was — the first one installed wins —
+so both spellings are in the table and whichever you have is the one that runs.
+Inside an HTML file, `<script>` and `<style>` are highlighted and indented as
+JavaScript and CSS, but the server keyed to the buffer is the HTML one: the
+injected regions do not get a server of their own.
 
 What it gives you, so far:
 
