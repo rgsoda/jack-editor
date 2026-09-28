@@ -76,6 +76,12 @@ const DISK_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 /// which is about as narrow as prose stays readable.
 const PREVIEW_NEEDS: usize = 60;
 
+/// Whether a config line is a setting, which is all a `[language]` section
+/// may hold: `set`, and `setw`, which is `set` and then writes it down.
+fn is_set(line: &str) -> bool {
+    matches!(line.split_whitespace().next(), Some("set" | "setw" | "se"))
+}
+
 pub struct Prompt {
     pub kind: PromptKind,
     pub line: Line,
@@ -464,6 +470,10 @@ pub struct Editor {
     /// git, because it is read a second after every keystroke.
     pub show_branch: bool,
     pub branch: Option<String>,
+    /// `:set noeditorconfig`: stop reading the project's `.editorconfig`.
+    /// On, because a file that says what the project agreed on is worth more
+    /// than a default, and off is for the day it says something wrong.
+    pub editorconfig: bool,
     /// `gx`: what opens a link here. Empty means the platform's own - `open`
     /// on macOS, `xdg-open` everywhere else.
     pub opener: String,
@@ -537,6 +547,16 @@ pub struct Editor {
     /// The `:` lines and the search patterns typed before, oldest first. Two
     /// lists rather than one: `/` is looking for a pattern and `:` for a
     /// command, and a list with both in is a list with the wrong half in.
+    /// The `set` lines of the config file, and the ones under a `[language]`
+    /// heading, kept so that they can be applied again when you move to a
+    /// buffer of another language.
+    base_sets: Vec<String>,
+    language_sets: BTreeMap<String, Vec<String>>,
+    /// The `set` lines that put back whatever a `[language]` section changed
+    /// and the base says nothing about.
+    language_defaults: Vec<String>,
+    /// The language whose settings are the ones in force.
+    settings_language: Option<String>,
     pub commands: History,
     pub searches: History,
     /// Where the two lists are kept between runs.
@@ -744,6 +764,7 @@ impl Editor {
             server_specs: crate::lsp::Servers::default(),
             show_whitespace: false,
             cursorword: false,
+            editorconfig: true,
             show_branch: true,
             branch: None,
             opener: String::new(),
@@ -796,6 +817,10 @@ impl Editor {
             leader: BTreeMap::new(),
             disk_checked: None,
             positions: Default::default(),
+            base_sets: Vec::new(),
+            language_sets: BTreeMap::new(),
+            language_defaults: Vec::new(),
+            settings_language: None,
             commands: History::default(),
             searches: History::default(),
             history_store: None,
@@ -836,11 +861,52 @@ impl Editor {
         }
     }
 
+    /// How wide a line may be here: what the project's `.editorconfig` said
+    /// about this file, else `:set textwidth`.
+    pub fn textwidth_here(&self) -> usize {
+        self.view().textwidth.unwrap_or(self.textwidth)
+    }
+
+    /// Whether writing this file trims the trailing whitespace, the same way
+    /// round: the file's own answer first.
+    pub fn trims_here(&self) -> bool {
+        self.view().trim.unwrap_or(self.trim_on_save)
+    }
+
+    /// What the project's `.editorconfig` files say about the file this view
+    /// holds. Read once, when the buffer is opened: it is a file on disk like
+    /// any other, and re-reading it on every keystroke would be a syscall per
+    /// keystroke for an answer that does not change.
+    fn apply_editorconfig(&mut self, index: usize) {
+        if !self.editorconfig {
+            return;
+        }
+        let Some(path) = self.views[index].doc.path.clone() else {
+            return;
+        };
+        let path = path.canonicalize().unwrap_or(path);
+        let found = crate::editorconfig::for_path(&path);
+        if found.is_empty() {
+            return;
+        }
+        let view = &mut self.views[index];
+        // The file's own indentation still wins over the project's statement
+        // about it only where the project says nothing: a `.editorconfig` is
+        // what the project agreed on, and a file that disagrees with it is
+        // usually the one being fixed.
+        if let Some(indent) = found.indent {
+            view.indent = Some(indent);
+        }
+        view.textwidth = found.textwidth;
+        view.trim = found.trim;
+    }
+
     fn attach_syntax(&mut self, index: usize) {
         let Editor { views, theme, message, .. } = self;
         if let Some(warning) = views[index].attach_syntax(theme) {
             *message = warning;
         }
+        self.apply_editorconfig(index);
     }
 
     // --- search -------------------------------------------------------
@@ -1408,16 +1474,114 @@ impl Editor {
         // ignore what was read out of the files already open. A `:set` typed
         // by hand is the opposite, and still wins.
         self.from_config = true;
+        self.base_sets.clear();
+        self.language_sets.clear();
+        // Which `[language]` section the lines belong to, once one has begun.
+        let mut section: Option<String> = None;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim().trim_start_matches(':');
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            self.run_command(line);
-            if !self.message.is_empty() {
-                self.message = format!("init line {}: {}", number + 1, self.message);
+            let complain = |editor: &mut Editor, what: String| {
+                editor.message = format!("init line {}: {}", number + 1, what);
+            };
+
+            // `[rust]` and everything under it is for rust files only.
+            if let Some(name) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+                let name = name.trim().to_lowercase();
+                if crate::syntax::language_named(&name).is_none() {
+                    complain(self, format!("no grammar called {name}"));
+                    break;
+                }
+                section = Some(name);
+                continue;
+            }
+
+            let Some(language) = section.as_deref() else {
+                // Before any section: the settings everything starts from,
+                // and any other command, which runs once as it always has.
+                if is_set(line) {
+                    self.base_sets.push(line.to_string());
+                }
+                self.run_command(line);
+                if !self.message.is_empty() {
+                    let said = std::mem::take(&mut self.message);
+                    complain(self, said);
+                    break;
+                }
+                continue;
+            };
+
+            // Inside one: settings only. A `hook` or a `server` under a
+            // language heading would be registered again every time you
+            // moved between buffers, which is not what the heading says.
+            if !is_set(line) {
+                complain(self, format!("only `set` lines belong under [{language}]"));
                 break;
             }
+            self.language_sets.entry(language.to_string()).or_default().push(line.to_string());
+        }
+        self.from_config = false;
+        // What one language sets, another has to have put back. An option a
+        // section mentions is one whose value depends on the language, so
+        // unless the base already says what it is, jack's own default is what
+        // it goes back to on the way out of that language.
+        self.language_defaults.clear();
+        let mentioned: Vec<String> = self.language_sets.values().flatten().cloned().collect();
+        for line in mentioned {
+            for word in line.split_whitespace().skip(1) {
+                let Some(restore) = command::default_for(word) else {
+                    continue;
+                };
+                let name = restore.split_whitespace().nth(1).unwrap_or_default().to_string();
+                let covered = |line: &String| {
+                    line.split_whitespace().skip(1).any(|written| {
+                        command::default_for(written).as_deref().map(|restore| {
+                            restore.split_whitespace().nth(1).unwrap_or_default().to_string()
+                        }) == Some(name.clone())
+                    })
+                };
+                if !self.base_sets.iter().any(covered) && !self.language_defaults.contains(&restore) {
+                    self.language_defaults.push(restore);
+                }
+            }
+        }
+        // The buffer in front of you is a buffer of some language already.
+        self.settings_language = None;
+        self.follow_language();
+    }
+
+    /// The settings for the buffer you are in, when it is a different
+    /// language to the last one.
+    ///
+    /// jack's settings are global - one `shiftwidth`, not one per buffer - so
+    /// a `[python]` section cannot mean "python buffers have these"; what it
+    /// means is that moving into a python buffer applies them. The base
+    /// settings are applied first, so what one language asked for does not
+    /// follow you into the next, and a `:set` typed by hand lasts until you
+    /// move to a buffer of another language.
+    pub fn follow_language(&mut self) {
+        if self.language_sets.is_empty() {
+            return;
+        }
+        let language = crate::syntax::language_for_path(self.view().doc.path.as_deref())
+            .map(|language| language.name.to_string());
+        if language == self.settings_language {
+            return;
+        }
+        self.settings_language = language.clone();
+
+        self.from_config = true;
+        let lines: Vec<String> = self
+            .language_defaults
+            .iter()
+            .chain(self.base_sets.iter())
+            .chain(language.as_deref().and_then(|name| self.language_sets.get(name)).into_iter().flatten())
+            .cloned()
+            .collect();
+        for line in lines {
+            self.run_command(&line);
         }
         self.from_config = false;
     }
@@ -2211,6 +2375,8 @@ impl Editor {
             "nolist" => self.show_whitespace = false,
             "cursorword" => self.cursorword = true,
             "nocursorword" => self.cursorword = false,
+            "editorconfig" => self.editorconfig = true,
+            "noeditorconfig" => self.editorconfig = false,
             "branch" => self.show_branch = true,
             "nobranch" => self.show_branch = false,
             "cursorline" => self.cursorline = true,
@@ -2225,20 +2391,23 @@ impl Editor {
                 self.view_mut().signs.clear();
             }
             "" => {
-                // The indent reported is the one this buffer is being edited
-                // with, which is the file's own where it had one to give.
+                // What is reported is what this buffer is being edited with:
+                // the file's own indent where it had one to give, and what
+                // the project's `.editorconfig` said about the width and the
+                // trimming. A setting that is about a buffer is worth
+                // reading as the buffer's.
                 let indent = self.indent();
                 let read = match self.view().indent.is_some() {
                     true => " (read from the file)",
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
                     self.rainbow,
-                    self.trim_on_save,
+                    self.trims_here(),
                     self.signs_enabled,
                     self.glyphs,
                     indent.width,
@@ -2252,10 +2421,11 @@ impl Editor {
                     self.lsp_enabled,
                     self.tabline.name(),
                     self.autocomplete,
-                    self.textwidth,
+                    self.textwidth_here(),
                     self.hitcontext,
                     self.show_whitespace,
                     self.cursorword,
+                    self.editorconfig,
                     self.show_branch,
                     match self.opener.is_empty() {
                         true => "(the platform's own)",
@@ -2667,12 +2837,12 @@ impl Editor {
     /// `gq` - those lines, wrapped to `textwidth`.
     pub fn reflow_lines(&mut self, first: usize, last: usize) {
         let before = self.lines_of(first, last);
-        let after = crate::reflow::reflow(&before, self.textwidth);
+        let after = crate::reflow::reflow(&before, self.textwidth_here());
         let text = match after.is_empty() {
             true => String::new(),
             false => format!("{}\n", after.join("\n")),
         };
-        let width = self.textwidth;
+        let width = self.textwidth_here();
         if !self.put_lines(first, last, &text) {
             self.message = format!("already within {width} columns");
             return;
@@ -5259,7 +5429,7 @@ impl Editor {
             return;
         }
 
-        let trimmed = match self.trim_on_save {
+        let trimmed = match self.trims_here() {
             true => self.view_mut().trim_trailing_whitespace(),
             false => 0,
         };
@@ -7932,6 +8102,87 @@ two
         for c in text.chars() {
             e.prompt_input(key(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn a_language_section_in_the_config_applies_to_that_languages_buffers() {
+        let mut e = Editor::scratch();
+        e.apply_config(
+            "set shiftwidth=4\n             set textwidth=100\n             [python]\n             set shiftwidth=2\n             set expandtab\n             [go]\n             set shiftwidth=8\n",
+        );
+        assert!(e.message.is_empty(), "{}", e.message);
+
+        // A scratch buffer has no language, so the base settings are in force.
+        assert_eq!(e.indent.width, 4);
+
+        let dir = std::env::temp_dir().join(format!("jack-langs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        for name in ["a.py", "b.go", "c.txt"] {
+            std::fs::write(dir.join(name), "x = 1\n").expect("a file");
+        }
+
+        e.open_file(dir.join("a.py")).expect("opening the python file");
+        e.follow_language();
+        assert_eq!(e.indent.width, 2, "python's own");
+        assert!(!e.indent.tabs, "and python's spaces");
+
+        // What one language asked for does not follow you into the next: go
+        // has its own width, and the spaces python wanted go back to jack's
+        // default, because nothing in the base said anything about them.
+        e.open_file(dir.join("b.go")).expect("opening the go file");
+        e.follow_language();
+        assert_eq!(e.indent.width, 8, "go's own");
+        assert!(e.indent.tabs, "back to the default");
+
+        // A file of no language at all is the base settings, whole.
+        e.open_file(dir.join("c.txt")).expect("opening the text file");
+        e.follow_language();
+        assert_eq!(e.indent.width, 4);
+        assert_eq!(e.textwidth, 100, "the base settings are still there");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_editorconfig_in_the_project_is_what_the_buffer_is_edited_with() {
+        let dir = std::env::temp_dir().join(format!("jack-ec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(
+            dir.join(".editorconfig"),
+            "root = true\n[*]\nindent_style = space\nindent_size = 2\nmax_line_length = 72\n\
+             [*.md]\nmax_line_length = off\ntrim_trailing_whitespace = false\n",
+        )
+        .expect("the editorconfig");
+        std::fs::write(dir.join("a.py"), "x = 1\n").expect("a file");
+        std::fs::write(dir.join("b.md"), "words\n").expect("a file");
+
+        let mut e = Editor::scratch();
+        e.open_file(dir.join("a.py")).expect("opening it");
+        assert_eq!(e.indent(), Indent { width: 2, tabs: false });
+        assert_eq!(e.textwidth_here(), 72);
+        assert!(e.trims_here(), "nothing said, so jack's own answer");
+
+        // The section for markdown is nearer the file than the wide one.
+        e.open_file(dir.join("b.md")).expect("opening it");
+        assert!(!e.trims_here(), "two spaces at the end of a line are a break");
+        assert_eq!(e.textwidth_here(), e.textwidth, "off means jack's own again");
+
+        // And it can be turned off, for the day it says something wrong.
+        let mut e = Editor::scratch();
+        e.run_command("set noeditorconfig");
+        e.open_file(dir.join("a.py")).expect("opening it");
+        assert_eq!(e.textwidth_here(), e.textwidth);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_language_section_takes_settings_and_says_so_when_it_does_not() {
+        let mut e = Editor::scratch();
+        e.apply_config("[rust]\nhook save *.rs write\n");
+        assert_eq!(e.message, "init line 2: only `set` lines belong under [rust]");
+
+        let mut e = Editor::scratch();
+        e.apply_config("[rustacean]\nset shiftwidth=2\n");
+        assert_eq!(e.message, "init line 1: no grammar called rustacean");
     }
 
     #[test]

@@ -146,6 +146,11 @@ pub static SETTINGS: &[Setting] = &[
         about: "Underline the other uses of the word the cursor is on.",
     },
     Setting {
+        name: "editorconfig",
+        kind: Kind::Flag(true),
+        about: "Read the project's `.editorconfig` for indent, width and trimming.",
+    },
+    Setting {
         name: "branch",
         kind: Kind::Flag(true),
         about: "The git branch in the status line, read from `.git/HEAD`.",
@@ -321,6 +326,40 @@ pub static SETTINGS: &[Setting] = &[
 /// Sorted, unlike the table itself. The file reads in the order a person would
 /// want to read it; a completion list reads in the order a person would look
 /// something up in.
+/// The `set` line that puts an option back to what jack starts with, given
+/// the way it was spelled in a config file: `noexpandtab` and `expandtab` are
+/// both the `expandtab` option, and `hybrid` is one of `number`'s words.
+///
+/// What `[language]` sections need: an option one language set is one whose
+/// value depends on the language, so moving to a buffer of another language
+/// has to put it back rather than leave the last language's answer behind.
+pub fn default_for(written: &str) -> Option<String> {
+    let name = written.split('=').next().unwrap_or(written);
+    for setting in SETTINGS {
+        match setting.kind {
+            Kind::Flag(default) => {
+                if name == setting.name || name.strip_prefix("no") == Some(setting.name) {
+                    return Some(match default {
+                        true => format!("set {}", setting.name),
+                        false => format!("set no{}", setting.name),
+                    });
+                }
+            }
+            Kind::Word(words) => {
+                if words.contains(&name) {
+                    return Some(format!("set {}", words[0]));
+                }
+            }
+            Kind::Value(_, default) => {
+                if name == setting.name {
+                    return Some(format!("set {}={default}", setting.name));
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn option_names() -> Vec<String> {
     let mut names = Vec::new();
     for setting in SETTINGS {

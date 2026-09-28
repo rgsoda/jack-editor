@@ -45,6 +45,9 @@ impl Session {
         // shows it has said how big that is.
         editor.resize_terminals();
         editor.scroll_to_cursor();
+        // Cheap when nothing has changed: it compares the language of the
+        // buffer in front of you against the one whose settings are in force.
+        editor.follow_language();
         // Cheap when nothing has changed: it compares a revision first.
         editor.refresh_signs();
         // Cheap too: an edit count per buffer.

@@ -17,7 +17,7 @@ pub const TAB_WIDTH: usize = 4;
 
 /// What one step of indentation is: how many columns, and whether to spend
 /// them on tabs or spaces.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Indent {
     pub width: usize,
     pub tabs: bool,
@@ -186,6 +186,12 @@ pub struct View {
     /// opened. `None` when it had nothing to say, and the configured default
     /// is what to use.
     pub indent: Option<Indent>,
+    /// What a `.editorconfig` said about this file, where it said anything:
+    /// the width to wrap at, and whether to trim trailing whitespace when it
+    /// is written. Per buffer, because that is what the file is a statement
+    /// about - `max_line_length = off` on the markdown and 100 on the code.
+    pub textwidth: Option<usize>,
+    pub trim: Option<bool>,
     /// Every change made since another window started showing this buffer,
     /// as (position, chars removed, chars inserted), for carrying that
     /// window's cursor through edits made here. Kept only while `watched`:
@@ -276,6 +282,8 @@ impl View {
     pub fn new(doc: Document) -> Self {
         View {
             indent: crate::indent::detect(&doc),
+            textwidth: None,
+            trim: None,
             log: Vec::new(),
             sync_log: Vec::new(),
             sync_from: 0,

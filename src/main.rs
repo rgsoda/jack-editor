@@ -9,6 +9,7 @@ mod command;
 mod compile;
 mod complete;
 mod diff;
+mod editorconfig;
 mod editor;
 mod info;
 mod fold;

@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 76: a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -229,6 +229,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:hook save *.rs format` | run a command when a file is opened or written; `:hook clear` to forget |
 | `:set dog` | `nodog`: the dog in the status line |
 | `:set rainbow` | `norainbow`: colour brackets by how deep they are nested |
+| `:set editorconfig` | `noeditorconfig`: read the project's `.editorconfig` |
 | `:set list` | `nolist`: draw tabs as `→` and trailing spaces as `·` |
 | `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
 | `:set branch` | `nobranch`: the git branch in the status line |
@@ -427,6 +428,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   Zero padding and a leading `-` are the whole of the difficulty.
 - `link.rs` — `gx`: where a link under the cursor starts and ends, which is
   mostly the question of which trailing punctuation belongs to the prose.
+- `editorconfig.rs` — the project's `.editorconfig`: the walk up to the
+  `root = true`, the globs, and the four keys jack can act on. The reading is
+  handed in, so the walk is tested without a directory tree.
 - `cmdline.rs` — the `:` and `/` line: the text and the cursor in it together,
   because the two disagreeing is the whole of what goes wrong with a line
   editor, plus the history `up` walks and the file it is kept in.
@@ -1988,6 +1992,62 @@ Read out of `.git/HEAD` rather than by running git, because it is looked at a
 second after every keystroke and a process per second to draw six characters is
 not a trade worth making. A detached head shows the commit short, as git does.
 `:set nobranch` if you would rather not.
+
+## Settings that belong to a language, and to a project
+
+jack has one `shiftwidth`, not one per buffer, which was fine until it wasn't:
+python wants two spaces and go wants a tab, and no single answer is right.
+
+A config file can now say so. A line `[python]` begins a section, and the `set`
+lines under it apply when you are in a python buffer:
+
+```
+set shiftwidth=4
+set textwidth=100
+
+[python]
+set shiftwidth=2
+set expandtab
+
+[go]
+set shiftwidth=8
+```
+
+The settings are still global — what the section means is that *moving into* a
+python buffer applies them. The base settings are applied first, so what one
+language asked for does not follow you into the next, and an option a section
+mentions that the base says nothing about goes back to jack's own default on
+the way out: `[python] set expandtab` does not leave go indenting with spaces.
+A `:set` typed by hand lasts until you move to a buffer of another language,
+which is the price of settings being global and is worth saying out loud.
+
+Only `set` lines belong in a section, and jack says so rather than accepting
+them: a `hook` or a `server` under a language heading would be registered again
+every time you moved between buffers, which is not what the heading says. A
+section named after something that is not a grammar is an error too, because a
+typo that silently does nothing is the worst kind.
+
+**`.editorconfig`** is the other half, and the one the project rather than the
+person gets to answer. jack reads the files above the one you opened, stopping
+at a `root = true`, and acts on the four keys it has something to do about:
+`indent_style`, `indent_size`/`tab_width`, `max_line_length` and
+`trim_trailing_whitespace`. The rest are about encodings and line endings,
+which jack has nothing to say about yet, so it says nothing rather than
+pretending. Globs are the format's: `*`, `**`, `?`, `{a,b}`, and a glob with no
+`/` in it is about the file's name wherever it is.
+
+All of it is per buffer, because that is what the file is — a statement about
+these files, not about the editor. `max_line_length = off` under `[*.md]` and
+100 everywhere else is two buffers with two answers, and `:set` reports the one
+the buffer you are in is being edited with. It is read once, when the buffer is
+opened; re-reading it on every keystroke would be a syscall per keystroke for
+an answer that does not change. `:set noeditorconfig` for the day it says
+something wrong.
+
+The order, then: what you type now beats the project, the project beats your
+config, and your config is what is left when nobody else has said anything. The
+file's own indentation still speaks for itself where no `.editorconfig` covers
+it — `indent.rs` has not changed.
 
 ## More than one cursor
 
