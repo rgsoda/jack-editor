@@ -1765,8 +1765,8 @@ let n = count();
         assert_eq!(editor.views().len(), 1, "only the one file is open");
 
         editor.start_rename();
-        assert_eq!(editor.prompt.as_ref().expect("a prompt").input, "fn", "the word under the cursor");
-        editor.prompt.as_mut().expect("a prompt").input = "total".into();
+        assert_eq!(editor.prompt.as_ref().expect("a prompt").line.text(), "fn", "the word under the cursor");
+        editor.prompt.as_mut().expect("a prompt").line.set("total");
         editor.prompt_input(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,

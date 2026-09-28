@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 75: more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 76: a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -427,6 +427,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   Zero padding and a leading `-` are the whole of the difficulty.
 - `link.rs` — `gx`: where a link under the cursor starts and ends, which is
   mostly the question of which trailing punctuation belongs to the prose.
+- `cmdline.rs` — the `:` and `/` line: the text and the cursor in it together,
+  because the two disagreeing is the whole of what goes wrong with a line
+  editor, plus the history `up` walks and the file it is kept in.
 - `editor/cursors.rs` — more than one cursor: where the others are, and how
   one keystroke reaches all of them. Every command in it is the one-cursor
   command, run once per cursor from the bottom of the buffer up.
@@ -776,6 +779,31 @@ values once `set` has been typed, then file names for `:e` and `:w`. Paths come
 from `read_dir` of the one directory being typed into rather than the picker's
 walk, because this is a path being written, not a file being looked for, and a
 `/` is left on directories so another `tab` goes on into them.
+
+It is also a line rather than a place characters land: the cursor goes where
+you point it with the arrows, `home` and `end`, or `^a` and `^e`; a word at a
+time with `M-left` and `M-right`, which are `M-b` and `M-f` as well; `^w` takes
+the word behind it off, `^u` everything in front of it, `^k` everything after
+it, and `delete` the character under it. Which is what every other line in a
+terminal does, and what this one did not until it had been used for a while.
+
+`up` and `down` walk the lines typed before — and only the ones that start with
+what was already on the line when you first pressed `up`, which is vim's rule
+and the one worth having: `:se` then `up` is the list of `:set` commands rather
+than a list of everything. `^p` and `^n` do the same. Any other key ends the
+walk, and what is on the line is yours again.
+
+Two lists, not one: `/` is looking for a pattern and `:` for a command, and a
+list with both in it is a list with the wrong half in it. They are kept between
+runs in `$XDG_STATE_HOME/jack/history`, beside the cursor positions — a line
+each, with `:` or `/` in front to say which list it belongs to, which works
+because a prompt is one line and so no entry can contain a newline. A rename or
+a project replacement is not remembered: those are about the word they were
+opened on, and offering the last one on the next is offering a mistake.
+
+`cmdline.rs` holds the line and the history and knows nothing about the editor,
+so the awkward parts — where a word ends, what `up` does when half a command is
+already typed, a character that is more than one byte — are tested on their own.
 
 The list of commands `tab` offers and the `match` that runs them are two lists
 that have to agree, so a test walks the first through the second and fails if a

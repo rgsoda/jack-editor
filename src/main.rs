@@ -2,6 +2,7 @@ mod ai;
 mod buffer;
 #[cfg(test)]
 mod budget;
+mod cmdline;
 mod clipboard;
 mod comment;
 mod command;
@@ -218,6 +219,7 @@ fn main() -> Result<()> {
     editor.load_config();
     editor.run_startup_hooks();
     editor.set_positions(positions::Positions::load(positions::store_path()));
+    editor.set_history(cmdline::store_path());
     editor.set_undo_dir(undofile::store_dir());
 
     // Without this a panic leaves the user's shell in raw mode on the alternate
@@ -256,6 +258,7 @@ fn main() -> Result<()> {
         }
     };
     editor.save_positions();
+    editor.save_history();
     result
 }
 

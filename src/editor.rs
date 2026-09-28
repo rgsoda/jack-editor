@@ -8,6 +8,7 @@ use std::sync::mpsc::Sender;
 
 use crate::buffer::Document;
 use crate::clipboard;
+use crate::cmdline::{History, Line};
 use crate::command;
 use crate::comment::{self, Marker, Toggled};
 use crate::complete::{self, Completion, Pick};
@@ -77,7 +78,7 @@ const PREVIEW_NEEDS: usize = 60;
 
 pub struct Prompt {
     pub kind: PromptKind,
-    pub input: String,
+    pub line: Line,
     /// Where the cursor and viewport were when it opened, so cancelling can
     /// put them back after the incremental preview has moved them.
     origin: (usize, usize),
@@ -116,7 +117,7 @@ impl Prompt {
     /// The whole line as it is drawn, which is also what the cursor's column
     /// is counted along: one string, so the two cannot disagree.
     pub fn line(&self) -> String {
-        format!("{}{}", self.prefix(), self.input)
+        format!("{}{}", self.prefix(), self.line.text())
     }
 
     fn backward(&self) -> bool {
@@ -533,6 +534,13 @@ pub struct Editor {
     /// ones. Kept nowhere until the run loop says where to keep it, so a test
     /// editor never touches the real list.
     positions: crate::positions::Positions,
+    /// The `:` lines and the search patterns typed before, oldest first. Two
+    /// lists rather than one: `/` is looking for a pattern and `:` for a
+    /// command, and a list with both in is a list with the wrong half in.
+    pub commands: History,
+    pub searches: History,
+    /// Where the two lists are kept between runs.
+    history_store: Option<std::path::PathBuf>,
     /// Where undo files go, or `None` for nowhere - which, like `positions`,
     /// is what a test editor gets.
     undo_dir: Option<PathBuf>,
@@ -788,6 +796,9 @@ impl Editor {
             leader: BTreeMap::new(),
             disk_checked: None,
             positions: Default::default(),
+            commands: History::default(),
+            searches: History::default(),
+            history_store: None,
             undo_dir: None,
             undofile: true,
             inlayhints: true,
@@ -849,7 +860,7 @@ impl Editor {
         self.set_mode(Mode::Normal);
         self.open_prompt(PromptKind::Command);
         if let Some(prompt) = self.prompt.as_mut() {
-            prompt.input.push_str("'<,'>");
+            prompt.line.insert_str("'<,'>");
         }
     }
 
@@ -858,7 +869,7 @@ impl Editor {
         let view = self.view();
         self.prompt = Some(Prompt {
             kind,
-            input: String::new(),
+            line: Line::default(),
             origin: (view.sel.head, view.scroll_top),
             anchor,
             completion: None,
@@ -870,6 +881,7 @@ impl Editor {
     pub fn prompt_input(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         let Some(prompt) = self.prompt.as_mut() else {
             return;
         };
@@ -880,6 +892,15 @@ impl Editor {
             return self.complete_command(key.code == KeyCode::Tab);
         }
         prompt.completion = None;
+        // Any key that is not up or down ends the walk through the history:
+        // what is on the line is now yours rather than something offered.
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) && !(ctrl && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('n'))) {
+            self.commands.stop();
+            self.searches.stop();
+        }
+        let Some(prompt) = self.prompt.as_mut() else {
+            return;
+        };
 
         match key.code {
             KeyCode::Esc => return self.cancel_prompt(),
@@ -888,20 +909,75 @@ impl Editor {
             KeyCode::Backspace => {
                 // Backspacing the prompt empty cancels it, as in vim: there is
                 // nothing left to search for.
-                if prompt.input.pop().is_none() {
+                if !prompt.line.delete_back() {
                     return self.cancel_prompt();
                 }
             }
-            KeyCode::Char('u') if ctrl => prompt.input.clear(),
-            KeyCode::Char('w') if ctrl => {
-                let end = prompt.input.trim_end_matches(|c: char| !c.is_alphanumeric());
-                let cut = end.rfind(|c: char| !c.is_alphanumeric()).map_or(0, |i| i + 1);
-                prompt.input.truncate(cut);
-            }
-            KeyCode::Char(c) if !ctrl => prompt.input.push(c),
+            KeyCode::Char('u') if ctrl => prompt.line.delete_to_start(),
+            KeyCode::Char('k') if ctrl => prompt.line.delete_to_end(),
+            KeyCode::Char('w') if ctrl => prompt.line.delete_word_back(),
+            KeyCode::Delete => prompt.line.delete_forward(),
+            // The cursor can be anywhere on the line, and these are how it
+            // gets there: the arrows, the ends, and a word at a time with
+            // alt, which is what every other line editor in a terminal does.
+            KeyCode::Left if alt => prompt.line.word_left(),
+            KeyCode::Right if alt => prompt.line.word_right(),
+            KeyCode::Left => prompt.line.left(),
+            KeyCode::Right => prompt.line.right(),
+            KeyCode::Char('b') if alt => prompt.line.word_left(),
+            KeyCode::Char('f') if alt => prompt.line.word_right(),
+            KeyCode::Home => prompt.line.home(),
+            KeyCode::End => prompt.line.end(),
+            KeyCode::Char('a') if ctrl => prompt.line.home(),
+            KeyCode::Char('e') if ctrl => prompt.line.end(),
+            // Up and down walk what was typed before, offering only the lines
+            // that start with what is on this one.
+            KeyCode::Up | KeyCode::Down => return self.walk_history(key.code == KeyCode::Up),
+            KeyCode::Char('p') if ctrl => return self.walk_history(true),
+            KeyCode::Char('n') if ctrl => return self.walk_history(false),
+            KeyCode::Char(c) if !ctrl && !alt => prompt.line.insert(c),
             _ => return,
         }
         self.prompt_changed();
+    }
+
+    /// Up and down on the `:` or `/` line: the lines typed before, newest
+    /// first, and only the ones that start with what was typed before the
+    /// walk began.
+    ///
+    /// The prompt is left alone when there is nothing to offer, rather than
+    /// being cleared: a key that does nothing should do nothing.
+    fn walk_history(&mut self, back: bool) {
+        let Some(prompt) = self.prompt.as_ref() else {
+            return;
+        };
+        let kind = prompt.kind;
+        let typed = prompt.line.text().to_string();
+        let history = match kind {
+            PromptKind::Search { .. } => &mut self.searches,
+            _ => &mut self.commands,
+        };
+        let found = match back {
+            true => history.back(&typed),
+            false => history.forward(),
+        };
+        if let Some(line) = found
+            && let Some(prompt) = self.prompt.as_mut()
+        {
+            prompt.line.set(line);
+        }
+        self.prompt_changed();
+    }
+
+    /// Remember a line that was run, so that Up finds it next time.
+    fn remember_line(&mut self, kind: PromptKind, line: &str) {
+        match kind {
+            PromptKind::Search { .. } => self.searches.push(line),
+            PromptKind::Command => self.commands.push(line),
+            // A rename or a replacement is about the word it was opened on;
+            // offering the last one on the next is offering a mistake.
+            _ => {}
+        }
     }
 
     /// What happens after the `:` or `/` line changes. Only a search shows its
@@ -932,7 +1008,7 @@ impl Editor {
                 };
             }
             None => {
-                let (start, matches) = command::complete(&prompt.input);
+                let (start, matches) = command::complete(prompt.line.text());
                 if matches.is_empty() {
                     return;
                 }
@@ -945,8 +1021,8 @@ impl Editor {
         }
 
         let completing = prompt.completion.as_ref().expect("just set");
-        prompt.input.truncate(completing.start);
-        prompt.input.push_str(&completing.matches[completing.selected]);
+        let text = completing.matches[completing.selected].clone();
+        prompt.line.replace_from(completing.start, &text);
     }
 
     /// Show where the pattern typed so far would take you, without committing.
@@ -954,7 +1030,7 @@ impl Editor {
         let Some(prompt) = self.prompt.as_ref() else {
             return;
         };
-        let (pattern, backward) = (prompt.input.clone(), prompt.backward());
+        let (pattern, backward) = (prompt.line.text().to_string(), prompt.backward());
         let (origin, anchor) = (prompt.origin, prompt.anchor);
 
         if let Err(err) = self.search.set_pattern(&pattern) {
@@ -977,17 +1053,19 @@ impl Editor {
         let Some(prompt) = self.prompt.take() else {
             return;
         };
+        self.remember_line(prompt.kind, prompt.line.text());
         if prompt.kind == PromptKind::Command {
-            return self.run_command(&prompt.input.clone());
+            let line = prompt.line.text().to_string();
+            return self.run_command(&line);
         }
         // An empty replacement is an answer - delete what matched - so unlike a
         // rename it is not taken for changing your mind.
         if prompt.kind == PromptKind::Replace {
             let pattern = std::mem::take(&mut self.replacing);
-            return self.replace_in_project(&pattern, &prompt.input);
+            return self.replace_in_project(&pattern, prompt.line.text());
         }
         if prompt.kind == PromptKind::Rename {
-            let name = prompt.input.trim().to_string();
+            let name = prompt.line.text().trim().to_string();
             if name.is_empty() {
                 self.message.clear();
                 return;
@@ -998,7 +1076,7 @@ impl Editor {
             return;
         }
         let origin = self.jump_at(prompt.origin.0);
-        if prompt.input.is_empty() {
+        if prompt.line.is_empty() {
             // A bare `/` repeats the last search, as vim does.
             self.search.backward = prompt.backward();
             self.search_again(prompt.backward(), 1);
@@ -1006,7 +1084,7 @@ impl Editor {
         }
         if self.search.find(&self.view().doc, prompt.origin.0, prompt.backward()).is_none() {
             self.restore_origin(prompt.origin, prompt.anchor);
-            self.message = format!("pattern not found: {}", prompt.input);
+            self.message = format!("pattern not found: {}", prompt.line.text());
             return;
         }
         // The preview has already moved the cursor; what the jump list wants is
@@ -3606,7 +3684,7 @@ impl Editor {
         let word = self.view().word_under_cursor().unwrap_or_default();
         self.open_prompt(PromptKind::Rename);
         if let Some(prompt) = self.prompt.as_mut() {
-            prompt.input.push_str(&word);
+            prompt.line.insert_str(&word);
         }
     }
 
@@ -4147,10 +4225,11 @@ impl Editor {
     pub fn cursor_screen(&self) -> (u16, u16) {
         // A prompt puts the cursor on the status line, after what is typed.
         if let Some(prompt) = self.prompt.as_ref() {
-            return (
-                crate::ui::str_width(&prompt.line()) as u16,
-                (self.top() + self.area_rows()) as u16,
-            );
+            // Where the cursor is on the line, not the end of it: the line
+            // can be typed in the middle now.
+            let width = crate::ui::str_width(prompt.prefix())
+                + crate::ui::str_width(prompt.line.before_cursor());
+            return (width as u16, (self.top() + self.area_rows()) as u16);
         }
         match self.picker.as_ref() {
             Some(picker) => {
@@ -4315,6 +4394,25 @@ impl Editor {
 
     /// Take the list of where the cursor was left in files, and put the
     /// buffers already open back where they were.
+    /// The `:` and `/` lines from last time, and where to write them back.
+    pub fn set_history(&mut self, store: Option<std::path::PathBuf>) {
+        let (commands, searches) = crate::cmdline::load(store.as_deref());
+        self.commands.fill(commands);
+        self.searches.fill(searches);
+        self.history_store = store;
+    }
+
+    /// Write the history out, on the way out. A failure is not worth saying
+    /// anything about: the editor is closing and nothing was lost.
+    pub fn save_history(&self) {
+        crate::cmdline::save(
+            self.history_store.as_deref(),
+            self.commands.lines(),
+            self.searches.lines(),
+        )
+        .ok();
+    }
+
     pub fn set_positions(&mut self, positions: crate::positions::Positions) {
         self.positions = positions;
         for index in 0..self.views.len() {
@@ -4823,7 +4921,7 @@ impl Editor {
             return;
         }
         if let Some(prompt) = self.prompt.as_mut() {
-            prompt.input.push_str(line);
+            prompt.line.insert_str(line);
             prompt.completion = None;
             self.prompt_changed();
             return;
@@ -6852,7 +6950,7 @@ two
         let mut e = editor("alpha\n");
         e.open_command();
         e.paste("w foo.txt\nand more");
-        assert_eq!(e.prompt.as_ref().expect("a prompt").input, "w foo.txt");
+        assert_eq!(e.prompt.as_ref().expect("a prompt").line.text(), "w foo.txt");
         // The buffer is untouched: the prompt owns the paste.
         assert_eq!(e.view().doc.text.to_string(), "alpha\n");
     }
@@ -7829,6 +7927,69 @@ two
         }
     }
 
+    /// Type a line into whatever prompt is open, character by character.
+    fn typed(e: &mut Editor, text: &str) {
+        for c in text.chars() {
+            e.prompt_input(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn the_command_line_can_be_typed_in_the_middle_of() {
+        let mut e = Editor::scratch();
+        e.open_command();
+        typed(&mut e, "set number");
+        for _ in 0..6 {
+            e.prompt_input(key(KeyCode::Left));
+        }
+        typed(&mut e, "no");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set nonumber");
+
+        // Home and end, and the two kills either side of the cursor.
+        e.prompt_input(key(KeyCode::Home));
+        e.prompt_input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        e.prompt_input(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set ");
+        typed(&mut e, "list");
+        e.prompt_input(key(KeyCode::Left));
+        e.prompt_input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "t");
+    }
+
+    #[test]
+    fn up_on_the_command_line_walks_what_was_typed_before() {
+        let mut e = Editor::scratch();
+        for line in ["set number", "set list", "noh"] {
+            e.open_command();
+            typed(&mut e, line);
+            e.prompt_input(key(KeyCode::Enter));
+        }
+
+        // Nothing typed: everything, newest first.
+        e.open_command();
+        e.prompt_input(key(KeyCode::Up));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "noh");
+        e.prompt_input(key(KeyCode::Up));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set list");
+        e.prompt_input(key(KeyCode::Down));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "noh");
+
+        // Typed something first: only the lines that start with it, and the
+        // cursor is left at the end of what came back.
+        e.prompt_input(key(KeyCode::Esc));
+        e.open_command();
+        typed(&mut e, "set n");
+        e.prompt_input(key(KeyCode::Up));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set number");
+        assert_eq!(e.prompt.as_ref().unwrap().line.before_cursor(), "set number");
+
+        // Searches are their own list: a `/` never offers a `:` line.
+        e.prompt_input(key(KeyCode::Esc));
+        e.open_search(false);
+        e.prompt_input(key(KeyCode::Up));
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "");
+    }
+
     #[test]
     fn tab_completes_the_command_line_and_cycles() {
         let mut e = Editor::scratch();
@@ -7837,17 +7998,17 @@ two
             e.prompt_input(key(KeyCode::Char(c)));
         }
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "write");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "write");
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "wq");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "wq");
         e.prompt_input(key(KeyCode::Tab));
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "wqall");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "wqall");
         // Round the end, and back the other way.
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "write");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "write");
         e.prompt_input(key(KeyCode::BackTab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "wqall");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "wqall");
     }
 
     #[test]
@@ -7858,12 +8019,12 @@ two
             e.prompt_input(key(KeyCode::Char(c)));
         }
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "set autocomplete=");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set autocomplete=");
         // The list on screen has to be a list for what is written.
         e.prompt_input(key(KeyCode::Char('3')));
         assert!(e.prompt.as_ref().unwrap().completion.is_none());
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "set autocomplete=3");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "set autocomplete=3");
     }
 
     #[test]
@@ -7883,7 +8044,7 @@ two
         // The directory already typed stays; only the last segment is
         // replaced.
         assert_eq!(
-            e.prompt.as_ref().unwrap().input,
+            e.prompt.as_ref().unwrap().line.text(),
             format!("edit {}/alpha.txt", dir.display())
         );
     }
@@ -7894,7 +8055,7 @@ two
         e.open_search(false);
         e.prompt_input(key(KeyCode::Char('w')));
         e.prompt_input(key(KeyCode::Tab));
-        assert_eq!(e.prompt.as_ref().unwrap().input, "w");
+        assert_eq!(e.prompt.as_ref().unwrap().line.text(), "w");
     }
 
     #[test]
@@ -8119,7 +8280,7 @@ a two
         e.set_mode(Mode::VisualLine);
         e.move_cursor(Move::Down, true);
         e.open_command_over_selection();
-        assert_eq!(e.prompt.as_ref().expect("a prompt").input, "'<,'>");
+        assert_eq!(e.prompt.as_ref().expect("a prompt").line.text(), "'<,'>");
         assert_eq!(e.mode, Mode::Normal);
 
         e.run_command("'<,'>s/a/b/");

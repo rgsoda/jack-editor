@@ -166,6 +166,10 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "enter", what: "split the line, keeping the indent", mode: "insert" },
 
     Binding { keys: "tab shift-tab", what: "complete the command, option or path", mode: "command" },
+    Binding { keys: "up down", what: "the lines typed before that start with this one", mode: "command" },
+    Binding { keys: "left right home end", what: "move along the line (^a ^e too)", mode: "command" },
+    Binding { keys: "M-left M-right", what: "a word at a time (M-b M-f too)", mode: "command" },
+    Binding { keys: "^w ^u ^k", what: "delete: the word back, to the start, to the end", mode: "command" },
     Binding { keys: ":w [path] :w!", what: "write, or write over a changed file", mode: "command" },
     Binding { keys: ":q :q! :wq :x", what: "quit, discard changes, write and quit", mode: "command" },
     Binding { keys: ":e path :e!", what: "open a file, reload this one", mode: "command" },
@@ -4050,7 +4054,7 @@ plain
         assert!(vim.editor.prompt.is_some());
         // `d` here is a character of the pattern, not a delete.
         vim.press("dd");
-        assert_eq!(vim.editor.prompt.as_ref().unwrap().input, "dd");
+        assert_eq!(vim.editor.prompt.as_ref().unwrap().line.text(), "dd");
         assert_eq!(vim.editor.view().doc.text.to_string(), "one two\n");
     }
 
