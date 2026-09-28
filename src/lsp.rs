@@ -35,6 +35,11 @@ pub struct Spec {
     /// Files that mark the top of a project this server understands. The
     /// nearest one above the file wins; failing that, the repository.
     pub roots: Vec<String>,
+    /// What to send as `initializationOptions`, for the servers that will not
+    /// do a thing until asked in their own words. `Null` for the rest: an
+    /// unknown option is an error to some servers, so nothing goes out that
+    /// the server on the other end did not ask for.
+    pub options: Value,
 }
 
 impl Spec {
@@ -64,6 +69,9 @@ struct Builtin {
     args: &'static [&'static str],
     languages: &'static [&'static str],
     roots: &'static [&'static str],
+    /// `initializationOptions` as JSON text, parsed when the spec is made.
+    /// Empty for the servers that need none.
+    options: &'static str,
 }
 
 impl Builtin {
@@ -74,6 +82,10 @@ impl Builtin {
             args: self.args.iter().map(|arg| arg.to_string()).collect(),
             languages: self.languages.iter().map(|name| name.to_string()).collect(),
             roots: self.roots.iter().map(|marker| marker.to_string()).collect(),
+            options: match self.options.is_empty() {
+                true => Value::Null,
+                false => serde_json::from_str(self.options).expect("a table this crate wrote"),
+            },
         }
     }
 }
@@ -86,6 +98,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &[],
         languages: &["rust"],
         roots: &["Cargo.toml"],
+        options: "",
     },
     Builtin {
         name: "clangd",
@@ -93,6 +106,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &[],
         languages: &["c", "cpp"],
         roots: &["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt"],
+        options: "",
     },
     Builtin {
         name: "gopls",
@@ -100,6 +114,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &[],
         languages: &["go"],
         roots: &["go.mod", "go.work"],
+        options: "",
     },
     Builtin {
         name: "pyright",
@@ -107,6 +122,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &["--stdio"],
         languages: &["python"],
         roots: &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
+        options: "",
     },
     Builtin {
         name: "pylsp",
@@ -114,6 +130,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &[],
         languages: &["python"],
         roots: &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
+        options: "",
     },
     Builtin {
         name: "typescript-language-server",
@@ -121,6 +138,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &["--stdio"],
         languages: &["javascript"],
         roots: &["package.json", "tsconfig.json", "jsconfig.json"],
+        options: "",
     },
     // The two servers VS Code's own HTML and CSS support was extracted into.
     // They are packaged under two spellings - `vscode-html-language-server`
@@ -129,12 +147,17 @@ const BUILT_IN: &[Builtin] = &[
     // are here and whichever is installed is the one that runs. `--stdio` is
     // not optional for either: without it they wait on a socket nobody is
     // going to connect to.
+    //
+    // `provideFormatter` is how VS Code turns their formatters on, and they
+    // are off until it does: without it both answer `initialize` saying they
+    // do not format, and `:fmt` has nothing to ask.
     Builtin {
         name: "vscode-html-language-server",
         command: "vscode-html-language-server",
         args: &["--stdio"],
         languages: &["html"],
         roots: &["package.json"],
+        options: r#"{ "provideFormatter": true }"#,
     },
     Builtin {
         name: "vscode-html-languageserver",
@@ -142,6 +165,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &["--stdio"],
         languages: &["html"],
         roots: &["package.json"],
+        options: r#"{ "provideFormatter": true }"#,
     },
     Builtin {
         name: "vscode-css-language-server",
@@ -149,6 +173,7 @@ const BUILT_IN: &[Builtin] = &[
         args: &["--stdio"],
         languages: &["css"],
         roots: &["package.json"],
+        options: r#"{ "provideFormatter": true }"#,
     },
     Builtin {
         name: "vscode-css-languageserver",
@@ -156,8 +181,21 @@ const BUILT_IN: &[Builtin] = &[
         args: &["--stdio"],
         languages: &["css"],
         roots: &["package.json"],
+        options: r#"{ "provideFormatter": true }"#,
     },
 ];
+
+/// The `initializationOptions` the built-in table has for `command`, so that
+/// a server written out by hand in the config is asked the same way the
+/// built-in entry would have asked it. `Null` when there is no entry.
+pub fn built_in_options(command: &str) -> Value {
+    let name = Path::new(command).file_name().and_then(|name| name.to_str()).unwrap_or(command);
+    BUILT_IN
+        .iter()
+        .find(|built| built.command == name)
+        .map(|built| built.spec().options)
+        .unwrap_or(Value::Null)
+}
 
 /// The servers jack will start: what the config file said, and then what it
 /// ships knowing about.
@@ -588,6 +626,8 @@ pub struct Client {
     /// Work the server says it is doing - indexing, mostly - by token: what
     /// it is called, and how far along, when the server says.
     progress: HashMap<String, (String, Option<u64>)>,
+    /// The spec's `initializationOptions`, sent with `initialize`.
+    options: Value,
 }
 
 impl Client {
@@ -629,6 +669,7 @@ impl Client {
 
         let mut client = Client {
             name: spec.name.clone(),
+            options: spec.options.clone(),
             root,
             state: State::Starting,
             encoding: Encoding::Utf16,
@@ -651,6 +692,7 @@ impl Client {
         let (writer, written) = channel();
         let client = Client {
             name: name.to_string(),
+            options: Value::Null,
             root: PathBuf::from("/"),
             state: State::Starting,
             encoding: Encoding::Utf16,
@@ -675,7 +717,7 @@ impl Client {
     fn initialize(&mut self) {
         let root = uri(&self.root);
         let name = self.root.file_name().map_or("root".into(), |n| n.to_string_lossy().into_owned());
-        let params = json!({
+        let mut params = json!({
             "processId": std::process::id(),
             "clientInfo": { "name": "jack", "version": env!("CARGO_PKG_VERSION") },
             "rootUri": root,
@@ -752,6 +794,9 @@ impl Client {
                 "workspace": { "configuration": true, "workspaceFolders": true, "symbol": { "dynamicRegistration": false }, "inlayHint": { "refreshSupport": true } },
             },
         });
+        if !self.options.is_null() {
+            params["initializationOptions"] = self.options.clone();
+        }
         let id = self.take_id(Request::Initialize);
         self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": "initialize", "params": params }));
     }
@@ -1347,6 +1392,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_server_that_wants_initialization_options_is_sent_them_and_the_rest_are_not() {
+        let (mut client, written) = Client::detached("fake");
+        client.initialize();
+        assert!(sent(&written)[0]["params"].get("initializationOptions").is_none());
+
+        let (mut client, written) = Client::detached("fake");
+        client.options = json!({ "provideFormatter": true });
+        client.initialize();
+        assert_eq!(sent(&written)[0]["params"]["initializationOptions"]["provideFormatter"], true);
+    }
+
+    #[test]
+    fn the_html_and_css_servers_ask_for_the_formatter_they_keep_switched_off() {
+        // Both spellings of both, because whichever is installed is the one
+        // that runs and only one of them being asked would be a coin toss.
+        for command in ["vscode-html-language-server", "vscode-html-languageserver",
+                        "vscode-css-language-server", "vscode-css-languageserver"]
+        {
+            let built = BUILT_IN.iter().find(|built| built.command == command).expect("in the table");
+            assert_eq!(built.spec().options["provideFormatter"], true, "{command}");
+            // And written out by hand in the config, it is asked the same way.
+            assert_eq!(built_in_options(&format!("/usr/bin/{command}"))["provideFormatter"], true);
+        }
+        // A server with nothing to say is sent nothing: an unknown option is
+        // an error to gopls, so silence is the only safe default.
+        assert_eq!(built_in_options("gopls"), Value::Null);
+        assert_eq!(built_in_options("some-server-jack-never-heard-of"), Value::Null);
+    }
+
+    #[test]
     fn nothing_but_initialize_goes_out_until_the_server_has_answered_it() {
         let (mut client, written) = Client::detached("fake");
         client.initialize();
@@ -1545,6 +1620,7 @@ pub(crate) mod tests {
             args: Vec::new(),
             languages: languages.iter().map(|name| name.to_string()).collect(),
             roots: roots.iter().map(|marker| marker.to_string()).collect(),
+            options: Value::Null,
         }
     }
 

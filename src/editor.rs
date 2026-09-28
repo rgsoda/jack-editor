@@ -1962,10 +1962,10 @@ impl Editor {
     /// `:fmt` - hand the buffer to whatever the language server formats with.
     /// The answer comes back later and is applied then, as one undo step.
     pub fn format(&mut self, lines: Option<(usize, usize)>) {
-        match self.lsp_format(lines) {
-            true => self.message = "formatting...".into(),
-            false => self.message = "no language server that formats this".into(),
-        }
+        self.message = match self.lsp_format(lines) {
+            Ok(()) => "formatting...".into(),
+            Err(why) => why,
+        };
     }
 
     /// `:s` - the substitute command, over whatever lines the range names.

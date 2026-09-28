@@ -1822,6 +1822,16 @@ Inside an HTML file, `<script>` and `<style>` are highlighted and indented as
 JavaScript and CSS, but the server keyed to the buffer is the HTML one: the
 injected regions do not get a server of their own.
 
+Both of those servers keep their formatter switched off until the editor asks
+for it by name, so jack asks: the table carries `initializationOptions` for the
+servers that want a word at startup, and theirs says `provideFormatter`.
+Without it they answer `initialize` saying they do not format, and `:fmt` in an
+HTML file has nothing to hand the buffer to. Nothing goes out to a server that
+did not ask for it — gopls treats an option it does not know as an error — so
+the field is empty for everything else. A server you write out yourself with
+`:server` gets whatever the built-in entry for that same program would have
+sent it.
+
 What it gives you, so far:
 
 - **Diagnostics.** A mark in the gutter, the text underlined, the first line
@@ -2308,6 +2318,11 @@ so doing the earliest one first would move all the others out from under
 themselves. The whole reformat is one undo step: `:fmt` then `u` puts the file
 back exactly as it was. The cursor goes back to the line and column it was on,
 which after a reformat is the nearest thing there is to where you were.
+
+When there is nothing to ask, `:fmt` says which kind of nothing it found: the
+servers are off, nothing is installed that speaks this language, the one for
+this buffer is still starting, or it is running and does not format. They are
+four different things to do next, so they are four different sentences.
 
 An answer to a buffer that has been typed into since is refused rather than
 applied - the positions in it are about text that no longer exists, and half a

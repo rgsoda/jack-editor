@@ -453,11 +453,12 @@ impl Editor {
     /// gofmt, black. `lines` is the range a `:'<,'>fmt` named, in which case it
     /// is the selection that goes rather than the file.
     ///
-    /// `false` when there is nothing to ask, or nothing that can answer: the
-    /// caller says so, since this was asked for out loud.
-    pub(super) fn lsp_format(&mut self, lines: Option<(usize, usize)>) -> bool {
+    /// `Err` when there is nothing to ask, or nothing that can answer, with
+    /// the reason in it: this was asked for out loud, so the answer says which
+    /// of the two it was rather than one word for both.
+    pub(super) fn lsp_format(&mut self, lines: Option<(usize, usize)>) -> Result<(), String> {
         let Some((server, mut params, _, edits)) = self.at_cursor() else {
-            return false;
+            return Err(self.why_no_server());
         };
         // What the buffer indents with, which is what the server formats to.
         // Its own configuration usually wins - rustfmt has a `rustfmt.toml` -
@@ -498,7 +499,29 @@ impl Editor {
             }
         };
         let request = Request::Format { view: self.current, edits };
-        self.servers[server].request(method, capability, params, request)
+        match self.servers[server].request(method, capability, params, request) {
+            true => Ok(()),
+            false => Err(format!("{} does not format this", self.servers[server].name)),
+        }
+    }
+
+    /// Why there is no server to ask, for the commands that are worth more
+    /// than "no": off, nothing installed, or one on its way up.
+    fn why_no_server(&self) -> String {
+        if !self.lsp_enabled {
+            return "language servers are off - `:set lsp` turns them on".into();
+        }
+        let view = self.view();
+        match view.lsp {
+            Lsp::Open { server, .. } => match self.servers[server].state {
+                State::Ready => format!("{} is not talking", self.servers[server].name),
+                _ => format!("{} is still starting", self.servers[server].name),
+            },
+            _ => match crate::syntax::language_for_path(view.doc.path.as_deref()) {
+                Some(language) => format!("nothing installed that speaks {}", language.name),
+                None => "no language server for this buffer".into(),
+            },
+        }
     }
 
     /// The formatting the server asks for, applied as one undo step.
@@ -1189,6 +1212,10 @@ impl Editor {
             args: words.collect(),
             languages: names.clone(),
             roots,
+            // A server jack ships knowing about, written out by hand in the
+            // config, still needs whatever the built-in entry would have sent
+            // it: the same program wants the same asking.
+            options: crate::lsp::built_in_options(&command),
             command,
         };
         let installed = crate::lsp::installed(&spec.command);
@@ -2046,10 +2073,15 @@ let n = count();
     }
 
     #[test]
-    fn fmt_without_a_server_says_so() {
+    fn fmt_without_a_server_says_which_kind_of_nothing_it_found() {
         let mut editor = Editor::scratch();
         editor.run_command("fmt");
-        assert_eq!(editor.message, "no language server that formats this");
+        assert_eq!(editor.message, "no language server for this buffer");
+
+        // Off is worth saying out loud, because it is a thing to turn on.
+        editor.run_command("set nolsp");
+        editor.run_command("fmt");
+        assert_eq!(editor.message, "language servers are off - `:set lsp` turns them on");
     }
 
     #[test]
