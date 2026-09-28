@@ -877,6 +877,35 @@ impl Editor {
     /// holds. Read once, when the buffer is opened: it is a file on disk like
     /// any other, and re-reading it on every keystroke would be a syscall per
     /// keystroke for an answer that does not change.
+    /// What outranks the indentation read out of the file itself, in order:
+    /// a `[language]` section, and then the project's `.editorconfig`.
+    fn settings_over_the_file(&mut self, index: usize) {
+        self.language_overrides_detected_indent(index);
+        self.apply_editorconfig(index);
+    }
+
+    /// A `[language]` section that speaks about indentation means it for every
+    /// buffer of that language, not only the ones that indent with nothing.
+    /// What the section says is a statement about the language; what one file
+    /// happens to use is not, so it steps aside. A base `set shiftwidth` is
+    /// still only the default, because it is not about this language.
+    fn language_overrides_detected_indent(&mut self, index: usize) {
+        let Some(language) = crate::syntax::language_for_path(self.views[index].doc.path.as_deref())
+        else {
+            return;
+        };
+        let Some(lines) = self.language_sets.get(language.name) else {
+            return;
+        };
+        let speaks = lines.iter().any(|line| {
+            line.split_whitespace()
+                .any(|word| matches!(command::setting_name(word), "shiftwidth" | "expandtab"))
+        });
+        if speaks {
+            self.views[index].indent = None;
+        }
+    }
+
     fn apply_editorconfig(&mut self, index: usize) {
         if !self.editorconfig {
             return;
@@ -906,7 +935,7 @@ impl Editor {
         if let Some(warning) = views[index].attach_syntax(theme) {
             *message = warning;
         }
-        self.apply_editorconfig(index);
+        self.settings_over_the_file(index);
     }
 
     // --- search -------------------------------------------------------
@@ -1584,6 +1613,10 @@ impl Editor {
             self.run_command(&line);
         }
         self.from_config = false;
+        // The config is read after the first file is opened, so this is where
+        // a section first gets to speak about a buffer that is already there.
+        let index = self.current;
+        self.settings_over_the_file(index);
     }
 
     pub fn run_command(&mut self, line: &str) {
@@ -1906,6 +1939,7 @@ impl Editor {
                 continue;
             }
             if self.views[index].reload().is_ok() {
+                self.settings_over_the_file(index);
                 reloaded.push(name);
             }
         }
@@ -5492,7 +5526,12 @@ impl Editor {
         }
         let name = self.view().doc.display_name().to_string();
         match self.view_mut().reload() {
-            Ok(()) => self.message = format!("reloaded {name}"),
+            Ok(()) => {
+                // The file was read again, and so was its indentation: what
+                // outranks it has to be put back over the top.
+                self.settings_over_the_file(self.current);
+                self.message = format!("reloaded {name}");
+            }
             Err(err) => self.message = format!("{err:#}"),
         }
         self.clamp_cursor();
@@ -8139,6 +8178,30 @@ two
         e.follow_language();
         assert_eq!(e.indent.width, 4);
         assert_eq!(e.textwidth, 100, "the base settings are still there");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_language_section_about_indentation_outranks_what_the_file_indents_with() {
+        let dir = std::env::temp_dir().join(format!("jack-langindent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        // Both files indent with four spaces of their own.
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").expect("a file");
+        std::fs::write(dir.join("b.go"), "func f() {\n    return\n}\n").expect("a file");
+
+        let mut e = Editor::scratch();
+        e.apply_config("[python]\nset shiftwidth=2\nset expandtab\n");
+
+        // Python's section speaks about indentation, so the file's own four
+        // spaces step aside for it.
+        e.open_file(dir.join("a.py")).expect("opening the python file");
+        e.follow_language();
+        assert_eq!(e.indent(), Indent { width: 2, tabs: false }, "the section's");
+
+        // Go has no section, so its file is read the way it always was.
+        e.open_file(dir.join("b.go")).expect("opening the go file");
+        e.follow_language();
+        assert_eq!(e.indent(), Indent { width: 4, tabs: false }, "the file's own");
         std::fs::remove_dir_all(&dir).ok();
     }
 

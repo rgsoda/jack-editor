@@ -2068,8 +2068,17 @@ something wrong.
 
 The order, then: what you type now beats the project, the project beats your
 config, and your config is what is left when nobody else has said anything. The
-file's own indentation still speaks for itself where no `.editorconfig` covers
-it — `indent.rs` has not changed.
+file's own indentation still speaks for itself where nothing else covers it —
+`indent.rs` has not changed.
+
+Nothing else includes a `[language]` section that mentions `shiftwidth` or
+`expandtab`. That is a statement about the language, and what one file happens
+to indent with is not, so the file steps aside for it: `[html] set
+shiftwidth=2` is two spaces in every HTML file you open, not only in the ones
+that had no indentation to read. A bare `set shiftwidth=2` outside any section
+stays what it was — the default for a file that indents with nothing — because
+it is not about this language, it is about everything. Reloading a file reads
+its indentation again, and the settings that outrank it go back over the top.
 
 ## More than one cursor
 
