@@ -111,6 +111,8 @@
 # `:set cursorword`: the other uses of the word the cursor is on. Underlined
 # rather than coloured, so it reads over whatever the grammar made of them.
 "ui.cursorword" = { underline = true }
+# A closed fold's count, on the line it leaves showing.
+"ui.fold" = { fg = "#6272a4", italic = true }
 # `:set list`: the arrow a tab becomes and the dot a trailing space becomes.
 # Dim on purpose - it is there to be found, not to be read.
 "ui.whitespace" = { fg = "#44475a" }

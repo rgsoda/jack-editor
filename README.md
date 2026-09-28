@@ -4,7 +4,7 @@ A terminal text editor, built from the buffer up.
 
 ## Status
 
-Step 73: `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 74: folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -138,6 +138,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `^d` `^u`, page up/down | scroll |
 | `{` `}` | paragraph back / forward — motions, so `d}` and `y{` work |
 | `zz` `zt` `zb` | this line to the middle / top / bottom of the screen |
+| `za` `zc` `zo` | fold what the cursor is in, from the grammar, or open it again |
+| `zM` `zR` | close every fold in the file / open them all |
 | `H` `M` `L` | top / middle / bottom line of the screen (`3H`, `dL`) |
 | `^e` `^y` | scroll one line down / up, leaving the cursor where it is |
 | `i` `I` `a` `A` | insert here / at first non-blank / after / at line end |
@@ -423,6 +425,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   Zero padding and a leading `-` are the whole of the difficulty.
 - `link.rs` — `gx`: where a link under the cursor starts and ends, which is
   mostly the question of which trailing punctuation belongs to the prose.
+- `fold.rs` — which lines a closed fold hides, where they went after an
+  edit, and how many drawn rows there are between two lines. Lines only: what
+  is foldable comes from the grammar and the drawing is the screen's.
 - `sort.rs` — `:sort`: what "in order" means once `u`, `n`, `i` and `!` have
   had their say, and a stable sort by that.
 - `hook.rs` — `:hook`: one rule - an event, a glob and a command - and the
@@ -1950,6 +1955,41 @@ Read out of `.git/HEAD` rather than by running git, because it is looked at a
 second after every keystroke and a process per second to draw six characters is
 not a trade worth making. A detached head shows the commit short, as git does.
 `:set nobranch` if you would rather not.
+
+## Folding
+
+`za` folds the innermost thing the cursor is in — the function, the `impl`
+block, the `match`, the `if`, a list written over several lines — and opens it
+again if it is already folded. `zc` only closes, `zo` only opens, `zM` closes
+every outermost thing in the file so that it reads as a list of what is in it,
+and `zR` opens everything.
+
+There is no fold level, no `foldmethod` and no fold markers in comments. The
+grammar already knows where everything starts and ends, so a fold is one
+question — which node is the cursor in? — and the answer is the innermost named
+one that spans more than one line. The line it starts on stays on screen with
+`⋯ 12 lines` after it, so a folded function still shows its signature, and a
+fold always leaves something to put the cursor on.
+
+The part that takes the care is what a fold does to everything else:
+
+- `j` and `k` move by a *row*, so they step over a closed fold rather than into
+  it, and a `w` that would land inside one lands past it. That is what the
+  screen shows, and movement is about the screen.
+- A *jump* opens the fold it lands in, rather than stopping at its head: a
+  search hit, `gd`, `]q` and `:42` all reveal what they found. Vim's default is
+  the same, and it is the right way round — a jump is about a line, a movement
+  is about the screen.
+- `dd`, `yy`, `cc` and `>>` on a folded line take the whole fold. The row on
+  the screen stands for those lines, and deleting a signature while leaving its
+  body behind is not what anyone pressed `dd` for.
+- An edit carries the folds with it: lines put in above one move it down, lines
+  put in inside one make it bigger, and an edit that takes lines away across
+  one opens it. Once the lines a fold was made of are gone, a fold hiding
+  whatever is now in their place is worse than no fold.
+
+Which folds are closed is not written down anywhere: it is something you did,
+not something the file says, and it lasts as long as the buffer does.
 
 ## Hooks
 

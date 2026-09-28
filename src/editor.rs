@@ -1094,7 +1094,10 @@ impl Editor {
     }
 
     fn jump_to(&mut self, at: usize) {
-        self.view_mut().sel = Selection::point(at);
+        let view = self.view_mut();
+        let line = view.doc.char_to_line(at.min(view.doc.len_chars()));
+        view.reveal_line(line);
+        view.sel = Selection::point(at);
         self.clamp_cursor();
     }
 
@@ -1104,7 +1107,10 @@ impl Editor {
     fn reach(&mut self, at: usize) {
         match self.mode.is_visual() {
             true => {
-                self.view_mut().sel.head = at;
+                let view = self.view_mut();
+                let line = view.doc.char_to_line(at.min(view.doc.len_chars()));
+                view.reveal_line(line);
+                view.sel.head = at;
                 self.clamp_cursor();
             }
             false => self.jump_to(at),
@@ -4184,6 +4190,47 @@ impl Editor {
         self.view_mut().reveal(where_to, height, wrap);
     }
 
+    /// `zc`: fold the innermost thing the cursor is in.
+    pub fn fold(&mut self) {
+        match self.view_mut().fold_here() {
+            Some(true) => {}
+            Some(false) => self.message = "nothing to fold here".into(),
+            None => self.message = "no grammar for this file".into(),
+        }
+    }
+
+    /// `zo`: open the innermost fold the cursor is in.
+    pub fn unfold(&mut self) {
+        if !self.view_mut().unfold_here() {
+            self.message = "no fold here".into();
+        }
+    }
+
+    /// `za`: the one key that does whichever of the two is left to do, which
+    /// is the one worth having on a finger.
+    pub fn toggle_fold(&mut self) {
+        match self.view_mut().unfold_here() {
+            true => {}
+            false => self.fold(),
+        }
+    }
+
+    /// `zM`: close every fold in the file, which reads it as a list of what
+    /// is in it.
+    pub fn fold_all(&mut self) {
+        let closed = self.view_mut().fold_all();
+        self.message = match closed {
+            0 => "nothing to fold".into(),
+            1 => "1 fold".to_string(),
+            n => format!("{n} folds"),
+        };
+    }
+
+    /// `zR`: open them all.
+    pub fn unfold_all(&mut self) {
+        self.view_mut().folds.clear();
+    }
+
     /// `^e` and `^y`: scroll without moving the cursor, until the cursor would
     /// be scrolled off and has to come along.
     pub fn scroll_lines(&mut self, down: bool, count: usize) {
@@ -4499,7 +4546,8 @@ impl Editor {
     /// The lines `count` lines from the cursor down, for `3>>`.
     pub fn shift_count(&mut self, out: bool, count: usize) {
         let (line, _) = self.view().cursor_coords();
-        self.shift_lines(out, line, line + count - 1, 1);
+        let last = self.view().last_of_count(count);
+        self.shift_lines(out, line, last, 1);
     }
 
     /// The lines a selection covers, for visual `>` and for `>ip`. The range
@@ -6201,7 +6249,7 @@ impl Editor {
         let (view, registers) = self.view_and_registers();
         let (line, _) = view.cursor_coords();
         let last = view.doc.len_lines().saturating_sub(1);
-        let end_line = (line + count - 1).min(last);
+        let end_line = view.last_of_count(count).min(last);
         let indent = view.doc.line_indent(line);
 
         let start = view.doc.line_to_char(line);

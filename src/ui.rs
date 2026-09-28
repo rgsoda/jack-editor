@@ -80,7 +80,15 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     // Highlight only the visible rows. Tree-sitter keeps the whole parse tree,
     // but running the query over the viewport is what keeps big files cheap.
     let first_byte = view.doc.line_to_byte(scroll_top.min(total_lines.saturating_sub(1)));
-    let last_row = scroll_top + height;
+    // With folds closed the bottom of the screen is further down the file
+    // than the number of rows: the rows a fold skips count as one.
+    let last_row = match view.folds.is_empty() {
+        true => scroll_top + height,
+        false => (0..height).fold(scroll_top, |line, _| match view.folds.at(line) {
+            Some(fold) => fold.end + 1,
+            None => line + 1,
+        }),
+    };
     let last_byte = if last_row >= total_lines {
         view.doc.len_bytes()
     } else {
@@ -222,6 +230,9 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             None => None,
         };
 
+        // A closed fold is drawn as its head line with a count after it, and
+        // the lines it hides are skipped below.
+        let fold = view.folds.at(line);
         for (segment, &from) in starts.iter().enumerate() {
             if row >= rect.y + height {
                 break;
@@ -279,9 +290,25 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                     put_str(surface, x, row, &message, style, right);
                 }
             }
+            // The marker, after the text and after any diagnostic: how many
+            // lines are not there, which is the one thing the row cannot say
+            // by itself.
+            if let (Some(fold), true) = (fold, last) {
+                let end = crate::view::hinted_col(piece, piece.chars().count(), &piece_hints);
+                let x = styling.left + end.saturating_sub(styling.scroll_left) + 1;
+                let right = rect.x + rect.width;
+                if x < right && diagnostic.is_none() {
+                    let style = under(here, editor.theme.style("ui.fold"));
+                    let text = format!("{} {} lines", glyphs.fold, fold.hidden());
+                    put_str(surface, x, row, &text, style, right);
+                }
+            }
             row += 1;
         }
-        line += 1;
+        line = match fold {
+            Some(fold) => fold.end + 1,
+            None => line + 1,
+        };
     }
 }
 

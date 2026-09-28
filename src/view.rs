@@ -217,6 +217,10 @@ pub struct View {
     /// behind. The history's depth cannot say, since undo takes it back down.
     edits: u64,
     pub lsp: Lsp,
+    /// The folds that are closed, by line. Kept rather than worked out again
+    /// each frame: which folds are closed is something you did, not something
+    /// the file says.
+    pub folds: crate::fold::Folds,
 }
 
 /// Whether a buffer is known to a language server.
@@ -296,6 +300,7 @@ impl View {
             hunks_revision: None,
             signs_revision: None,
             centre: false,
+            folds: crate::fold::Folds::default(),
         }
     }
 
@@ -405,6 +410,79 @@ impl View {
             }
         };
         Some((chars(whole), chars(inside)))
+    }
+
+    /// `za`, `zc`: close the innermost thing the cursor is in that spans more
+    /// than one line. The head is the line the thing starts on, so a folded
+    /// function still shows its signature.
+    ///
+    /// `None` without a grammar; `Some(false)` where there is nothing to
+    /// fold, which is a different thing to say.
+    pub fn fold_here(&mut self) -> Option<bool> {
+        let syntax = self.syntax.as_ref()?;
+        let text = &self.doc.text;
+        let at = text.char_to_byte(self.sel.head);
+        let range = syntax.fold_at(at, |byte| text.byte_to_line(byte.min(text.len_bytes())))?;
+        let head = text.byte_to_line(range.start);
+        let end = text.byte_to_line(range.end.min(text.len_bytes()));
+        let closed = self.folds.close(head, end);
+        // The cursor was somewhere in what is now hidden: it comes up to the
+        // line the fold left showing, as vim's does, so that the next command
+        // is about the fold rather than about a line nobody can see.
+        self.cursor_out_of_folds(false);
+        Some(closed)
+    }
+
+    /// `zo`: open the innermost fold the cursor is in.
+    pub fn unfold_here(&mut self) -> bool {
+        let (line, _) = self.cursor_coords();
+        self.folds.open(line)
+    }
+
+    /// `zM`: close every outermost thing in the file, so that the file reads
+    /// as a list of what is in it.
+    pub fn fold_all(&mut self) -> usize {
+        let Some(syntax) = self.syntax.as_ref() else {
+            return 0;
+        };
+        let text = &self.doc.text;
+        let ranges = syntax.folds(|byte| text.byte_to_line(byte.min(text.len_bytes())));
+        let mut closed = 0;
+        for range in ranges {
+            let head = text.byte_to_line(range.start);
+            let end = text.byte_to_line(range.end.min(text.len_bytes()));
+            closed += usize::from(self.folds.close(head, end));
+        }
+        self.cursor_out_of_folds(false);
+        closed
+    }
+
+    /// Open whatever folds are hiding this line, for a jump that lands in
+    /// one: a search hit, `gd`, `]q`, `:42`. Vim opens folds for a jump and
+    /// steps over them for a movement, which is the right way round - a jump
+    /// is about the line, and `j` is about the screen.
+    pub fn reveal_line(&mut self, line: usize) {
+        while self.folds.hiding(line).is_some() {
+            self.folds.open(line);
+        }
+    }
+
+    /// Put the cursor somewhere drawn, after a move or a fold: on the head of
+    /// the fold hiding it, or past its end when the move was downwards.
+    fn cursor_out_of_folds(&mut self, downwards: bool) {
+        if self.folds.is_empty() {
+            return;
+        }
+        let (line, _) = self.cursor_coords();
+        let Some(fold) = self.folds.hiding(line) else {
+            return;
+        };
+        let to = match downwards && fold.end < self.last_line() {
+            true => fold.end + 1,
+            false => fold.head,
+        };
+        let at = self.doc.line_to_char(to);
+        self.sel = Selection { anchor: if self.sel.is_empty() { at } else { self.sel.anchor }, head: at };
     }
 
     /// A range grown to whole lines, but only at the ends where nothing else
@@ -931,10 +1009,14 @@ impl View {
             self.goal_col = None;
         }
 
+        let was = self.sel.head;
         self.sel.head = head;
         if !extend {
             self.sel.anchor = head;
         }
+        // A motion that lands inside a closed fold lands on the fold: `w`
+        // across a folded function goes to the line after it, not into it.
+        self.cursor_out_of_folds(head > was);
     }
     /// `{` and `}`: the next blank line either way, or the end of the buffer.
     /// A run of blank lines counts once, so `}` on the line before a gap goes
@@ -1094,6 +1176,18 @@ impl View {
         if line + pad >= bottom {
             self.scroll_top = (line + pad + 1).saturating_sub(height);
         }
+        // Folded, the lines between the top and the cursor are not the rows
+        // they take: the top comes down a drawn row at a time until the
+        // cursor's own row fits on the screen.
+        if !self.folds.is_empty() {
+            self.scroll_top = self.folds.prev_visible(self.scroll_top);
+            while self.folds.rows_between(self.scroll_top, line) + 1 > height && self.scroll_top < line {
+                self.scroll_top = match self.folds.at(self.scroll_top) {
+                    Some(fold) => fold.end + 1,
+                    None => self.scroll_top + 1,
+                };
+            }
+        }
         // Never scroll past the last line.
         let max_top = self.doc.len_lines().saturating_sub(1);
         self.scroll_top = self.scroll_top.min(max_top);
@@ -1186,7 +1280,7 @@ impl View {
         }
         (
             self.cursor_screen_col().saturating_sub(self.scroll_left) as u16,
-            line.saturating_sub(self.scroll_top) as u16,
+            self.folds.rows_between(self.scroll_top, line) as u16,
         )
     }
     /// The hints on `line`, as columns in it and what to write there.
@@ -1225,7 +1319,15 @@ impl View {
             .get_or_insert_with(|| display_col(&self.doc.line_str(line), col));
 
         let last = self.doc.len_lines().saturating_sub(1);
-        let target = (line as isize + delta).clamp(0, last as isize) as usize;
+        // A closed fold is one row of the screen, and `j` moves by a row: it
+        // steps over the lines the fold hides rather than into them.
+        let target = match self.folds.is_empty() {
+            true => (line as isize + delta).clamp(0, last as isize) as usize,
+            false => match delta < 0 {
+                true => self.folds.up(line, delta.unsigned_abs()),
+                false => self.folds.down(line, delta as usize, last),
+            },
+        };
 
         let text = self.doc.line_str(target);
         self.doc.line_to_char(target) + char_col_at_display(&text, goal)
@@ -1435,7 +1537,7 @@ impl View {
     pub fn line_range(&self, count: usize) -> (usize, usize) {
         let (line, _) = self.cursor_coords();
         let total = self.doc.len_lines();
-        let end_line = (line + count).min(total);
+        let end_line = (self.last_of_count(count) + 1).min(total);
         let start = self.doc.line_to_char(line);
         let end = if end_line >= total {
             self.doc.len_chars()
@@ -1444,6 +1546,26 @@ impl View {
         };
         (start, end)
     }
+    /// The last line a linewise operator over `count` takes, counting from the
+    /// cursor's line.
+    ///
+    /// Drawn rows rather than lines of the file: a closed fold is one row, so
+    /// `dd` on a folded function takes the function, which is what the row on
+    /// the screen stands for. Anything else would delete a signature and
+    /// leave a body.
+    pub fn last_of_count(&self, count: usize) -> usize {
+        let (line, _) = self.cursor_coords();
+        if self.folds.is_empty() {
+            return line + count.saturating_sub(1);
+        }
+        let last = self.doc.len_lines().saturating_sub(1);
+        let reached = self.folds.down(line, count.saturating_sub(1), last);
+        match self.folds.at(reached) {
+            Some(fold) => fold.end,
+            None => reached,
+        }
+    }
+
     /// The last line with content. A buffer ending in a newline has a trailing
     /// empty line in the rope that is not a line as far as the user is
     /// concerned, and `G` should not land on it.
@@ -1458,6 +1580,7 @@ impl View {
     /// Jump to a line's first non-blank character, as `gg` and `G` do.
     pub fn goto_line(&mut self, line: usize) {
         let line = line.min(self.last_line());
+        self.reveal_line(line);
         self.sel = Selection::point(self.doc.line_to_char(line));
         self.move_cursor(Move::FirstNonBlank, false, 0, None);
     }
@@ -1556,6 +1679,16 @@ impl View {
             syntax.edit(&edits, &self.doc.text);
         }
         self.edits += 1;
+        if !self.folds.is_empty() {
+            let mut shift: isize = 0;
+            for change in &tx.changes {
+                let pos = (change.pos as isize + shift) as usize;
+                let line = self.doc.char_to_line(pos.min(self.doc.len_chars()));
+                let breaks = |text: &str| text.chars().filter(|c| *c == '\n').count();
+                self.folds.carry(line, breaks(&change.removed), breaks(&change.inserted));
+                shift += change.inserted.chars().count() as isize - change.removed.chars().count() as isize;
+            }
+        }
         if !self.watched && self.diagnostics.is_empty() && self.hints.is_empty() {
             return;
         }

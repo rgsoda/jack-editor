@@ -10,6 +10,7 @@ mod complete;
 mod diff;
 mod editor;
 mod info;
+mod fold;
 mod history;
 mod hits;
 mod hook;

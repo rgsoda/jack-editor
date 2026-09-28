@@ -46,6 +46,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "{n}G", what: "go to line n", mode: "normal" },
     Binding { keys: "^d ^u", what: "half page down, up", mode: "normal" },
     Binding { keys: "{ }", what: "paragraph back, forward (d} y{ too)", mode: "normal" },
+    Binding { keys: "za zc zo", what: "fold what the cursor is in, or open it again", mode: "normal" },
+    Binding { keys: "zM zR", what: "close every fold in the file, or open them all", mode: "normal" },
     Binding { keys: "zz zt zb", what: "this line to the middle, top, bottom", mode: "normal" },
     Binding { keys: "H M L", what: "top, middle, bottom of the screen", mode: "normal" },
     Binding { keys: "^e ^y", what: "scroll a line down, up, cursor still", mode: "normal" },
@@ -1593,13 +1595,19 @@ fn window_command(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
-/// The second key of a `z`: where the cursor's line should end up. Anything
-/// else is not one of these commands and does nothing, as in vim.
+/// The second key of a `z`: where the cursor's line should end up, or what to
+/// do about folds. Anything else is not one of these commands and does
+/// nothing, as in vim.
 fn reveal(editor: &mut Editor, code: KeyCode) {
     match code {
         KeyCode::Char('z') => editor.reveal(Reveal::Middle),
         KeyCode::Char('t') => editor.reveal(Reveal::Top),
         KeyCode::Char('b') => editor.reveal(Reveal::Bottom),
+        KeyCode::Char('a') => editor.toggle_fold(),
+        KeyCode::Char('c') => editor.fold(),
+        KeyCode::Char('o') => editor.unfold(),
+        KeyCode::Char('M') => editor.fold_all(),
+        KeyCode::Char('R') => editor.unfold_all(),
         _ => {}
     }
 }
@@ -2682,6 +2690,62 @@ mod tests {
         // And an operator over it does what the same keys did in normal mode.
         vim.press("y");
         assert!(vim.editor.registers.get(None).text.starts_with("fn one()"));
+    }
+
+    #[test]
+    fn za_folds_what_the_cursor_is_in_and_opens_it_again() {
+        let code = "fn one() {\n    let a = 1;\n    a\n}\n\nfn two() {\n    2\n}\n";
+        let mut vim = Vim::rust(code);
+        vim.at(2, 5).press("za");
+        let fold = vim.editor.view().folds.at(0).expect("the function is folded");
+        assert_eq!((fold.head, fold.end), (0, 3));
+
+        // `j` from the head of a fold is one row down, which is the line
+        // after the lines it hides.
+        vim.press("j");
+        assert_eq!(vim.editor.cursor_coords().0, 4);
+        vim.press("k");
+        assert_eq!(vim.editor.cursor_coords().0, 0);
+
+        // `za` again opens it, and then there is nothing to open.
+        vim.press("za");
+        assert!(vim.editor.view().folds.is_empty());
+        vim.press("zo");
+        assert_eq!(vim.editor.message, "no fold here");
+
+        // `zM` closes every top-level thing, `zR` opens them all.
+        vim.press("zM");
+        assert_eq!(vim.editor.message, "2 folds");
+        vim.press("zR");
+        assert!(vim.editor.view().folds.is_empty());
+
+        // Without a grammar there is nothing to read the shape from.
+        let mut vim = Vim::new("plain text\nmore of it\n");
+        vim.press("za");
+        assert_eq!(vim.editor.message, "no grammar for this file");
+    }
+
+    #[test]
+    fn a_closed_fold_is_one_line_to_the_commands_that_count_lines() {
+        let code = "fn one() {\n    let a = 1;\n    a\n}\n\nfn two() {\n    2\n}\n";
+        let mut vim = Vim::rust(code);
+        vim.at(2, 5).press("zadd");
+        assert_eq!(vim.text(), "\nfn two() {\n    2\n}\n", "the whole function, not its first line");
+
+        // A jump into hidden lines opens the fold rather than stopping short.
+        let mut vim = Vim::rust(code);
+        vim.at(1, 1).press("za");
+        vim.press("/let<cr>");
+        assert!(vim.editor.view().folds.is_empty());
+        assert_eq!(vim.editor.cursor_coords().0, 1);
+
+        // An edit that cuts across a fold's lines opens it: the lines it was
+        // made of are not there any more.
+        let mut vim = Vim::rust(code);
+        vim.at(1, 1).press("za");
+        assert!(!vim.editor.view().folds.is_empty());
+        vim.press("Gdgg");
+        assert!(vim.editor.view().folds.is_empty());
     }
 
     #[test]

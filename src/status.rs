@@ -47,6 +47,8 @@ pub struct Glyphs {
     pub diagnostic: &'static str,
     /// In front of the git branch.
     pub branch: &'static str,
+    /// In front of a closed fold's count, on the line it leaves showing.
+    pub fold: &'static str,
 }
 
 /// The dog: side-on while it runs, sitting when it stops. Material Design
@@ -89,6 +91,7 @@ pub const NERD: Glyphs = Glyphs {
     warning: "W",
     diagnostic: "\u{25cf}",
     branch: "\u{e0a0}",
+    fold: "\u{22ef}",
 };
 
 pub const PLAIN: Glyphs = Glyphs {
@@ -107,6 +110,7 @@ pub const PLAIN: Glyphs = Glyphs {
     warning: "W",
     diagnostic: "!",
     branch: "@",
+    fold: "...",
 };
 
 pub fn glyphs(editor: &Editor) -> &'static Glyphs {

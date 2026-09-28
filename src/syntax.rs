@@ -1303,6 +1303,38 @@ impl Syntax {
         }
     }
 
+    /// What `za` folds at this position: the innermost named node the cursor
+    /// is in that spans more than one line, as a byte range.
+    ///
+    /// Any node, not only functions and classes: a `match` arm, an `if`, a
+    /// list written over several lines are all things worth folding, and the
+    /// grammar already says where each of them ends. Innermost, so `za`
+    /// inside a nested block folds the block rather than everything.
+    pub fn fold_at(&self, at: usize, line_of: impl Fn(usize) -> usize) -> Option<Range<usize>> {
+        let root = self.tree.root_node();
+        let end = (at + 1).min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(at, end)?;
+        loop {
+            let range = node.byte_range();
+            if node.is_named() && node.parent().is_some() && line_of(range.end) > line_of(range.start) {
+                return Some(range);
+            }
+            node = node.parent()?;
+        }
+    }
+
+    /// What `zM` folds: every outermost thing in the file that spans more
+    /// than one line. Outermost rather than all of them, because that is what
+    /// closing every fold looks like - one line per item.
+    pub fn folds(&self, line_of: impl Fn(usize) -> usize) -> Vec<Range<usize>> {
+        let root = self.tree.root_node();
+        let mut cursor = root.walk();
+        root.named_children(&mut cursor)
+            .map(|node| node.byte_range())
+            .filter(|range| line_of(range.end) > line_of(range.start))
+            .collect()
+    }
+
     /// The argument the cursor is in: `ia` is the argument itself, `aa` takes
     /// the comma with it. The list is whatever the grammar calls a run of
     /// things between brackets - arguments, parameters, and the type
