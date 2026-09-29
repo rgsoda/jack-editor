@@ -21,6 +21,14 @@ mkdir -p "$here/gif"
 # vhs has to run from the repository root.
 cd "$root"
 
+# `--no-keycast` leaves the recording bare, without the keys named in the
+# corner. Everything else is a tape name.
+keycast=yes
+if [ "${1:-}" = --no-keycast ]; then
+  keycast=no
+  shift
+fi
+
 tapes=()
 if [ $# -gt 0 ]; then
   for name in "$@"; do tapes+=("$here/tapes/${name%.tape}.tape"); done
@@ -87,6 +95,19 @@ SH2
 
   env XDG_CONFIG_HOME="$cfg" DEMO="$DEMO" JACK="$JACK" SHELL="$work/demo-shell" \
     vhs "$tape" --output "$here/gif/$name.gif"
+
+  # The keys, named in a corner. The tape is the list of them and vhs plays
+  # it at a speed the tape states, so the timing is worked out rather than
+  # guessed -- and scaled onto the length that came out, because vhs runs a
+  # percent or two faster than the arithmetic says.
+  if [ "$keycast" = yes ]; then
+    length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$here/gif/$name.gif")
+    "$here/keycast.py" "$tape" --actual "$length" > "$work/$name.ass"
+    ffmpeg -v error -i "$here/gif/$name.gif" -filter_complex \
+      "ass=$work/$name.ass,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3" \
+      -y "$work/$name.gif"
+    mv "$work/$name.gif" "$here/gif/$name.gif"
+  fi
 done
 
 echo

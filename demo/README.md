@@ -12,6 +12,7 @@ sudo pacman -S vhs          # or: brew install vhs
 cargo build --release
 demo/render.sh              # all of them, into demo/gif/
 demo/render.sh git lsp      # or just those two
+demo/render.sh --no-keycast # without the keys named in the corner
 ```
 
 Every take starts from its own throwaway copy of `demo/fixture` — a small Rust
@@ -27,6 +28,31 @@ quickfix list demonstrates nothing.
 
 `lsp.tape` and `tour.tape` want `rust-analyzer` on the path. The rest do not
 want anything.
+
+## The keys, named in the corner
+
+Each clip says what is being pressed as it is pressed. Nothing captures the
+keys: the tape already *is* the list of them, and vhs plays it back at a speed
+the tape states, so `keycast.py` works the timing out — one typing-speed per
+character of a `Type`, whatever a `Sleep` says, one typing-speed for a key —
+and writes it as a subtitle that ffmpeg burns in.
+
+Worked out is not the same as right, so it is checked rather than trusted:
+
+```sh
+demo/keycast.py demo/tapes/git.tape --check 25.0
+# git            computed   25.4s  actual   25.0s  drift  +0.4s (+2%)
+```
+
+Every tape lands within one or two percent, always a little over, because vhs
+runs a shade faster than the arithmetic says. The error is proportional rather
+than accumulating, so `render.sh` passes `--actual` with the length that came
+out and the timeline is scaled onto it. If a tape ever drifts further than
+that, the model here has stopped matching what vhs does, and `--check` is how
+you find out.
+
+`space` and the key after it are one badge, `<space>f`, because that is one
+thing pressed and it is how the keymap writes it.
 
 ## The tour
 
