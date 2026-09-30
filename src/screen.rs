@@ -112,11 +112,24 @@ pub struct Surface {
     width: usize,
     height: usize,
     cells: Vec<Cell>,
+    /// What a cell with no background of its own sits on. Writing replaces a
+    /// cell outright rather than blending into it, so a theme's background
+    /// cannot be painted underneath and left there - the first character
+    /// drawn over it would punch the terminal's own colour back through. It
+    /// is layered in as each cell is written instead.
+    paper: Style,
 }
 
 impl Surface {
     pub fn new(width: usize, height: usize) -> Self {
-        Surface { width, height, cells: vec![BLANK; width * height] }
+        Surface { width, height, cells: vec![BLANK; width * height], paper: Style::default() }
+    }
+
+    /// What the whole surface sits on, for a theme that names a background.
+    /// Set before drawing: it takes the cells that are still blank with it.
+    pub fn set_paper(&mut self, paper: Style) {
+        self.paper = paper;
+        self.clear();
     }
 
     pub fn size(&self) -> (usize, usize) {
@@ -124,7 +137,7 @@ impl Surface {
     }
 
     pub fn clear(&mut self) {
-        self.cells.fill(BLANK);
+        self.cells.fill(Cell { style: self.paper, ..BLANK });
     }
 
     fn resize(&mut self, width: usize, height: usize) {
@@ -157,6 +170,7 @@ impl Surface {
         if width == 0 || x >= self.width || y >= self.height {
             return;
         }
+        let style = self.paper.patch(style);
         self.cells[y * self.width + x] = Cell { ch, tail, style };
         for column in x + 1..(x + width).min(self.width) {
             self.cells[y * self.width + column] = Cell { ch: CONTINUATION, tail: NO_TAIL, style };

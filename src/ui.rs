@@ -24,6 +24,15 @@ use crate::syntax::Highlights;
 /// Draw a whole frame. Nothing here talks to the terminal; `Screen` works out
 /// which of these cells actually need sending.
 pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
+    // A theme that names a background gets the whole screen, and every cell
+    // drawn from here on sits on it. The built-in theme names none and the
+    // terminal's own shows through, which is the better answer when the
+    // colours were chosen to sit on it.
+    surface.set_paper(match editor.theme.has("ui.background") {
+        true => editor.theme.style("ui.background"),
+        false => crate::screen::Style::default(),
+    });
+
     let (rects, lines) = editor.window_rects();
     for &(id, rect) in &rects {
         draw_window(editor, surface, id, rect);
@@ -74,19 +83,6 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
 fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     let (view, cursor, scroll_top, scroll_left) = editor.window_state(id);
     let focused = id == editor.focus();
-
-    // A theme that names a background paints it, rather than letting the
-    // terminal's show through. The built-in one does not: blending in is
-    // better when the colours were chosen to. A scheme is chosen whole,
-    // though, and half of a light scheme over a dark terminal is not it.
-    if editor.theme.has("ui.background") {
-        let paper = editor.theme.style("ui.background");
-        for y in rect.y..rect.y + rect.height {
-            for x in rect.x..rect.x + rect.width {
-                surface.put(x, y, ' ', 1, paper);
-            }
-        }
-    }
 
     let height = rect.text_height();
     let total_lines = view.doc.len_lines();
@@ -1838,6 +1834,38 @@ mod tests {
         view.attach_syntax(&crate::theme::Theme::built_in());
         editor.set_viewport(80, 40);
         editor
+    }
+
+    /// A scheme brings a background, and it has to reach the cells that have
+    /// text on them. Drawing replaces a cell outright rather than blending,
+    /// so anything drawn in a style with no background of its own - which is
+    /// most of a file - would otherwise punch the terminal's own colour back
+    /// through, leaving the paint showing only around the edges.
+    #[test]
+    fn a_theme_background_reaches_behind_the_text_as_well() {
+        let mut editor = editor_with_lines(10);
+        editor.cursorline = false;
+        editor.set_theme("nord").expect("nord");
+        let keys = Keys::default();
+        let paper = editor.theme.style("ui.background").bg;
+        assert!(paper.is_some(), "the scheme has a background");
+
+        for y in [0, 3, 9] {
+            let row = row_backgrounds(&editor, &keys, y);
+            assert!(row.iter().all(|bg| *bg == paper), "row {y}: {row:?}");
+        }
+    }
+
+    /// And the built-in theme still lets the terminal through, which is the
+    /// better answer when the colours were chosen to sit on it.
+    #[test]
+    fn the_built_in_theme_paints_no_background_at_all() {
+        let mut editor = editor_with_lines(10);
+        editor.cursorline = false;
+        let keys = Keys::default();
+        assert!(!editor.theme.has("ui.background"));
+        let row = row_backgrounds(&editor, &keys, 3);
+        assert!(row.iter().all(|bg| bg.is_none()), "{row:?}");
     }
 
     #[test]
