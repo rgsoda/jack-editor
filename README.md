@@ -8,7 +8,7 @@ More of them, one feature at a time, in [demo/](demo/README.md).
 
 ## Status
 
-Step 77: a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -236,6 +236,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set editorconfig` | `noeditorconfig`: read the project's `.editorconfig` |
 | `:set list` | `nolist`: draw tabs as `→` and trailing spaces as `·` |
 | `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
+| `:set spotlight` | `nospotlight`: dim everything outside the function the cursor is in |
 | `:set coach` | `nocoach`: say so when a run of keys had a count in it |
 | `:set branch` | `nobranch`: the git branch in the status line |
 | `:set opener=xdg-open` | what `gx` hands a link to; empty means the platform's own |
@@ -1101,6 +1102,24 @@ few cells of it. A long file name or a message shortens the lane from the left
 rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Every glyph it uses is a Material Design icon from the patched font, so
 `:set noglyphs` has no dog either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## The spotlight
+
+`:set spotlight` draws everything outside the function the cursor is in one
+dim colour. The function you are reading keeps the grammar's colours and
+everything else goes quiet, and because it follows the cursor, moving down the
+file lights each function in turn as you reach it.
+
+It is the same question `af` asks — the enclosing function, from the grammar —
+so it costs a lookup the parse tree already has the answer to, and it is right
+about a closure inside a method for the same reason `af` is. One flat colour
+rather than a faded version of each: what is dimmed is there to be glanced at,
+and a glance is one colour. `ui.dim` in the theme is the colour.
+
+A cursor that is not inside a function leaves the whole file lit — at the top
+of a file, among the imports, in a `const` between two functions. Dimming all
+of it would say nothing about where you are, which is the only thing this is
+for. A file with no grammar has nothing to ask and does the same.
 
 ## The coach
 

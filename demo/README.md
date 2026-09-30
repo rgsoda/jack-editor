@@ -1,6 +1,6 @@
 # The demos
 
-Thirteen recordings of jack doing what it does, and the scripts that make them.
+Fourteen recordings of jack doing what it does, and the scripts that make them.
 Nothing here is captured by hand: each GIF is a [vhs](https://github.com/charmbracelet/vhs)
 tape — a list of keys and pauses — replayed into a headless terminal, so a
 re-render after a change shows the change rather than a different take.
@@ -76,6 +76,7 @@ The one at the top of the main README.
 | [`windows`](tapes/windows.tape) | splits, `-` as a directory buffer, renaming by editing it |
 | [`dog`](tapes/dog.tape) | the dog, and `:stats` |
 | [`coach`](tapes/coach.tape) | `:set coach`, and the count you did not type |
+| [`spotlight`](tapes/spotlight.tape) | `:set spotlight`, the function you are in lit and the rest dimmed |
 
 ![editing](gif/editing.gif)
 ![cursors](gif/cursors.gif)
@@ -89,6 +90,7 @@ The one at the top of the main README.
 ![windows](gif/windows.gif)
 ![dog](gif/dog.gif)
 ![coach](gif/coach.gif)
+![spotlight](gif/spotlight.gif)
 
 ## Writing another one
 

@@ -141,6 +141,14 @@ pub static SETTINGS: &[Setting] = &[
         about: "Draw a tab as an arrow and a trailing space as a dot.",
     },
     Setting {
+        name: "spotlight",
+        kind: Kind::Flag(false),
+        about: "Draw everything outside the function the cursor is in one dim \
+                colour, so the thing being read is the thing lit. Needs a \
+                grammar, and leaves the file alone when the cursor is not in \
+                a function at all.",
+    },
+    Setting {
         name: "coach",
         kind: Kind::Flag(false),
         about: "Say so when a run of keys had a count in it: ten `j` rather \

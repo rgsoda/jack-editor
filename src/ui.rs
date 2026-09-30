@@ -111,6 +111,21 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         }
     }
 
+    // `:set spotlight`: everything outside the function the cursor is in, in
+    // one colour. A cursor that is not in a function - or a file with no
+    // grammar to ask - leaves the whole thing lit, because dimming all of it
+    // says nothing about where you are.
+    if editor.spotlight
+        && !view.listing
+        && let Some(((start, end), _)) = view.function_ranges(cursor.head)
+    {
+        let dim = editor.theme.style("ui.dim");
+        let text = &view.doc.text;
+        let (start, end) = (text.char_to_byte(start), text.char_to_byte(end));
+        highlights.fade(first_byte..start, dim);
+        highlights.fade(end..last_byte, dim);
+    }
+
     let gutter = editor.gutter_width_for(view);
     let signs = editor.sign_width();
     let (cursor_line, _) = view.doc.coords(cursor.head);
@@ -1789,6 +1804,60 @@ mod tests {
         editor.show_dog = true;
         editor.glyphs = false;
         assert!(!status_row(&editor, &keys).contains(status::DOG_SITTING));
+    }
+
+    fn row_foregrounds(editor: &Editor, keys: &Keys, y: usize) -> Vec<Option<crossterm::style::Color>> {
+        let mut screen = Screen::new();
+        let (width, height) = (editor.width, editor.top() + editor.height + 1);
+        let surface = screen.begin(width, height);
+        draw(editor, keys, surface);
+        (0..width).map(|x| surface.get(x, y).style.fg).collect()
+    }
+
+    /// A little Rust file with a grammar attached, for the things that can
+    /// only be asked of a parse tree.
+    fn editor_with_grammar(text: &str) -> Editor {
+        let mut editor = Editor::scratch();
+        let view = editor.view_mut();
+        view.doc.text = ropey::Rope::from_str(text);
+        view.doc.path = Some(std::path::PathBuf::from("spot.rs"));
+        view.attach_syntax(&crate::theme::Theme::built_in());
+        editor.set_viewport(80, 40);
+        editor
+    }
+
+    #[test]
+    fn spotlight_dims_what_is_not_the_function_you_are_in() {
+        let mut editor = editor_with_grammar("fn one() {\n    let a = 1;\n}\n\nfn two() {\n    let b = 2;\n}\n");
+        editor.spotlight = true;
+        editor.goto_line(5);
+        let keys = Keys::default();
+        let dim = editor.theme.style("ui.dim").fg;
+        assert!(dim.is_some(), "the theme has a colour to dim to");
+        let text = editor.gutter_width();
+
+        // The other function is all one colour, `let` and `a` alike.
+        let elsewhere = row_foregrounds(&editor, &keys, 1);
+        assert!(elsewhere[text..text + 10].iter().all(|fg| *fg == dim), "{elsewhere:?}");
+
+        // The one the cursor is in keeps the grammar's colours, which are
+        // more than one.
+        let here = row_foregrounds(&editor, &keys, 5);
+        let colours: std::collections::HashSet<_> = here[text..text + 10].iter().collect();
+        assert!(colours.len() > 1, "still highlighted: {here:?}");
+    }
+
+    /// Dimming the whole file would say nothing about where you are, so a
+    /// cursor with no function around it leaves it all lit.
+    #[test]
+    fn spotlight_outside_a_function_lights_everything() {
+        let mut editor = editor_with_grammar("fn one() {\n    let a = 1;\n}\n\nconst N: u32 = 1;\n");
+        let keys = Keys::default();
+        let lit = row_foregrounds(&editor, &keys, 1);
+
+        editor.spotlight = true;
+        editor.goto_line(4);
+        assert_eq!(row_foregrounds(&editor, &keys, 1), lit);
     }
 
     #[test]

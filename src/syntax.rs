@@ -1579,6 +1579,20 @@ impl Highlights {
         self.styles.get(byte.checked_sub(self.start)?).copied().flatten()
     }
 
+    /// Flatten a stretch to one style, over whatever the grammar said about
+    /// it. `:set spotlight` is the caller: the code outside the function you
+    /// are in is there to be glanced at rather than read, and a glance is all
+    /// one colour. A range that falls outside what is held here is clipped to
+    /// it rather than being an error, because the caller is working in the
+    /// document's bytes and this holds only the visible ones.
+    pub fn fade(&mut self, range: std::ops::Range<usize>, style: Style) {
+        let from = range.start.saturating_sub(self.start);
+        let to = range.end.saturating_sub(self.start).min(self.styles.len());
+        if let Some(stretch) = self.styles.get_mut(from..to) {
+            stretch.fill(Some(style));
+        }
+    }
+
     /// Put a style on one byte, over whatever the grammar said about it.
     /// Rainbow brackets are the only caller: a bracket's colour comes from how
     /// deep it is, which is not something a highlight query can express.

@@ -465,6 +465,9 @@ pub struct Editor {
     /// `:set cursorword`: underline the other uses of the word the cursor is
     /// on, which is `gr` for the impatient and costs no server.
     pub cursorword: bool,
+    /// `:set spotlight`: everything outside the function the cursor is in,
+    /// drawn in one dim colour. Off, and nothing asks the grammar for it.
+    pub spotlight: bool,
     /// `:set coach`: say so when a run of keys had a count in it. Off, and
     /// the keys are not even looked at - see `coach.rs`.
     pub coaching: bool,
@@ -767,6 +770,7 @@ impl Editor {
             server_specs: crate::lsp::Servers::default(),
             show_whitespace: false,
             cursorword: false,
+            spotlight: false,
             coaching: false,
             editorconfig: true,
             show_branch: true,
@@ -2415,6 +2419,8 @@ impl Editor {
             "nocoach" => self.coaching = false,
             "cursorword" => self.cursorword = true,
             "nocursorword" => self.cursorword = false,
+            "spotlight" => self.spotlight = true,
+            "nospotlight" => self.spotlight = false,
             "editorconfig" => self.editorconfig = true,
             "noeditorconfig" => self.editorconfig = false,
             "branch" => self.show_branch = true,
@@ -2442,7 +2448,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2466,6 +2472,7 @@ impl Editor {
                     self.show_whitespace,
                     self.cursorword,
                     self.coaching,
+                    self.spotlight,
                     self.editorconfig,
                     self.show_branch,
                     match self.opener.is_empty() {
