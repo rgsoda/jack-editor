@@ -41,6 +41,10 @@ Type "vaf" Sleep 1400ms
 Escape
 Escape Sleep 500ms
 
+# The same question asked of the whole screen: what you are not in, dimmed.
+Type ":set spotlight" Enter Sleep 2400ms
+Type ":set nospotlight" Enter Sleep 500ms
+
 # Live grep over the project. The pattern is one only the Rust file has, so
 # the next beat lands somewhere a language server has something to say.
 Space Type "s" Sleep 600ms
