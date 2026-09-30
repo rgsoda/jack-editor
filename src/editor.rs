@@ -470,6 +470,10 @@ pub struct Editor {
     /// What the theme was before the picker was opened, so that closing it
     /// without choosing puts it back. `None` when no picker is previewing.
     pub theme_was: Option<String>,
+    /// `:set smear`: the cells the cursor has just crossed, drawn for a
+    /// moment. See `smear.rs`.
+    pub smear: bool,
+    pub smear_trail: crate::smear::Smear,
     /// `:set spotlight`: everything outside the function the cursor is in,
     /// drawn in one dim colour. Off, and nothing asks the grammar for it.
     pub spotlight: bool,
@@ -776,6 +780,8 @@ impl Editor {
             show_whitespace: false,
             cursorword: false,
             spotlight: false,
+            smear: false,
+            smear_trail: crate::smear::Smear::default(),
             theme_name: String::new(),
             theme_was: None,
             coaching: false,
@@ -2476,6 +2482,11 @@ impl Editor {
             "nocursorword" => self.cursorword = false,
             "spotlight" => self.spotlight = true,
             "nospotlight" => self.spotlight = false,
+            "smear" => self.smear = true,
+            "nosmear" => {
+                self.smear = false;
+                self.smear_trail.forget();
+            }
             "editorconfig" => self.editorconfig = true,
             "noeditorconfig" => self.editorconfig = false,
             "branch" => self.show_branch = true,
@@ -2503,7 +2514,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} smear={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2528,6 +2539,7 @@ impl Editor {
                     self.cursorword,
                     self.coaching,
                     self.spotlight,
+                    self.smear,
                     self.editorconfig,
                     self.show_branch,
                     match self.opener.is_empty() {
@@ -4612,6 +4624,32 @@ impl Editor {
                 (x + (rect.x + self.gutter_width()) as u16, y + rect.y as u16)
             }
         }
+    }
+
+    /// Where the cursor has got to, for the wake to follow. Called once a
+    /// frame, after scrolling has settled: before that the answer is where
+    /// the cursor will be rather than where it is drawn.
+    ///
+    /// A prompt or a picker puts the terminal cursor somewhere that is not
+    /// the buffer, and a wake stretching down to the command line is a streak
+    /// about nothing. The wake is the buffer cursor's.
+    pub fn smear_follows(&mut self) {
+        if !self.smear || self.prompt.is_some() || self.picker.is_some() {
+            self.smear_trail.forget();
+            return;
+        }
+        let at = self.cursor_screen();
+        self.smear_trail.follows(at);
+    }
+
+    /// A moment with nothing typed: the far end of the wake goes, and whether
+    /// there is any left is whether the loop comes back for it.
+    pub fn smear_fades(&mut self) -> bool {
+        self.smear_trail.fades()
+    }
+
+    pub fn smear_running(&self) -> bool {
+        self.smear && self.smear_trail.running()
     }
 
     pub fn is_modified(&self) -> bool {

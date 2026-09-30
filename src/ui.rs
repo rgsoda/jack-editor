@@ -60,6 +60,16 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
 
     // The box and the popup want the same few rows beside the cursor. The
     // popup is the one being typed into, so it wins them.
+    // The cursor's wake, over the text and under everything that floats: a
+    // streak across a picker would be a streak across something that is not
+    // where the cursor is.
+    if editor.smear_running() {
+        let style = editor.theme.style("ui.smear");
+        for &(x, y) in editor.smear_trail.trail() {
+            surface.tint(x as usize, y as usize, style);
+        }
+    }
+
     match (editor.completion.as_ref(), editor.info.as_ref()) {
         (Some(completion), _) => draw_completion(editor, completion, surface),
         (None, Some(info)) => draw_info(editor, info, surface),
@@ -1841,6 +1851,31 @@ mod tests {
     /// so anything drawn in a style with no background of its own - which is
     /// most of a file - would otherwise punch the terminal's own colour back
     /// through, leaving the paint showing only around the edges.
+    /// The cells the cursor crossed are drawn, and the one it landed on is
+    /// not - the cursor is already there.
+    #[test]
+    fn the_cursor_leaves_a_wake_across_what_it_jumped() {
+        let mut editor = editor_with_lines(40);
+        editor.cursorline = false;
+        editor.smear = true;
+        editor.goto_line(0);
+        editor.smear_follows();
+        editor.goto_line(9);
+        editor.smear_follows();
+        assert!(editor.smear_running(), "a jump of nine rows is a wake");
+
+        let keys = Keys::default();
+        let mut screen = Screen::new();
+        let (width, height) = (editor.width, editor.top() + editor.height + 1);
+        let surface = screen.begin(width, height);
+        draw(&editor, &keys, surface);
+
+        let (x, y) = editor.cursor_screen();
+        let crossed = surface.get(x as usize, y as usize - 1).style;
+        assert!(crossed.reverse, "the row above the cursor was crossed");
+        assert!(!surface.get(x as usize, y as usize).style.reverse, "not under the cursor");
+    }
+
     #[test]
     fn a_theme_background_reaches_behind_the_text_as_well() {
         let mut editor = editor_with_lines(10);

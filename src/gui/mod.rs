@@ -185,6 +185,9 @@ impl App<'_> {
         let chrome = 1 + self.editor.top();
         self.session.before_frame(self.editor, cols, rows.saturating_sub(chrome));
 
+        // After the scrolling and before the drawing, as in the terminal.
+        self.editor.smear_follows();
+
         let grid = self.screen.begin(cols, rows);
         ui::draw(self.editor, &self.session.keys, grid);
         // A bar while typing, a block otherwise - the shapes the terminal
@@ -497,6 +500,9 @@ impl ApplicationHandler<Message> for App<'_> {
         // see whether you have gone away - and a sleeping dog needs no clock
         // at all, so the loop goes back to waiting on events alone.
         let patience = match (self.editor.dog.running, self.editor.dog_may_nap()) {
+            // A wake on screen wants the fastest clock of the three, and only
+            // wants it for half a second.
+            _ if self.editor.smear_running() => Some(crate::SMEAR_TICK),
             (true, _) if self.editor.dog.errand == crate::editor::Errand::Lapping => {
                 Some(crate::DOG_ZOOM)
             }
@@ -513,9 +519,14 @@ impl ApplicationHandler<Message> for App<'_> {
             // Nothing has arrived since the last frame, or this would not be
             // the wait: that much of it is the dog stopping, or dropping off.
             Some(since) if since.elapsed() >= patience => {
-                match self.editor.dog.running {
-                    true => self.editor.dog_rests(),
-                    false => self.editor.dog_sleeps(),
+                // The wake first and on its own clock, as in the terminal.
+                if self.editor.smear_running() {
+                    self.editor.smear_fades();
+                } else {
+                    match self.editor.dog.running {
+                        true => self.editor.dog_rests(),
+                        false => self.editor.dog_sleeps(),
+                    }
                 }
                 // What it is waiting for now is worked out on the way back
                 // through here, once the frame this asks for has been drawn.

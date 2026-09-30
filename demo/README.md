@@ -1,6 +1,6 @@
 # The demos
 
-Fifteen recordings of jack doing what it does, and the scripts that make them.
+Sixteen recordings of jack doing what it does, and the scripts that make them.
 Nothing here is captured by hand: each GIF is a [vhs](https://github.com/charmbracelet/vhs)
 tape — a list of keys and pauses — replayed into a headless terminal, so a
 re-render after a change shows the change rather than a different take.
@@ -78,6 +78,7 @@ The one at the top of the main README.
 | [`coach`](tapes/coach.tape) | `:set coach`, and the count you did not type |
 | [`spotlight`](tapes/spotlight.tape) | `:set spotlight`, the function you are in lit and the rest dimmed |
 | [`themes`](tapes/themes.tape) | `:themes`, three hundred and fifty schemes shown as you move over them |
+| [`smear`](tapes/smear.tape) | `:set smear`, the cells the cursor crossed, for a moment |
 
 ![editing](gif/editing.gif)
 ![cursors](gif/cursors.gif)
@@ -93,6 +94,7 @@ The one at the top of the main README.
 ![coach](gif/coach.gif)
 ![spotlight](gif/spotlight.gif)
 ![themes](gif/themes.gif)
+![smear](gif/smear.gif)
 
 ## Writing another one
 

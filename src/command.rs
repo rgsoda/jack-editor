@@ -150,6 +150,13 @@ pub static SETTINGS: &[Setting] = &[
                 a function at all.",
     },
     Setting {
+        name: "smear",
+        kind: Kind::Flag(false),
+        about: "Draw the cells the cursor has just crossed for a moment after \
+                it has crossed them, so a jump reads as having come from \
+                somewhere rather than the cursor turning up elsewhere.",
+    },
+    Setting {
         name: "coach",
         kind: Kind::Flag(false),
         about: "Say so when a run of keys had a count in it: ten `j` rather \

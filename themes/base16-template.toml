@@ -105,6 +105,7 @@
 "ui.inlayhint" = { fg = "$base03", italic = true }
 "ui.cursorword" = { underline = true }
 "ui.cursor.other" = { reverse = true }
+"ui.smear" = { reverse = true, dim = true }
 "ui.listing.directory" = { fg = "$base0C", bold = true }
 "ui.listing.parent" = { fg = "$base03", bold = true }
 "ui.search.match" = { fg = "$base00", bg = "$base0A" }

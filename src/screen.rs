@@ -166,6 +166,17 @@ impl Surface {
         self.write(x, y, ch, Tail::of(chars.as_str()), width, style);
     }
 
+    /// Restyle a cell that has already been drawn, keeping its character.
+    /// The cursor's wake is the caller: it is about cells the text is already
+    /// on, so it layers over them rather than replacing them.
+    pub fn tint(&mut self, x: usize, y: usize, style: Style) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let cell = &mut self.cells[y * self.width + x];
+        cell.style = cell.style.patch(style);
+    }
+
     fn write(&mut self, x: usize, y: usize, ch: char, tail: Tail, width: usize, style: Style) {
         if width == 0 || x >= self.width || y >= self.height {
             return;

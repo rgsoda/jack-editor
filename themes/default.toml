@@ -115,6 +115,9 @@
 # `^n`, `gm`, `gs`: the cursors that are not the terminal's own. Reversed,
 # because a second cursor has to read as a cursor rather than as a selection.
 "ui.cursor.other" = { reverse = true }
+# `:set smear`: the cells the cursor has just crossed. Reversed like a
+# cursor, because that is what it is the tail of, and gone in a moment.
+"ui.smear" = { reverse = true, dim = true }
 # A closed fold's count, on the line it leaves showing.
 "ui.fold" = { fg = "#6272a4", italic = true }
 # `:set list`: the arrow a tab becomes and the dot a trailing space becomes.

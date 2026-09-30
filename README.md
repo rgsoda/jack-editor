@@ -8,7 +8,7 @@ More of them, one feature at a time, in [demo/](demo/README.md).
 
 ## Status
 
-Step 77: three hundred and fifty colour schemes and a picker that shows each one as you move over it, everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: a cursor that leaves a wake on `:set smear`, three hundred and fifty colour schemes and a picker that shows each one as you move over it, everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -238,6 +238,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
 | `:set theme=nord` | a base16 scheme by name; empty is the built-in theme, and `:themes` is the list |
 | `:set spotlight` | `nospotlight`: dim everything outside the function the cursor is in |
+| `:set smear` | `nosmear`: draw the cells the cursor just crossed, for a moment |
 | `:set coach` | `nocoach`: say so when a run of keys had a count in it |
 | `:set branch` | `nobranch`: the git branch in the status line |
 | `:set opener=xdg-open` | what `gx` hands a link to; empty means the platform's own |
@@ -492,6 +493,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   over it, so a short theme file can restyle keywords without losing the
   status line. It also owns `config_dir()`, since the init file lives there
   too.
+- `smear.rs` — where the cursor has lately been, as screen cells. Knows
+  nothing about the editor: it is given a position and hands back a wake.
 - `base16.rs` — the tinted-theming scheme library as themes. The palettes and
   the template that says what sixteen colours mean are both embedded, and
   putting one through the other is a string replace and a parse.
@@ -1107,6 +1110,32 @@ few cells of it. A long file name or a message shortens the lane from the left
 rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Every glyph it uses is a Material Design icon from the patched font, so
 `:set noglyphs` has no dog either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## The cursor's wake
+
+`:set smear` draws the cells the cursor has just crossed and then lets go of
+them one at a time. A terminal cursor is one cell and it teleports: `G` puts it
+forty lines away with nothing in between, and the eye has to go and find it
+again. The wake is the path it would have taken if it had travelled, so where
+it came from is still on screen while you are looking for where it went.
+
+The path is drawn rather than the places. Two dots would say a cursor was in
+two places; a straight line between them — Bresenham, because the cursor's real
+path between two cells is not a thing that exists and a straight one is the one
+that reads — says it came from one and went to the other. Fourteen cells at
+most, a cell let go of every 28 milliseconds, so the whole of it is over in
+about four hundred. Long enough to follow, short enough that it is gone before
+you have read it.
+
+It costs nothing when it is off: the cursor's screen position is not even asked
+for. When it is on, the run loop wants a faster clock than anything else does,
+and gets it for the half second the wake is on screen — the dog's rest is put
+off by that much at most, which is less than the pause the dog is measuring.
+Both frontends do the same thing, because both already had this shape of loop
+for the dog.
+
+`ui.smear` in the theme is how it is drawn: reversed and dim by default, which
+is the cursor's own look faded, since that is what it is the tail of.
 
 ## The spotlight
 

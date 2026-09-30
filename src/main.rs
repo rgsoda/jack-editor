@@ -41,6 +41,7 @@ mod gui;
 mod screen;
 mod search;
 mod session;
+mod smear;
 mod sort;
 mod status;
 mod stream;
@@ -293,6 +294,11 @@ const DOG_NAP: Duration = Duration::from_secs(300);
 /// and nothing else does. Fast enough to be a run rather than a march.
 const DOG_ZOOM: Duration = Duration::from_millis(40);
 
+/// And how often the cursor's wake lets go of a cell. Fast: the whole of it
+/// is over in half a second, and a wake you can watch shorten is a smear
+/// rather than a hint of one.
+const SMEAR_TICK: Duration = Duration::from_millis(28);
+
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
     let mut screen = screen::Screen::new();
@@ -327,6 +333,10 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         let chrome = 1 + editor.top();
         session.before_frame(editor, cols, rows.saturating_sub(chrome));
 
+        // After the scrolling and before the drawing: until the view has
+        // settled, where the cursor is going to be drawn is not yet known.
+        editor.smear_follows();
+
         ui::draw(editor, &session.keys, screen.begin(cols, rows));
         screen.present(&mut out, editor.cursor_screen())?;
 
@@ -359,7 +369,11 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         // Sitting but awake: wait a nap, and a nap that runs out is the dog
         // asleep - one more wake-up, and then there is nothing left to draw.
         // Asleep, or no dog at all: block for ever, as this always did.
+        // A wake still on screen wants the fastest clock of the three, and
+        // it only has one for half a second - the dog's rest is put off by
+        // that much at most, which is less than the pause it is measuring.
         let wait = match (editor.dog.running, editor.dog_may_nap()) {
+            _ if editor.smear_running() => Some(SMEAR_TICK),
             (true, _) if editor.dog.errand == editor::Errand::Lapping => Some(DOG_ZOOM),
             (true, _) => Some(DOG_REST),
             (false, true) => Some(DOG_NAP),
@@ -370,6 +384,12 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
             Some(patience) => match rx.recv_timeout(patience) {
                 Ok(message) => message,
                 Err(RecvTimeoutError::Timeout) => {
+                    // The wake goes first and on its own clock; the dog's
+                    // rest is a different and much longer question.
+                    if editor.smear_running() {
+                        editor.smear_fades();
+                        continue;
+                    }
                     match editor.dog.running {
                         true => editor.dog_rests(),
                         false => editor.dog_sleeps(),
