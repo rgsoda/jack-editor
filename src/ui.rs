@@ -74,6 +74,20 @@ pub fn draw(editor: &Editor, keys: &Keys, surface: &mut Surface) {
 fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
     let (view, cursor, scroll_top, scroll_left) = editor.window_state(id);
     let focused = id == editor.focus();
+
+    // A theme that names a background paints it, rather than letting the
+    // terminal's show through. The built-in one does not: blending in is
+    // better when the colours were chosen to. A scheme is chosen whole,
+    // though, and half of a light scheme over a dark terminal is not it.
+    if editor.theme.has("ui.background") {
+        let paper = editor.theme.style("ui.background");
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                surface.put(x, y, ' ', 1, paper);
+            }
+        }
+    }
+
     let height = rect.text_height();
     let total_lines = view.doc.len_lines();
 

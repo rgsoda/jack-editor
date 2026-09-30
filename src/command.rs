@@ -71,6 +71,7 @@ pub static COMMANDS: &[Command] = &[
     Command { name: "cancel", argument: Argument::None },
     Command { name: "config", argument: Argument::None },
     Command { name: "preview", argument: Argument::None },
+    Command { name: "themes", argument: Argument::None },
     Command { name: "guifonts", argument: Argument::None },
     Command { name: "nohlsearch", argument: Argument::None },
 ];
@@ -313,6 +314,16 @@ pub static SETTINGS: &[Setting] = &[
         about: "What `:make` runs when it is not told what to run. Empty is \
                 whatever builds the project you are in - a Makefile, a \
                 Cargo.toml, a go.mod.",
+    },
+    Setting {
+        name: "theme",
+        kind: Kind::Value(
+            &["gruvbox-dark-hard", "catppuccin-mocha", "nord", "solarized-light", "tokyo-night-dark"],
+            "",
+        ),
+        about: "A base16 colour scheme by name. Empty is the built-in theme. \
+                `:themes` is the list, and picking from it is easier than \
+                spelling one of three hundred names.",
     },
     Setting {
         name: "guifont",

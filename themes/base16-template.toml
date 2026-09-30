@@ -1,0 +1,129 @@
+# What the sixteen colours of a base16 scheme mean to this editor.
+#
+# `themes/base16.toml` carries the palettes and nothing else - a scheme is
+# sixteen colours and a name. This file is the other half: every key the
+# built-in theme names, written in terms of `$base00` to `$base0F`, which
+# are replaced with that scheme's colours before it is parsed. It is valid
+# TOML as it stands, so a mistake here is caught by the test that builds
+# every scheme rather than by a theme that quietly loses its status line.
+#
+# The sixteen have settled meanings, and this follows them:
+#
+#   base00  background          base08  variables, deletions
+#   base01  raised background   base09  numbers, constants
+#   base02  selection           base0A  types, classes
+#   base03  comments, faded     base0B  strings, additions
+#   base04  faded foreground    base0C  escapes, support
+#   base05  foreground          base0D  functions, headings
+#   base06  bright foreground   base0E  keywords
+#   base07  brightest           base0F  deprecated
+
+# The text area's own background. The built-in theme has none - it lets the
+# terminal's show through - but a scheme is chosen as a whole, and half of a
+# light scheme over a dark terminal is not the scheme.
+"ui.background"    = { bg = "$base00" }
+
+"comment"          = { fg = "$base03", italic = true }
+"string"           = "$base0B"
+"character"        = "$base0B"
+"escape"           = "$base0C"
+"keyword"          = "$base0E"
+"variable.builtin" = "$base0E"
+"function"         = "$base0D"
+"type"             = "$base0A"
+"constructor"      = "$base0A"
+"constant"         = "$base09"
+"number"           = "$base09"
+"boolean"          = "$base09"
+"float"            = "$base09"
+"attribute"        = "$base0A"
+"label"            = "$base0A"
+"property"         = "$base0D"
+"operator"         = "$base0C"
+"tag"              = "$base0D"
+"tag.error"        = "$base08"
+"punctuation.special" = "$base0C"
+# SQL calls its own keywords these; CSS gives each at-rule a capture.
+"conditional"      = "$base0E"
+"storageclass"     = "$base0E"
+"charset"          = "$base0E"
+"import"           = "$base0E"
+"media"            = "$base0E"
+"namespace"        = "$base0E"
+"supports"         = "$base0E"
+"keyframes"        = "$base0E"
+
+# Markdown, where the markup is the content.
+"text.title"       = { fg = "$base0D", bold = true }
+"text.literal"     = "$base0B"
+"text.uri"         = { fg = "$base0C", underline = true }
+"text.reference"   = "$base09"
+"text.emphasis"    = { italic = true }
+"text.strong"      = { bold = true }
+
+# The status line names both sides of every join, because the powerline
+# separators are one segment's background drawn over the next one's.
+"ui.statusline"    = { fg = "$base05", bg = "$base01" }
+"ui.statusline.file" = { fg = "$base00", bg = "$base04" }
+"ui.statusline.info" = { fg = "$base00", bg = "$base04" }
+"ui.statusline.position" = { fg = "$base00", bg = "$base0E", bold = true }
+"ui.statusline.inactive" = { fg = "$base03", bg = "$base00" }
+"ui.statusline.branch" = { fg = "$base0E" }
+"ui.window.separator" = { fg = "$base02" }
+
+"ui.mode.normal"   = { fg = "$base00", bg = "$base0D", bold = true }
+"ui.mode.insert"   = { fg = "$base00", bg = "$base0B", bold = true }
+"ui.mode.visual"   = { fg = "$base00", bg = "$base09", bold = true }
+
+# A scheme has a colour for this, so it is used rather than reversing video.
+"ui.selection"     = { bg = "$base02" }
+"ui.eof"           = "$base03"
+
+"ui.tabline" = { fg = "$base04", bg = "$base00" }
+"ui.tabline.selected" = { fg = "$base00", bg = "$base0E", bold = true }
+
+"ui.completion" = { fg = "$base05", bg = "$base01" }
+"ui.completion.selected" = { fg = "$base00", bg = "$base0D", bold = true }
+"ui.completion.kind" = { fg = "$base0C", italic = true }
+
+"ui.info" = { fg = "$base05", bg = "$base01" }
+"ui.info.active" = { fg = "$base0B", bold = true }
+
+"ui.picker" = { fg = "$base05", bg = "$base00" }
+"ui.picker.prompt" = { fg = "$base00", bg = "$base0E", bold = true }
+"ui.picker.selected" = { fg = "$base06", bg = "$base02", bold = true }
+"ui.picker.match" = { fg = "$base0B" }
+"ui.picker.detail" = { fg = "$base03" }
+"ui.picker.border" = { fg = "$base0E", bg = "$base00" }
+
+"ui.cursorline" = { bg = "$base01" }
+"ui.linenr" = { fg = "$base03" }
+"ui.linenr.selected" = { fg = "$base05", bold = true }
+"ui.dim" = { fg = "$base03" }
+"ui.fold" = { fg = "$base03", italic = true }
+"ui.whitespace" = { fg = "$base02" }
+"ui.inlayhint" = { fg = "$base03", italic = true }
+"ui.cursorword" = { underline = true }
+"ui.cursor.other" = { reverse = true }
+"ui.listing.directory" = { fg = "$base0C", bold = true }
+"ui.listing.parent" = { fg = "$base03", bold = true }
+"ui.search.match" = { fg = "$base00", bg = "$base0A" }
+"ui.bracket.match" = { fg = "$base0E", bold = true, underline = true }
+
+# Six that are not each other, so depth is what you notice.
+"ui.bracket.1" = { fg = "$base0E" }
+"ui.bracket.2" = { fg = "$base0A" }
+"ui.bracket.3" = { fg = "$base0C" }
+"ui.bracket.4" = { fg = "$base0B" }
+"ui.bracket.5" = { fg = "$base09" }
+"ui.bracket.6" = { fg = "$base0D" }
+
+"ui.gutter.added" = { fg = "$base0B" }
+"ui.gutter.modified" = { fg = "$base09" }
+"ui.gutter.deleted" = { fg = "$base08" }
+
+"diagnostic.error" = { fg = "$base08" }
+"diagnostic.warning" = { fg = "$base09" }
+"diagnostic.info" = { fg = "$base0D" }
+"diagnostic.hint" = { fg = "$base03" }
+"diagnostic.underline" = { underline = true }

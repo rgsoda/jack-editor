@@ -465,6 +465,11 @@ pub struct Editor {
     /// `:set cursorword`: underline the other uses of the word the cursor is
     /// on, which is `gr` for the impatient and costs no server.
     pub cursorword: bool,
+    /// `:set theme=`: which base16 scheme is on, empty for the built-in one.
+    pub theme_name: String,
+    /// What the theme was before the picker was opened, so that closing it
+    /// without choosing puts it back. `None` when no picker is previewing.
+    pub theme_was: Option<String>,
     /// `:set spotlight`: everything outside the function the cursor is in,
     /// drawn in one dim colour. Off, and nothing asks the grammar for it.
     pub spotlight: bool,
@@ -771,6 +776,8 @@ impl Editor {
             show_whitespace: false,
             cursorword: false,
             spotlight: false,
+            theme_name: String::new(),
+            theme_was: None,
             coaching: false,
             editorconfig: true,
             show_branch: true,
@@ -936,6 +943,33 @@ impl Editor {
         }
         view.textwidth = found.textwidth;
         view.trim = found.trim;
+    }
+
+    /// `:set theme=`, and the picker: a base16 scheme by name, over the
+    /// built-in theme so that a key the template does not name still has a
+    /// colour, and under the user's own `theme.toml` so that their tweaks
+    /// still win.
+    ///
+    /// Every open file is then re-highlighted, because a grammar resolves its
+    /// capture names to colours when its query is compiled and caches the
+    /// answer. That cache is the whole reason this is a function rather than
+    /// an assignment.
+    pub fn set_theme(&mut self, slug: &str) -> Result<(), String> {
+        let Some(scheme) = crate::base16::scheme(slug) else {
+            return Err(format!("no theme called {slug} - :themes lists them"));
+        };
+        let built = scheme.theme().map_err(|err| format!("{err:#}"))?;
+        let mut theme = Theme::built_in();
+        theme.overlay(built);
+        if let Some(user) = Theme::user_only() {
+            theme.overlay(user);
+        }
+        self.theme = theme;
+        self.theme_name = slug.to_string();
+        for index in 0..self.views.len() {
+            self.attach_syntax(index);
+        }
+        Ok(())
     }
 
     fn attach_syntax(&mut self, index: usize) {
@@ -1829,6 +1863,7 @@ impl Editor {
             ("cancel", _) => self.cancel_jobs(),
             ("config", _) => self.open_config(),
             ("preview", _) => self.toggle_preview(),
+            ("themes", _) => self.open_theme_picker(),
             ("guifonts", _) => self.open_font_picker(),
             ("noh" | "nohlsearch", _) => self.clear_search_highlight(),
             (other, _) => self.message = format!("not a command: {other}"),
@@ -2345,6 +2380,26 @@ impl Editor {
                     Ok(lines) if lines <= 100 => self.hitcontext = lines,
                     _ => self.message = format!("{value:?} is not a number of lines (0 to 100)"),
                 },
+                ("theme", _) => {
+                    let slug = value.trim().to_string();
+                    match slug.is_empty() {
+                        // `:set theme=` with nothing after it is the way back
+                        // to the theme the editor ships with.
+                        true => {
+                            let (theme, _) = Theme::load_user();
+                            self.theme = theme;
+                            self.theme_name.clear();
+                            for index in 0..self.views.len() {
+                                self.attach_syntax(index);
+                            }
+                        }
+                        false => {
+                            if let Err(complaint) = self.set_theme(&slug) {
+                                self.message = complaint;
+                            }
+                        }
+                    }
+                }
                 ("guifont", _) if !value.trim().is_empty() => {
                     self.guifont = value.trim().to_string();
                 }
@@ -2448,7 +2503,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2495,6 +2550,10 @@ impl Editor {
                     match self.dogname.is_empty() {
                         true => "(unnamed)",
                         false => &self.dogname,
+                    },
+                    match self.theme_name.is_empty() {
+                        true => "built-in",
+                        false => &self.theme_name,
                     },
                     self.guifont,
                     self.guifontsize
@@ -3290,7 +3349,7 @@ impl Editor {
                 (item.target.clone(), view.doc.text.char_to_line(at))
             }
             // A list to read, and a list of things to do: neither is a place.
-            Source::Help | Source::Actions | Source::Fonts => return None,
+            Source::Help | Source::Actions | Source::Fonts | Source::Themes => return None,
         };
         Some(Entry { path, line, text: item.text.clone() })
     }
@@ -3569,6 +3628,30 @@ impl Editor {
         self.open_picker(Picker::new(Source::Fonts, items));
     }
 
+    /// The colour schemes, as a list that shows itself: moving the selection
+    /// puts that theme on, so the choice is made by looking rather than by
+    /// reading three hundred names. Leaving without choosing puts back the
+    /// one that was on.
+    pub fn open_theme_picker(&mut self) {
+        let items: Vec<Item> = crate::base16::schemes()
+            .into_iter()
+            .map(|scheme| Item {
+                detail: match scheme.variant.as_str() {
+                    "light" => format!("light · {}", scheme.name),
+                    _ => scheme.name.clone(),
+                },
+                id: 0,
+                target: scheme.slug.clone(),
+                text: scheme.slug,
+            })
+            .collect();
+        self.theme_was = Some(self.theme_name.clone());
+        self.open_picker(Picker::new(Source::Themes, items));
+        // The one under the selection as it opens, so the list is showing
+        // something from the first frame rather than from the first key.
+        self.preview_theme();
+    }
+
     /// Lines matching a pattern, anywhere under the working directory. Nothing
     /// runs until something is typed: the pattern *is* the query.
     pub fn open_grep_picker(&mut self) {
@@ -3729,6 +3812,45 @@ impl Editor {
         };
         let outcome = picker.input(key, layout);
         self.picker_outcome(outcome);
+        self.preview_theme();
+    }
+
+    /// The theme under the picker's selection, put on as the selection moves.
+    /// A theme is a thing you look at, so a list of three hundred names you
+    /// cannot see is a list of three hundred names; moving through it is the
+    /// only way the choice is actually made.
+    ///
+    /// Leaving without choosing puts back the one that was on, which is what
+    /// makes trying them cost nothing.
+    fn preview_theme(&mut self) {
+        let wanted = match self.picker.as_ref() {
+            Some(picker) if picker.source == Source::Themes => {
+                picker.selected_target().map(str::to_string)
+            }
+            // The picker has closed. A choice cleared `theme_was` on its way
+            // out; anything left in it is a theme to put back.
+            None => self.theme_was.take(),
+            Some(_) => return,
+        };
+        let Some(wanted) = wanted else {
+            return;
+        };
+        if wanted == self.theme_name {
+            return;
+        }
+        match wanted.is_empty() {
+            true => {
+                let (theme, _) = Theme::load_user();
+                self.theme = theme;
+                self.theme_name.clear();
+                for index in 0..self.views.len() {
+                    self.attach_syntax(index);
+                }
+            }
+            false => {
+                let _ = self.set_theme(&wanted);
+            }
+        }
     }
 
     /// What the picker asked for after a key, or after a paste into its query.
@@ -3755,7 +3877,7 @@ impl Editor {
                 // the same way it would have gone to this one. No room for
                 // one is said and nothing opens: landing in the old window
                 // instead would look like the key had been ignored.
-                if open != Open::Here && !matches!(source, Source::Help | Source::Actions | Source::Fonts) {
+                if open != Open::Here && !matches!(source, Source::Help | Source::Actions | Source::Fonts | Source::Themes) {
                     let before = self.windows.len();
                     self.split_window(open == Open::Beside, None);
                     if self.windows.len() == before {
@@ -3776,6 +3898,30 @@ impl Editor {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
                     Source::Actions => self.run_code_action(choice.id),
+                    Source::Themes => {
+                        self.theme_was = None;
+                        let slug = choice.target.clone();
+                        self.message = match self.set_theme(&slug) {
+                            Err(complaint) => complaint,
+                            // Same reasoning as the font list: a theme
+                            // chosen by looking at it should not then have
+                            // to be spelled into a file by hand.
+                            // Whose it is, said once, at the moment you take
+                            // it up. The palettes are somebody's work and the
+                            // licence they came under asks to be carried; a
+                            // line in a file nobody opens is the letter of
+                            // that rather than the point of it.
+                            Ok(()) => {
+                                let by = crate::base16::scheme(&slug)
+                                    .map(|scheme| scheme.credit())
+                                    .unwrap_or_default();
+                                match self.save_setting("theme", &slug) {
+                                    Ok(path) => format!("theme={slug}{by}, saved to {}", path.display()),
+                                    Err(complaint) => format!("theme={slug}{by}, but {complaint}"),
+                                }
+                            }
+                        };
+                    }
                     Source::Fonts => {
                         self.guifont = choice.target.clone();
                         // A font chosen by pointing at it is the one case
@@ -4183,7 +4329,7 @@ impl Editor {
                 let path = crate::editor::lsp::absolute(Path::new(&choice.target));
                 self.views.iter().position(|view| view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone()))?
             }
-            Source::Help | Source::Actions | Source::Fonts | Source::Symbols | Source::Lines => return None,
+            Source::Help | Source::Actions | Source::Fonts | Source::Themes | Source::Symbols | Source::Lines => return None,
         };
         (0..self.windows.len()).find(|&id| id != self.focus && self.windows[id].view == view)
     }

@@ -45,6 +45,17 @@ impl Theme {
         }
     }
 
+    /// The user's own `theme.toml` on its own, unlayered. `load_user` is
+    /// what startup wants; this is for putting a chosen theme underneath it
+    /// again, so that picking a scheme never quietly drops the two lines
+    /// somebody wrote to fix the one colour they could not live with. A
+    /// broken file is nothing here: it was complained about at startup.
+    pub fn user_only() -> Option<Theme> {
+        let path = user_theme_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        Theme::parse(&text).ok()
+    }
+
     /// Replace this theme's entries with `other`'s, key by key.
     pub fn overlay(&mut self, other: Theme) {
         self.styles.extend(other.styles);

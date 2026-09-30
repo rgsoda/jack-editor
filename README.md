@@ -8,7 +8,7 @@ More of them, one feature at a time, in [demo/](demo/README.md).
 
 ## Status
 
-Step 77: everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: three hundred and fifty colour schemes and a picker that shows each one as you move over it, everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -236,6 +236,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set editorconfig` | `noeditorconfig`: read the project's `.editorconfig` |
 | `:set list` | `nolist`: draw tabs as `→` and trailing spaces as `·` |
 | `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
+| `:set theme=nord` | a base16 scheme by name; empty is the built-in theme, and `:themes` is the list |
 | `:set spotlight` | `nospotlight`: dim everything outside the function the cursor is in |
 | `:set coach` | `nocoach`: say so when a run of keys had a count in it |
 | `:set branch` | `nobranch`: the git branch in the status line |
@@ -262,6 +263,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set agentprg=...` | what `:agent` runs — a separate setting, because letting something write is a separate decision |
 | `:cancel` | stop a question or a build that is taking too long |
 | `:set guifont=...` | `guifontsize=15`: the window's font and its size; only `--gui` reads them |
+| `:themes` | every colour scheme, as a picker that shows each one as you move over it |
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
 | `:set` | show what everything is set to |
@@ -490,6 +492,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   over it, so a short theme file can restyle keywords without losing the
   status line. It also owns `config_dir()`, since the init file lives there
   too.
+- `base16.rs` — the tinted-theming scheme library as themes. The palettes and
+  the template that says what sixteen colours mean are both embedded, and
+  putting one through the other is a string replace and a parse.
 - `ui.rs` — draws the visible rows and the status line onto a `Surface`.
   Nothing here talks to the terminal.
 - `packaging/` — what is not the program: the Homebrew formula renderer, the
@@ -2782,6 +2787,37 @@ four lines and why the ASCII fallback needed no new drawing code.
 
 ## Theming
 
+`:themes` opens a picker over three hundred and fifty base16 colour schemes,
+and the theme changes as the selection moves — a theme is a thing you look at,
+so a list of names you cannot see is a list of names. `enter` keeps the one you
+are looking at and writes `set theme=` into your config; `esc` puts back the
+one you had, so trying them costs nothing. `:set theme=nord` does it by name,
+and `:set theme=` with nothing after it goes back to the built-in one.
+
+The schemes come from [tinted-theming](https://github.com/tinted-theming/schemes)
+under the MIT licence, and `themes/BASE16-LICENSE` carries it. A scheme is
+sixteen colours and a name — that is the whole format — so what those sixteen
+*mean* to an editor is the interesting half, and it is written once, by hand,
+in `themes/base16-template.toml`. Every key the built-in theme names is in
+there in terms of `$base00` to `$base0F`, and a test builds all three hundred
+and fifty to make sure none of them lost a status line. `themes/base16.toml` is
+the palettes, generated by `themes/import-base16.py`, which is also how you
+refresh the library.
+
+One thing a scheme brings that the built-in theme does not: a background.
+`ui.background` paints the text area, because a scheme is chosen whole and half
+of a light scheme over a dark terminal is not the scheme. The built-in theme
+leaves the key out and the terminal's own background shows through, which is
+the better answer when the colours were picked to sit on it.
+
+Switching is not an assignment. A grammar resolves its capture names to colours
+when its highlight query is compiled and caches the answer, so every open file
+is re-highlighted on the way through — which is what `Editor::set_theme` is
+for, and why building one is measured at about a millisecond and a half rather
+than assumed to be free.
+
+### A theme of your own
+
 Drop a file at `$XDG_CONFIG_HOME/jack/theme.toml` (or
 `~/.config/jack/theme.toml`):
 
@@ -2796,6 +2832,11 @@ lookup falls back along the dots, so `variable` also styles
 `variable.parameter`. Colors are ANSI names, a 0-255 palette index, or
 `#rrggbb`. A broken theme is reported in the status line and the built-in one
 is used instead. See `themes/default.toml`.
+
+Your file layers over whatever is underneath — the built-in theme, or a base16
+scheme if one is set — rather than replacing it. So two lines fixing the one
+colour you cannot live with keep working when you change scheme, and a
+three-line theme never silently loses the status line.
 
 The completion popup is `ui.completion`, `ui.completion.selected` and
 `ui.completion.kind`. The status line's blocks are `ui.statusline` (the bar), `ui.statusline.file`,

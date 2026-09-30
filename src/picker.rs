@@ -106,6 +106,10 @@ pub enum Source {
     /// detail is what happened to it in words. A list already in hand, like
     /// references - git was asked once, and typing filters what it said.
     Changed,
+    /// The base16 schemes, as themes. `target` is the slug, and moving the
+    /// selection puts that theme on: a theme is a thing you look at, so a
+    /// list of names you cannot see is a list of names.
+    Themes,
     /// The font families the window frontend can see. `target` is the family
     /// name, and choosing one is `:set guifont=` with it - which is the point:
     /// a font you picked off a list is a font that exists and is spelt right.
@@ -128,6 +132,7 @@ impl Source {
             Source::Quickfix => "quickfix",
             Source::Changed => "changed",
             Source::Fonts => "font",
+            Source::Themes => "theme",
         }
     }
 
@@ -282,6 +287,14 @@ impl Picker {
 
     pub fn item(&self, m: &Match) -> &Item {
         &self.items[m.index]
+    }
+
+    /// What the selection is on, as the source spells targets. For a picker
+    /// that shows you the choice rather than describing it - the themes - this
+    /// is what it shows.
+    pub fn selected_target(&self) -> Option<&str> {
+        let m = self.matches.get(self.cursor)?;
+        Some(self.items.get(m.index)?.target.as_str())
     }
 
     pub fn cursor(&self) -> usize {
