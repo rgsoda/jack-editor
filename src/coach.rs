@@ -41,6 +41,9 @@ pub struct Coach {
     /// What has been arriving, and how many times running.
     last: Option<Counted>,
     run: usize,
+    /// Whether the run going on right now is one it has spoken about. While
+    /// that is true the words go back up on every key of it.
+    saying: bool,
     /// The key count when something was last said, so that the next thing is
     /// a while away.
     spoke_at: Option<u64>,
@@ -52,11 +55,12 @@ impl Coach {
     /// and `pressed` is how many keys the session has seen, which is the only
     /// clock this needs.
     ///
-    /// Hands back what to say, if this is the moment to say anything. That
-    /// moment is the end of a run rather than the middle of one: a message
+    /// Hands back what to say, if this is the moment to say anything, and
+    /// keeps handing the same thing back for the rest of the run. A message
     /// lasts until the next key, and the next key of a run you are leaning on
-    /// arrives too soon to read a word during. So the word comes on the key
-    /// that breaks the run, about the run that just broke.
+    /// wipes it before it has been read, so the words have to be put back up
+    /// each time. That way they are there while you lean and still there when
+    /// you stop, which is when anybody actually looks.
     pub fn notice(&mut self, key: KeyEvent, normal: bool, pressed: u64) -> Option<String> {
         let counted = match key.code {
             _ if !normal || key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
@@ -69,33 +73,48 @@ impl Coach {
             _ => None,
         };
 
-        if counted.is_some() && counted == self.last {
-            self.run += 1;
+        match counted {
+            // The run goes on, and so does whatever is being said about it.
+            Some(_) if counted == self.last => self.run += 1,
+            // A different key: the last run is over, and this is the first of
+            // the next one. Anything said about the old one stands until the
+            // key that ended it has its own say.
+            Some(_) => (self.last, self.run, self.saying) = (counted, 1, false),
+            None => {
+                self.forget();
+                return None;
+            }
+        }
+
+        if self.run < RUN {
             return None;
         }
-        let said = self.ended(pressed);
-        (self.last, self.run) = (counted, counted.is_some() as usize);
-        said
-    }
-
-    /// A run has just finished: whether it was worth a word, with the count
-    /// cleared either way.
-    fn ended(&mut self, pressed: u64) -> Option<String> {
-        let (last, run) = (self.last.take(), std::mem::take(&mut self.run));
-        let last = last.filter(|_| run >= RUN)?;
-
-        // Said something recently: the run still ends, but quietly. A habit
-        // is worth mentioning once, and every time is what makes people turn
-        // a thing off.
+        // Already talking about this run: say it again, because the key that
+        // just arrived wiped it. The count goes up as the run does.
+        if self.saying {
+            return Some(self.words());
+        }
+        // Said something recently, so this run passes without comment. A
+        // habit is worth mentioning once, and every time is what makes people
+        // turn a thing off.
         if self.spoke_at.is_some_and(|at| pressed.saturating_sub(at) < PATIENCE) {
             return None;
         }
-        self.spoke_at = Some(pressed);
+        (self.spoke_at, self.saying) = (Some(pressed), true);
+        Some(self.words())
+    }
 
-        Some(match last {
-            Counted::Key(key) => format!("{run} {key} in a row - {run}{key} is two keys"),
-            Counted::Arrow => "the arrows work - h j k l are nearer, and take a count".to_string(),
-        })
+    /// The run as it stands, and the two keys it should have been.
+    fn words(&self) -> String {
+        let run = self.run;
+        match self.last {
+            Some(Counted::Key(key)) => format!("{run} {key} in a row - {run}{key} is two keys"),
+            _ => "the arrows work - h j k l are nearer, and take a count".to_string(),
+        }
+    }
+
+    fn forget(&mut self) {
+        (self.last, self.run, self.saying) = (None, 0, false);
     }
 }
 
@@ -112,11 +131,8 @@ mod tests {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
 
-    /// `count` of the same key, and then something that is not it.
     fn run_of(key: KeyEvent, count: usize) -> Vec<KeyEvent> {
-        let mut keys: Vec<_> = std::iter::repeat_n(key, count).collect();
-        keys.push(stop());
-        keys
+        std::iter::repeat_n(key, count).collect()
     }
 
     /// Run `keys` through a fresh coach and collect everything it said.
@@ -139,23 +155,28 @@ mod tests {
         assert_eq!(said(&keys), [format!("{RUN} j in a row - {RUN}j is two keys")]);
     }
 
-    /// The word comes on the key that breaks the run, not in the middle of
-    /// it: a message lasts until the next key, and during a run the next key
-    /// is already on its way.
+    /// The thing that makes it visible at all: every key of a run wipes the
+    /// message the last one put up, so the words go back up each time and
+    /// are still there when the leaning stops.
     #[test]
-    fn nothing_is_said_while_the_run_is_still_going() {
-        let mut coach = Coach::default();
-        let leaning: Vec<_> = (0..RUN * 2)
-            .filter_map(|index| coach.notice(press('j'), true, index as u64))
-            .collect();
-        assert!(leaning.is_empty(), "{leaning:?} would be wiped by the next j");
-        let said = coach.notice(stop(), true, RUN as u64 * 2);
-        assert_eq!(said, Some(format!("{0} j in a row - {0}j is two keys", RUN * 2)));
+    fn the_words_go_back_up_for_the_rest_of_the_run() {
+        let said = said(&run_of(press('j'), RUN + 3));
+        assert_eq!(said.len(), 4, "one for each key from the {RUN}th on");
+        assert_eq!(said.last().unwrap(), &format!("{0} j in a row - {0}j is two keys", RUN + 3));
+    }
+
+    /// And the key that ends the run does not get them again, because it has
+    /// its own message to write.
+    #[test]
+    fn the_key_that_ends_the_run_says_nothing() {
+        let mut keys = run_of(press('j'), RUN);
+        keys.push(stop());
+        assert_eq!(said(&keys).len(), 1, "the esc is not part of the run");
     }
 
     #[test]
     fn a_different_key_starts_the_count_again() {
-        let mut keys: Vec<_> = std::iter::repeat_n(press('j'), RUN - 1).collect();
+        let mut keys = run_of(press('j'), RUN - 1);
         keys.push(press('k'));
         keys.extend(run_of(press('j'), RUN - 1));
         assert!(said(&keys).is_empty(), "two short runs are not one long one");
@@ -172,8 +193,10 @@ mod tests {
     #[test]
     fn the_same_habit_is_mentioned_once_and_then_left_alone() {
         let mut keys = run_of(press('x'), RUN);
-        keys.extend(run_of(press('x'), RUN));
-        keys.extend(run_of(press('x'), RUN));
+        for _ in 0..2 {
+            keys.push(stop());
+            keys.extend(run_of(press('x'), RUN));
+        }
         assert_eq!(said(&keys).len(), 1, "once is advice, twice is nagging");
     }
 
@@ -182,7 +205,9 @@ mod tests {
         let mut coach = Coach::default();
         let mut spoke = 0;
         for round in 0..2 {
-            for (index, key) in run_of(press('x'), RUN).into_iter().enumerate() {
+            let mut keys = vec![stop()];
+            keys.extend(run_of(press('x'), RUN));
+            for (index, key) in keys.into_iter().enumerate() {
                 let at = index as u64 + round * PATIENCE;
                 spoke += coach.notice(key, true, at).is_some() as usize;
             }
@@ -210,7 +235,7 @@ mod tests {
     #[test]
     fn an_arrow_breaks_a_run_of_keys() {
         let arrow = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        let mut keys: Vec<_> = std::iter::repeat_n(press('j'), RUN - 1).collect();
+        let mut keys = run_of(press('j'), RUN - 1);
         keys.extend(run_of(arrow, RUN - 1));
         assert!(said(&keys).is_empty(), "neither one of them got to {RUN}");
     }

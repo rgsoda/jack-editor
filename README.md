@@ -1116,10 +1116,12 @@ three times over is six presses of two keys, and a coach that could not tell
 those apart would offer you `6d`, which is not a command. Narrow and right
 beats clever and wrong.
 
-The word comes on the key that *ends* the run rather than partway through it.
-A message lasts until the next key, and while you are leaning on one the next
-key is already on its way, so advice in the middle of a run is advice nobody
-can read. And having said something it stays quiet for the next sixty keys,
+The word goes up on the fifth key and stays up for the rest of the run, with
+the count climbing as the run does. It has to be put back each time: a message
+lasts until the next key, and the next key of a run you are leaning on wipes
+it. Putting it back is what makes it there while you lean and still there when
+you stop, which is when anybody actually looks. The key that *ends* the run
+gets its own message instead. And having said something it stays quiet for the next sixty keys,
 because a habit is worth mentioning once and mentioning it every time is what
 makes people turn a thing off. It is off until you ask for it, for the same
 reason.
