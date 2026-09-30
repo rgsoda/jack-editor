@@ -23,6 +23,8 @@ pub enum Flow {
 #[derive(Default)]
 pub struct Session {
     pub keys: Keys,
+    /// `:set coach`: the run of keys so far, and whether it is worth a word.
+    coach: crate::coach::Coach,
     /// Set when a quit is attempted with unsaved changes; any other key
     /// clears it, so `^q ^q` quits and `^q j ^q` does not.
     quit_armed: bool,
@@ -76,6 +78,17 @@ impl Session {
                 // not a step, and neither is a leant-on key that has run out
                 // of line to move along.
                 let was_at = editor.cursor_mark();
+                // Before the key is handled, because the mode it arrived in
+                // is the one it means something in: a `j` while inserting is
+                // a `j`. Counted whatever happens next, said only if nothing
+                // else wanted the status line.
+                let advice = match editor.coaching {
+                    true => {
+                        let normal = editor.mode == crate::editor::Mode::Normal;
+                        self.coach.notice(key, normal, editor.keys_pressed)
+                    }
+                    false => None,
+                };
 
                 match self.keys.handle(editor, key) {
                     Action::Continue => {}
@@ -92,6 +105,14 @@ impl Session {
                 }
                 if editor.cursor_mark() != was_at {
                     editor.dog_runs();
+                }
+                // The editor's own messages win: what a command has to say
+                // about itself is always worth more than a word about how it
+                // was typed.
+                if let Some(advice) = advice
+                    && editor.message.is_empty()
+                {
+                    editor.message = advice;
                 }
             }
             Message::Paste(text) => {

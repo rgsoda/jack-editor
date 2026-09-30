@@ -8,7 +8,7 @@ More of them, one feature at a time, in [demo/](demo/README.md).
 
 ## Status
 
-Step 77: `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -236,6 +236,7 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set editorconfig` | `noeditorconfig`: read the project's `.editorconfig` |
 | `:set list` | `nolist`: draw tabs as `→` and trailing spaces as `·` |
 | `:set cursorword` | `nocursorword`: underline the other uses of the word the cursor is on |
+| `:set coach` | `nocoach`: say so when a run of keys had a count in it |
 | `:set branch` | `nobranch`: the git branch in the status line |
 | `:set opener=xdg-open` | what `gx` hands a link to; empty means the platform's own |
 | `:set hitcontext=2` | `hc`: lines of context around each place in a `:hits` buffer |
@@ -1050,10 +1051,18 @@ line as you reached for it.
 
 And `:make` runs it: a build is the one time the editor is waiting on something
 slow with nothing to show for it, so the dog runs for as long as the build does
-and barks when a clean one comes back — `woof - no problems`. A build that found
-something to complain about takes you to the first complaint instead, which is a
-better thing to be given than a bark. A clean build after a failing one is the
-good news of the day, and for that it fetches the paper.
+and barks when a clean one comes back — `woof - no problems`. A build that broke
+barks too, and takes you to the first complaint: the quickfix list and the jump
+say so as well, but both of those are easy to miss when you have looked away
+from a slow build, and a dog on its feet with a `!` is not. A clean build after
+a failing one is the good news of the day, and for that it fetches the paper.
+
+A language server finishing its indexing gets a lap of the lane. That is the
+other kind of waiting the editor cannot show you — a project the server has not
+read yet answers `gd` and `K` with nothing, and looks exactly like a project it
+has — so the moment the last errand ends, the dog runs the length of the line
+and settles. Nothing is written and nothing is interrupted; it just means the
+answers are good now.
 
 It barks when the editor refuses you. There is only one thing it refuses — a
 quit with work unsaved — and `unsaved changes - press ^Q again to quit` is a
@@ -1092,6 +1101,28 @@ few cells of it. A long file name or a message shortens the lane from the left
 rather than being drawn over, and a gap too narrow to run in gets no dog at
 all. Every glyph it uses is a Material Design icon from the patched font, so
 `:set noglyphs` has no dog either, and `:set nodog` turns it off while keeping the pretty status line.
+
+## The coach
+
+`:set coach` watches what you press and says when there was a shorter way to
+have pressed it. Ten `j` to get down a screen is a count that was never typed,
+and the line at the left of the status line says so: *10 j in a row - 10j is
+two keys*. Five arrows in normal mode get told that `h j k l` are nearer and
+take a count too.
+
+It counts only keys that are a whole command on their own and take a count —
+`h j k l w b e x W B E ~`. Operators are deliberately not on the list: `dd`
+three times over is six presses of two keys, and a coach that could not tell
+those apart would offer you `6d`, which is not a command. Narrow and right
+beats clever and wrong.
+
+The word comes on the key that *ends* the run rather than partway through it.
+A message lasts until the next key, and while you are leaning on one the next
+key is already on its way, so advice in the middle of a run is advice nobody
+can read. And having said something it stays quiet for the next sixty keys,
+because a habit is worth mentioning once and mentioning it every time is what
+makes people turn a thing off. It is off until you ask for it, for the same
+reason.
 
 ## Windows
 

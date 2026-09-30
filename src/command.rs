@@ -141,6 +141,13 @@ pub static SETTINGS: &[Setting] = &[
         about: "Draw a tab as an arrow and a trailing space as a dot.",
     },
     Setting {
+        name: "coach",
+        kind: Kind::Flag(false),
+        about: "Say so when a run of keys had a count in it: ten `j` rather \
+                than `10j`. It waits a while between one word and the next, \
+                and it only counts keys that are a whole command on their own.",
+    },
+    Setting {
         name: "cursorword",
         kind: Kind::Flag(false),
         about: "Underline the other uses of the word the cursor is on.",

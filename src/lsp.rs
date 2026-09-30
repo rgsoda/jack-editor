@@ -597,6 +597,9 @@ pub enum Event {
     /// The server's hints have changed without the text changing - it has
     /// finished indexing, most often - and every buffer should ask again.
     HintsStale,
+    /// It has stopped being busy: the last `$/progress` it opened has ended,
+    /// and whatever it was working through is worked through.
+    Settled,
     HintsFailed { request: Request },
     /// Something the server wanted said: an error it could not recover from.
     Say(String),
@@ -1001,6 +1004,12 @@ impl Client {
                     }
                     Some("end") => {
                         self.progress.remove(&token);
+                        // The last thing it was busy with. A server that has
+                        // finished indexing knows the whole project for the
+                        // first time, which is a moment worth having.
+                        if self.progress.is_empty() {
+                            return Event::Settled;
+                        }
                     }
                     _ => {}
                 }
@@ -1470,6 +1479,23 @@ pub(crate) mod tests {
         assert_eq!(client.busy().as_deref(), Some("Indexing 40%"));
         client.handle(progress("end", json!({})));
         assert_eq!(client.busy(), None);
+    }
+
+    /// The end of the last thing it was busy with is worth hearing about:
+    /// the server knows the whole project from that moment on.
+    #[test]
+    fn the_end_of_the_last_errand_is_the_server_settling() {
+        let (mut client, _written) = Client::detached("fake");
+        let progress = |token: &str, kind: &str| {
+            json!({ "jsonrpc": "2.0", "method": "$/progress",
+                    "params": { "token": token, "value": { "kind": kind, "title": "Indexing" } } })
+        };
+        client.handle(progress("a", "begin"));
+        client.handle(progress("b", "begin"));
+
+        // One of two ending is not the server stopping being busy.
+        assert!(matches!(client.handle(progress("a", "end")), Event::Nothing));
+        assert!(matches!(client.handle(progress("b", "end")), Event::Settled));
     }
 
     #[test]

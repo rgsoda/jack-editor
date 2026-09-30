@@ -465,6 +465,9 @@ pub struct Editor {
     /// `:set cursorword`: underline the other uses of the word the cursor is
     /// on, which is `gr` for the impatient and costs no server.
     pub cursorword: bool,
+    /// `:set coach`: say so when a run of keys had a count in it. Off, and
+    /// the keys are not even looked at - see `coach.rs`.
+    pub coaching: bool,
     /// `:set branch`: the git branch in the status line, and what it was when
     /// it was last looked at. Read from `.git/HEAD` rather than by running
     /// git, because it is read a second after every keystroke.
@@ -764,6 +767,7 @@ impl Editor {
             server_specs: crate::lsp::Servers::default(),
             show_whitespace: false,
             cursorword: false,
+            coaching: false,
             editorconfig: true,
             show_branch: true,
             branch: None,
@@ -2407,6 +2411,8 @@ impl Editor {
             "nodog" => self.show_dog = false,
             "list" => self.show_whitespace = true,
             "nolist" => self.show_whitespace = false,
+            "coach" => self.coaching = true,
+            "nocoach" => self.coaching = false,
             "cursorword" => self.cursorword = true,
             "nocursorword" => self.cursorword = false,
             "editorconfig" => self.editorconfig = true,
@@ -2436,7 +2442,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2459,6 +2465,7 @@ impl Editor {
                     self.hitcontext,
                     self.show_whitespace,
                     self.cursorword,
+                    self.coaching,
                     self.editorconfig,
                     self.show_branch,
                     match self.opener.is_empty() {
@@ -3175,6 +3182,12 @@ impl Editor {
         self.build_broke = !ok;
         if paper {
             self.dog_fetches(What::Paper);
+        }
+        // And a build that breaks is worth standing up about. The quickfix
+        // list and the jump to the first place say so too, but both of those
+        // are easy to miss when you have looked away from a slow build.
+        if barks && !ok {
+            self.dog_barks();
         }
         let mut places = crate::compile::places(&output, &self.build_root);
         // A build prints paths relative to where it ran. While that is where
@@ -7984,6 +7997,41 @@ two
         e.run_command("set nodog");
         e.run_command("dog fetch");
         assert_eq!(e.message, "there is no dog: :set dog");
+    }
+
+    /// A build that fails is the one worth looking up for: the jump to the
+    /// first place happens whether you are watching or not.
+    #[test]
+    fn the_dog_stands_up_when_a_build_breaks() {
+        let mut editor = editor("one\ntwo\n");
+        editor.dog.errand = Errand::Building;
+        editor.dog.running = true;
+        editor.build = 7;
+
+        editor.build_finished(7, "src/main.rs:3:1: error: no".into(), false);
+        assert_eq!(editor.dog.errand, Errand::Barking);
+    }
+
+    /// And one that goes green after it is the other way about: the dog goes
+    /// for the paper rather than standing there barking about good news.
+    #[test]
+    fn a_build_that_comes_good_is_a_paper_rather_than_a_bark() {
+        let mut editor = editor("one\ntwo\n");
+        editor.dog.errand = Errand::Building;
+        editor.build = 7;
+        editor.build_finished(7, "src/main.rs:3:1: error: no".into(), false);
+
+        editor.dog.errand = Errand::Building;
+        editor.build = 8;
+        editor.build_finished(8, String::new(), true);
+        assert!(
+            matches!(
+                editor.dog.errand,
+                Errand::Fetching(What::Paper)
+            ),
+            "{:?}",
+            editor.dog.errand
+        );
     }
 
     #[test]

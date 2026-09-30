@@ -3,6 +3,7 @@ mod buffer;
 #[cfg(test)]
 mod budget;
 mod cmdline;
+mod coach;
 mod clipboard;
 mod comment;
 mod command;

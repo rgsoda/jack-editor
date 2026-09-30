@@ -183,6 +183,9 @@ impl Editor {
         let encoding = client.encoding;
         match client.handle(message) {
             Event::Nothing | Event::Ready => {}
+            // It has read the whole project. Nothing has to be done about
+            // that, but the dog has an opinion on it.
+            Event::Settled => self.dog_laps(),
             Event::Say(text) => self.message = text,
             Event::Diagnostics { path, diagnostics } => self.set_diagnostics(&path, diagnostics, encoding),
             Event::Definition { request, locations } => self.definition_answer(request, locations, encoding),
