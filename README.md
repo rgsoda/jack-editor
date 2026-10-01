@@ -270,7 +270,8 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:themes` | every colour scheme, as a picker that shows each one as you move over it |
 | `:guifonts` | every font the window can see, as a picker; choosing one sets `guifont` and saves it |
 | `:set tabline=auto` | `off`, `auto`, `always`: list buffers along the top |
-| `:set` | show what everything is set to |
+| `:set` | every option, what it is set to and what it does, as a picker you can search |
+| `:set typewriter?` | what one option is set to, right now, in the status line |
 | `:setw number` | set, and write it into the config file: the same options as `:set`, kept |
 | `:noh` | stop highlighting matches |
 | `:{n}` | go to line n |
@@ -843,6 +844,27 @@ something on replaces the line that turned it off rather than leaving the file
 saying both. A setting the editor did not accept is not written down: `:set`
 has already said what was wrong with it, and the file is for what is true.
 Choosing a font from `:guifonts` writes itself down the same way.
+
+`:set` with nothing after it is a picker over all thirty-nine of them: the
+name, what it is set to now, and the one line about what it does that the
+config file would write above it — all three searchable, so `smear` finds the
+setting, `true` finds everything that is on, and `git` finds the two that are
+about git. It used to be one message naming all of them, which the status line
+cut off after the fifth, so there was no way to find out what anything was set
+to. Choosing one puts the line that would *change* it on the command line —
+`set notypewriter` for something that is on, the next word round for the line
+numbers, the current value to edit for the rest — rather than running it. A
+list you opened to read should not set something because you pressed enter on
+it, and seeing `:set notypewriter` before you commit to it is the difference
+between a toggle and a decision.
+
+`:set textwidth?` asks instead of telling, which is the quick way when you
+know which setting you mean. Asking is never setting: `:set notypewriter?`
+reports, it does not turn anything off. The short spellings work here as they
+do everywhere — `:set tw?` is `textwidth` — which they did not before: the
+table of options only ever listed the long names, so `sw` named itself rather
+than `shiftwidth`, and `set sw=2` under a `[python]` heading was a line nothing
+downstream recognised as being about indentation.
 
 `:w` refuses to write a file that has changed on disk since it was read, and
 `:e` refuses to throw away unsaved changes. Both take `!` to mean "I know".

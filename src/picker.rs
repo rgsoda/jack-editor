@@ -110,6 +110,10 @@ pub enum Source {
     /// selection puts that theme on: a theme is a thing you look at, so a
     /// list of names you cannot see is a list of names.
     Themes,
+    /// Every `:set` option, with what it is set to now and what it does.
+    /// `target` is the line to put on the command line when one is chosen -
+    /// the spelling that would change it, so the list reads and acts.
+    Settings,
     /// The font families the window frontend can see. `target` is the family
     /// name, and choosing one is `:set guifont=` with it - which is the point:
     /// a font you picked off a list is a font that exists and is spelt right.
@@ -133,6 +137,7 @@ impl Source {
             Source::Changed => "changed",
             Source::Fonts => "font",
             Source::Themes => "theme",
+            Source::Settings => "setting",
         }
     }
 

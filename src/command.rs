@@ -81,9 +81,39 @@ pub static COMMANDS: &[Command] = &[
 /// `relativenumber` are three ways to write one setting, and `shiftwidth=2`
 /// is that setting whatever the number is. A short form, or a name no table
 /// knows, is taken at its word: it is still the same setting as itself.
+/// The short spellings `:set` accepts. They are not in `SETTINGS`, because a
+/// completion you have to decode is not help - but they still have to resolve
+/// to the setting they mean, or `:set sw=2` under a `[python]` heading is a
+/// line nothing downstream recognises as being about indentation.
+const SHORT: &[(&str, &str)] = &[
+    ("nu", "number"),
+    ("rnu", "relativenumber"),
+    ("sw", "shiftwidth"),
+    ("et", "expandtab"),
+    ("ai", "autoindent"),
+    ("ac", "autocomplete"),
+    ("tw", "textwidth"),
+    ("hc", "hitcontext"),
+];
+
+/// A written option as the table spells it, so that everything downstream has
+/// only the long names to know about. `noet` is `no` on a short form, and
+/// means the same setting `expandtab` does.
+fn spelled_out(word: &str) -> &str {
+    let long = |word: &str| SHORT.iter().find(|(short, _)| *short == word).map(|(_, long)| *long);
+    if let Some(long) = long(word) {
+        return long;
+    }
+    match word.strip_prefix("no").and_then(long) {
+        Some(long) => long,
+        None => word,
+    }
+}
+
 pub fn setting_name(option: &str) -> &str {
     let option = option.trim();
     let word = option.split('=').next().unwrap_or(option).trim();
+    let word = spelled_out(word);
     for setting in SETTINGS {
         let hit = match setting.kind {
             Kind::Flag(_) => word == setting.name || word.strip_prefix("no") == Some(setting.name),
@@ -391,7 +421,7 @@ pub static SETTINGS: &[Setting] = &[
 /// value depends on the language, so moving to a buffer of another language
 /// has to put it back rather than leave the last language's answer behind.
 pub fn default_for(written: &str) -> Option<String> {
-    let name = written.split('=').next().unwrap_or(written);
+    let name = spelled_out(written.split('=').next().unwrap_or(written));
     for setting in SETTINGS {
         match setting.kind {
             Kind::Flag(default) => {
@@ -715,8 +745,15 @@ mod tests {
         assert_eq!(setting_name("notabline"), "tabline");
         // Settings whose names start the same way are not each other.
         assert_ne!(setting_name("guifontsize=15"), setting_name("guifont=Iosevka"));
-        // A short form, or a name no table knows, is taken at its word.
-        assert_eq!(setting_name("sw=2"), "sw");
+        // A short form names the setting it is short for. The table does not
+        // list the short spellings, but everything downstream is written in
+        // terms of the long ones, so they have to arrive as long ones: before
+        // this, `[python]` + `set sw=2` was a line nothing recognised as
+        // being about indentation.
+        assert_eq!(setting_name("sw=2"), "shiftwidth");
+        assert_eq!(setting_name("noet"), "expandtab");
+        assert_eq!(setting_name("tw=100"), "textwidth");
+        // A name no table knows is still taken at its word.
         assert_eq!(setting_name("nosuchthing"), "suchthing");
     }
 

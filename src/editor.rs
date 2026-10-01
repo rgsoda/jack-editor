@@ -2370,7 +2370,87 @@ impl Editor {
         }
     }
 
+    /// What one setting is set to right now, by the long name `SETTINGS`
+    /// spells it with. `None` for a name that is not a setting.
+    ///
+    /// One answer, three readers: `:set x?`, the settings picker, and the
+    /// line `:set` used to print. Before this there was a `format!` with
+    /// thirty-nine holes in it and nothing tying a hole to a name, which is
+    /// how `typewriter` came to be the twenty-seventh thing on a line that
+    /// the status bar cut off after the fifth.
+    ///
+    /// What is reported is what *this buffer* is being edited with: the
+    /// file's own indent where it had one to give, and what the project's
+    /// `.editorconfig` said about the width and the trimming. A setting that
+    /// is about a buffer is worth reading as the buffer's.
+    pub fn setting_value(&self, name: &str) -> Option<String> {
+        let yes_no = |on: bool| on.to_string();
+        let or_else = |text: &str, empty: &str| match text.is_empty() {
+            true => empty.to_string(),
+            false => text.to_string(),
+        };
+        let indent = self.indent();
+        Some(match name {
+            "number" => self.numbers.name().to_string(),
+            "cursorline" => yes_no(self.cursorline),
+            "dog" => yes_no(self.show_dog),
+            "rainbow" => yes_no(self.rainbow),
+            "trim" => yes_no(self.trims_here()),
+            "signs" => yes_no(self.signs_enabled),
+            "glyphs" => yes_no(self.glyphs),
+            "shiftwidth" => match self.view().indent.is_some() {
+                true => format!("{} (read from the file)", indent.width),
+                false => indent.width.to_string(),
+            },
+            "expandtab" => yes_no(!indent.tabs),
+            "autoindent" => yes_no(self.autoindent),
+            "autopairs" => yes_no(self.autopairs),
+            "undofile" => yes_no(self.undofile),
+            "inlayhints" => yes_no(self.inlayhints),
+            "wrap" => yes_no(self.wrap),
+            "emacs" => yes_no(self.emacs),
+            "lsp" => yes_no(self.lsp_enabled),
+            "tabline" => self.tabline.name().to_string(),
+            "autocomplete" => self.autocomplete.to_string(),
+            "textwidth" => self.textwidth_here().to_string(),
+            "hitcontext" => self.hitcontext.to_string(),
+            "list" => yes_no(self.show_whitespace),
+            "cursorword" => yes_no(self.cursorword),
+            "coach" => yes_no(self.coaching),
+            "spotlight" => yes_no(self.spotlight),
+            "smear" => yes_no(self.smear),
+            "smoothscroll" => yes_no(self.smoothscroll),
+            "typewriter" => yes_no(self.typewriter),
+            "indentguides" => yes_no(self.indentguides),
+            "editorconfig" => yes_no(self.editorconfig),
+            "branch" => yes_no(self.show_branch),
+            "semicolon" => self.semicolon.name().to_string(),
+            "opener" => or_else(&self.opener, "(the platform's own)"),
+            "makeprg" => or_else(&self.makeprg, "(what builds this project)"),
+            "aiprg" => or_else(&self.aiprg, "(nothing to ask)"),
+            "agentprg" => or_else(&self.agentprg, "(nothing to send on an errand)"),
+            "dogname" => or_else(&self.dogname, "(unnamed)"),
+            "theme" => or_else(&self.theme_name, "built-in"),
+            "guifont" => self.guifont.clone(),
+            "guifontsize" => self.guifontsize.to_string(),
+            _ => return None,
+        })
+    }
+
     fn set_option(&mut self, option: &str) {
+        // `:set typewriter?` asks rather than tells. It goes first because a
+        // question is not a value and not a flag, and because asking about a
+        // setting must never be a way of changing it: `set notypewriter?`
+        // reports, it does not turn anything off.
+        if let Some(asked) = option.trim().strip_suffix('?') {
+            let name = command::setting_name(asked);
+            self.message = match self.setting_value(name) {
+                Some(value) => format!("{name}={value}"),
+                None => format!("{asked} is not a setting - :set lists them"),
+            };
+            return;
+        }
+
         // Options that take a value: `:set shiftwidth=2`.
         if let Some((name, value)) = option.split_once('=') {
             match (name, value.parse::<usize>()) {
@@ -2531,78 +2611,11 @@ impl Editor {
                 self.signs_enabled = false;
                 self.view_mut().signs.clear();
             }
-            "" => {
-                // What is reported is what this buffer is being edited with:
-                // the file's own indent where it had one to give, and what
-                // the project's `.editorconfig` said about the width and the
-                // trimming. A setting that is about a buffer is worth
-                // reading as the buffer's.
-                let indent = self.indent();
-                let read = match self.view().indent.is_some() {
-                    true => " (read from the file)",
-                    false => "",
-                };
-                self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} smear={} smoothscroll={} typewriter={} indentguides={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
-                    self.numbers.name(),
-                    self.cursorline,
-                    self.show_dog,
-                    self.rainbow,
-                    self.trims_here(),
-                    self.signs_enabled,
-                    self.glyphs,
-                    indent.width,
-                    !indent.tabs,
-                    self.autoindent,
-                    self.autopairs,
-                    self.undofile,
-                    self.inlayhints,
-                    self.wrap,
-                    self.emacs,
-                    self.lsp_enabled,
-                    self.tabline.name(),
-                    self.autocomplete,
-                    self.textwidth_here(),
-                    self.hitcontext,
-                    self.show_whitespace,
-                    self.cursorword,
-                    self.coaching,
-                    self.spotlight,
-                    self.smear,
-                    self.smoothscroll,
-                    self.typewriter,
-                    self.indentguides,
-                    self.editorconfig,
-                    self.show_branch,
-                    match self.opener.is_empty() {
-                        true => "(the platform's own)",
-                        false => &self.opener,
-                    },
-                    self.semicolon.name(),
-                    match self.makeprg.is_empty() {
-                        true => "(what builds this project)",
-                        false => &self.makeprg,
-                    },
-                    match self.aiprg.is_empty() {
-                        true => "(nothing to ask)",
-                        false => &self.aiprg,
-                    },
-                    match self.agentprg.is_empty() {
-                        true => "(nothing to send on an errand)",
-                        false => &self.agentprg,
-                    },
-                    match self.dogname.is_empty() {
-                        true => "(unnamed)",
-                        false => &self.dogname,
-                    },
-                    match self.theme_name.is_empty() {
-                        true => "built-in",
-                        false => &self.theme_name,
-                    },
-                    self.guifont,
-                    self.guifontsize
-                );
-            }
+            // A list to search rather than a line to squint at. Not from a
+            // config file, which has no screen to open a picker on and is
+            // reading the file rather than asking about it.
+            "" if !self.from_config => self.open_settings_picker(),
+            "" => {}
             other => self.message = format!("not an option: {other}"),
         }
     }
@@ -3393,7 +3406,7 @@ impl Editor {
                 (item.target.clone(), view.doc.text.char_to_line(at))
             }
             // A list to read, and a list of things to do: neither is a place.
-            Source::Help | Source::Actions | Source::Fonts | Source::Themes => return None,
+            Source::Help | Source::Actions | Source::Fonts | Source::Themes | Source::Settings => return None,
         };
         Some(Entry { path, line, text: item.text.clone() })
     }
@@ -3619,6 +3632,107 @@ impl Editor {
     }
 
     /// Every key, searchable by the key or by what it does.
+    /// `:set` with nothing after it: every option, what it is set to now, and
+    /// one line about what it does, as a list you can search.
+    ///
+    /// It used to be a single message naming all thirty-nine, which the status
+    /// line cut off after the fifth - so there was no way to find out what
+    /// anything was set to, which is most of what `:set` is for.
+    pub fn open_settings_picker(&mut self) {
+        let width = command::SETTINGS.iter().map(|s| s.name.chars().count()).max().unwrap_or(0);
+        let items = command::SETTINGS
+            .iter()
+            .map(|setting| {
+                let value = self.setting_value(setting.name).unwrap_or_default();
+                Item {
+                    // All of it in the text, and no detail. A detail is
+                    // right-aligned and the text is truncated to leave room
+                    // for it, so a sentence in the detail is a sentence that
+                    // pushes the name and the value off the row - and the
+                    // name and the value are what the list is for. Here the
+                    // row runs out at the right edge instead, which costs the
+                    // tail of a description nobody was reading to the end.
+                    //
+                    // It also means all three are searchable: `smear` finds
+                    // the setting, `true` finds everything that is on, and
+                    // `git` finds the two settings that are about git.
+                    text: format!("{:width$}  {value:10}  {}", setting.name, setting.about),
+                    detail: String::new(),
+                    id: 0,
+                    target: self.setting_change(setting),
+                }
+            })
+            .collect();
+        self.open_picker(Picker::new(crate::picker::Source::Settings, items));
+    }
+
+    /// The command line that choosing a setting leaves you with: the spelling
+    /// that would change it from what it is now. A flag that is on offers the
+    /// `no` form, a word offers the next word round, and a setting with a
+    /// value offers that value to edit - which is also how you find out what
+    /// the spelling is without going to the README.
+    fn setting_change(&self, setting: &command::Setting) -> String {
+        match setting.kind {
+            command::Kind::Flag(_) => {
+                let on = self.setting_value(setting.name).as_deref() == Some("true");
+                let no = match on {
+                    true => "no",
+                    false => "",
+                };
+                format!("set {no}{}", setting.name)
+            }
+            // `number` is the only one of these, and what it reports itself
+            // as ("absolute") is not how it is spelled to `:set` ("number"),
+            // so the current word is asked for rather than read back.
+            command::Kind::Word(words) => {
+                let now = self.setting_word(setting.name);
+                let at = words.iter().position(|word| Some(*word) == now).unwrap_or(0);
+                format!("set {}", words[(at + 1) % words.len()])
+            }
+            // Not `setting_value`: what it reports is for reading - "(unnamed)"
+            // for a dog with no name, the file's own width with a note after
+            // it - and a command line is for running.
+            command::Kind::Value(..) => format!("set {}={}", setting.name, self.setting_literal(setting.name)),
+        }
+    }
+
+    /// How a `Kind::Word` setting's current state is spelled to `:set`, which
+    /// is not always what it calls itself: the line numbers report as
+    /// `absolute` and are set with `number`.
+    fn setting_word(&self, name: &str) -> Option<&'static str> {
+        match name {
+            "number" => Some(match self.numbers {
+                Numbers::Off => "nonumber",
+                Numbers::Absolute => "number",
+                Numbers::Relative => "relativenumber",
+                Numbers::Hybrid => "hybrid",
+            }),
+            _ => None,
+        }
+    }
+
+    /// A value setting as it would be written in a config file: what it is,
+    /// with nothing added for the reader.
+    fn setting_literal(&self, name: &str) -> String {
+        match name {
+            "tabline" => self.tabline.name().to_string(),
+            "semicolon" => self.semicolon.name().to_string(),
+            "shiftwidth" => self.indent().width.to_string(),
+            "textwidth" => self.textwidth_here().to_string(),
+            "autocomplete" => self.autocomplete.to_string(),
+            "hitcontext" => self.hitcontext.to_string(),
+            "guifontsize" => self.guifontsize.to_string(),
+            "guifont" => self.guifont.clone(),
+            "opener" => self.opener.clone(),
+            "makeprg" => self.makeprg.clone(),
+            "aiprg" => self.aiprg.clone(),
+            "agentprg" => self.agentprg.clone(),
+            "dogname" => self.dogname.clone(),
+            "theme" => self.theme_name.clone(),
+            _ => String::new(),
+        }
+    }
+
     pub fn open_help_picker(&mut self) {
         let width = BINDINGS.iter().map(|b| b.keys.chars().count()).max().unwrap_or(0);
         // What `:map` has been told, alongside what jack came with: a key you
@@ -3921,7 +4035,9 @@ impl Editor {
                 // the same way it would have gone to this one. No room for
                 // one is said and nothing opens: landing in the old window
                 // instead would look like the key had been ignored.
-                if open != Open::Here && !matches!(source, Source::Help | Source::Actions | Source::Fonts | Source::Themes) {
+                if open != Open::Here
+                    && !matches!(source, Source::Help | Source::Actions | Source::Fonts | Source::Themes | Source::Settings)
+                {
                     let before = self.windows.len();
                     self.split_window(open == Open::Beside, None);
                     if self.windows.len() == before {
@@ -3941,6 +4057,20 @@ impl Editor {
                 match source {
                     // Help is a list to read; choosing a line just closes it.
                     Source::Help => {}
+                    // The settings list acts as well as reads: choosing one
+                    // puts the line that would change it on the command line,
+                    // spelt out and ready, rather than running it. A list you
+                    // opened to find out what something is set to should not
+                    // set it because you moved onto it and pressed enter, and
+                    // seeing `:set notypewriter` before you commit to it is
+                    // the difference between a toggle and a decision.
+                    Source::Settings => {
+                        let line = choice.target.clone();
+                        self.open_prompt(PromptKind::Command);
+                        if let Some(prompt) = self.prompt.as_mut() {
+                            prompt.line.insert_str(&line);
+                        }
+                    }
                     Source::Actions => self.run_code_action(choice.id),
                     Source::Themes => {
                         self.theme_was = None;
@@ -4373,7 +4503,13 @@ impl Editor {
                 let path = crate::editor::lsp::absolute(Path::new(&choice.target));
                 self.views.iter().position(|view| view.doc.path.as_deref().map(crate::editor::lsp::absolute) == Some(path.clone()))?
             }
-            Source::Help | Source::Actions | Source::Fonts | Source::Themes | Source::Symbols | Source::Lines => return None,
+            Source::Help
+            | Source::Actions
+            | Source::Fonts
+            | Source::Themes
+            | Source::Settings
+            | Source::Symbols
+            | Source::Lines => return None,
         };
         (0..self.windows.len()).find(|&id| id != self.focus && self.windows[id].view == view)
     }
@@ -7320,10 +7456,10 @@ two
         assert_eq!(e.indent().tabs, e.indent.tabs);
 
         // And the report says where the numbers came from.
-        e.run_command("set");
+        e.run_command("set shiftwidth?");
         assert!(!e.message.contains("read from the file"), "{}", e.message);
         let mut e = opened("def f():\n    a = 1\n");
-        e.run_command("set");
+        e.run_command("set shiftwidth?");
         assert!(e.message.contains("read from the file"), "{}", e.message);
     }
 
@@ -7775,8 +7911,8 @@ two
         e.run_command("set tw=0");
         assert!(e.message.starts_with("textwidth wants 1 to 1000"), "{}", e.message);
         assert_eq!(e.textwidth, 40, "and it is left as it was");
-        e.run_command("set");
-        assert!(e.message.contains("textwidth=40"), "{}", e.message);
+        e.run_command("set tw?");
+        assert_eq!(e.message, "textwidth=40", "and the short form asks about the same setting");
     }
 
     #[test]
@@ -8266,9 +8402,10 @@ two
         e.run_command("set list");
         e.run_command("set cursorword");
         assert!(e.show_whitespace && e.cursorword);
-        e.run_command("set");
-        assert!(e.message.contains("list=true"), "{}", e.message);
-        assert!(e.message.contains("cursorword=true"), "{}", e.message);
+        e.run_command("set list?");
+        assert_eq!(e.message, "list=true");
+        e.run_command("set cursorword?");
+        assert_eq!(e.message, "cursorword=true");
         e.run_command("set nolist");
         e.run_command("set nocursorword");
         assert!(!e.show_whitespace && !e.cursorword);
@@ -8393,8 +8530,8 @@ two
         e.run_command("set dogname=Rex");
         e.run_command("dog");
         assert!(e.message.starts_with("Rex has run 1,234 cells"), "{}", e.message);
-        e.run_command("set");
-        assert!(e.message.contains("dogname=Rex"), "in the settings too: {}", e.message);
+        e.run_command("set dogname?");
+        assert_eq!(e.message, "dogname=Rex", "in the settings too");
 
         // And with no dog there is nothing to count.
         e.run_command("set nodog");
@@ -8454,29 +8591,91 @@ two
         // The point of the file: every line in it is what the editor already
         // does, so a config written and not edited changes nothing. It is also
         // the check that no default in the table has drifted from the code.
-        let mut untouched = Editor::scratch();
-        untouched.run_command("set");
-        let before = std::mem::take(&mut untouched.message);
+        let untouched = Editor::scratch();
 
         let mut e = Editor::scratch();
         e.apply_config(&crate::command::default_config());
         assert_eq!(e.message, "", "the file runs clean");
-        e.run_command("set");
-        assert_eq!(e.message, before);
+        for setting in crate::command::SETTINGS {
+            assert_eq!(
+                e.setting_value(setting.name),
+                untouched.setting_value(setting.name),
+                "the file moved `{}`",
+                setting.name
+            );
+        }
     }
 
     #[test]
-    fn every_setting_in_the_table_is_reported_by_bare_set() {
+    fn bare_set_opens_the_whole_table_as_a_list() {
         let mut e = Editor::scratch();
         e.run_command("set");
+        let picker = e.picker.as_ref().expect("`:set` opens the settings list");
+        assert_eq!(picker.source, crate::picker::Source::Settings);
+        let listed: Vec<&str> =
+            picker.matches().iter().map(|m| picker.item(m).text.trim_end()).collect();
         for setting in crate::command::SETTINGS {
+            let value = e.setting_value(setting.name).unwrap();
             assert!(
-                e.message.contains(&format!("{}=", setting.name)),
-                "{} is in the report: {}",
-                setting.name,
-                e.message
+                listed.iter().any(|text| {
+                    // Not `split_whitespace`: a value can have spaces in it,
+                    // as `(the platform's own)` does.
+                    text.strip_prefix(setting.name)
+                        .is_some_and(|rest| rest.trim_start().starts_with(value.as_str()))
+                }),
+                "`{}` is in the list, named first and valued second: {listed:?}",
+                setting.name
             );
         }
+    }
+
+    /// And the whole way through: open the list, filter it, press enter, and
+    /// the command line is sitting there with the line on it.
+    #[test]
+    fn choosing_a_setting_leaves_it_on_the_command_line() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut e = Editor::scratch();
+        e.set_viewport(80, 24);
+        e.run_command("set");
+        for ch in "typewriter".chars() {
+            e.picker_input(KeyEvent::from(KeyCode::Char(ch)));
+        }
+        e.picker_input(KeyEvent::from(KeyCode::Enter));
+
+        assert!(e.picker.is_none(), "the list closes");
+        let prompt = e.prompt.as_ref().expect("the command line is open");
+        assert_eq!(prompt.line.text(), "set typewriter");
+        assert!(!e.typewriter, "and nothing has been set until you run it");
+    }
+
+    /// Choosing one leaves the line that would change it on the command line,
+    /// rather than changing it: a list you opened to read should not set
+    /// something because you pressed enter on it.
+    #[test]
+    fn choosing_a_setting_offers_the_line_that_would_change_it() {
+        let mut e = Editor::scratch();
+        let change = |e: &Editor, name: &str| {
+            let setting = crate::command::SETTINGS.iter().find(|s| s.name == name).unwrap();
+            e.setting_change(setting)
+        };
+
+        assert_eq!(change(&e, "typewriter"), "set typewriter", "off, so the line turns it on");
+        e.run_command("set typewriter");
+        assert_eq!(change(&e, "typewriter"), "set notypewriter", "and on, the line turns it off");
+
+        // A word setting offers the next word round, so the list cycles.
+        assert_eq!(change(&e, "number"), "set nonumber");
+        e.run_command("set nonumber");
+        assert_eq!(change(&e, "number"), "set relativenumber");
+
+        // A value offers the value, to edit - and the literal one, not the
+        // one the report dresses up for reading.
+        assert_eq!(change(&e, "textwidth"), "set textwidth=80");
+        assert_eq!(change(&e, "dogname"), "set dogname=", "not `(unnamed)`");
+        // A value out of a list is still a value: `set tabline=`, with the
+        // list offered but nothing chosen, would turn the buffer list off.
+        assert_eq!(change(&e, "tabline"), "set tabline=auto");
+        assert_eq!(change(&e, "semicolon"), "set semicolon=find");
     }
 
     #[test]
@@ -9556,6 +9755,43 @@ a two
         e.scroll_follows();
         assert!(!e.in_motion());
         assert_eq!(e.window_state(e.focus()).2, e.view().scroll_top);
+    }
+
+    /// The table and the editor cannot drift: every setting `:set` offers has
+    /// a value the editor can report, and nothing reports a value for a name
+    /// that is not a setting.
+    #[test]
+    fn every_setting_can_say_what_it_is_set_to() {
+        let e = Editor::scratch();
+        for setting in command::SETTINGS {
+            assert!(
+                e.setting_value(setting.name).is_some(),
+                "`{}` is offered by :set but cannot say what it is set to",
+                setting.name
+            );
+        }
+        assert_eq!(e.setting_value("nonsuch"), None);
+    }
+
+    #[test]
+    fn a_question_mark_asks_what_one_setting_is() {
+        let mut e = Editor::scratch();
+        e.run_command("set typewriter?");
+        assert_eq!(e.message, "typewriter=false");
+
+        e.run_command("set typewriter");
+        e.run_command("set typewriter?");
+        assert_eq!(e.message, "typewriter=true", "the one thing the long line could not tell you");
+
+        // The short forms and the `no` forms ask about the same setting, as
+        // they do everywhere else `:set` takes a name.
+        e.run_command("set tw?");
+        assert_eq!(e.message, "textwidth=80");
+        e.run_command("set notypewriter?");
+        assert_eq!(e.message, "typewriter=true", "asking is not setting");
+
+        e.run_command("set nonsuch?");
+        assert_eq!(e.message, "nonsuch is not a setting - :set lists them");
     }
 
     #[test]

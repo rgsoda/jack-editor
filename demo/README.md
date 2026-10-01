@@ -1,6 +1,6 @@
 # The demos
 
-Nineteen recordings of jack doing what it does, and the scripts that make them.
+Twenty recordings of jack doing what it does, and the scripts that make them.
 Nothing here is captured by hand: each GIF is a [vhs](https://github.com/charmbracelet/vhs)
 tape — a list of keys and pauses — replayed into a headless terminal, so a
 re-render after a change shows the change rather than a different take.
@@ -88,6 +88,7 @@ The one at the top of the main README.
 | [`smoothscroll`](tapes/smoothscroll.tape) | `:set smoothscroll`, a half page that slides rather than being replaced |
 | [`typewriter`](tapes/typewriter.tape) | `:set typewriter`, the cursor's line held and the text moving under it |
 | [`indentguides`](tapes/indentguides.tape) | `:set indentguides`, a rule down each level, carried across the blanks |
+| [`settings`](tapes/settings.tape) | `:set` as a searchable list of every option and its value, and `:set x?` |
 
 ![editing](gif/editing.gif)
 ![cursors](gif/cursors.gif)
@@ -107,6 +108,7 @@ The one at the top of the main README.
 ![smoothscroll](gif/smoothscroll.gif)
 ![typewriter](gif/typewriter.gif)
 ![indentguides](gif/indentguides.gif)
+![settings](gif/settings.gif)
 
 ## Writing another one
 
