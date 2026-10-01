@@ -295,9 +295,9 @@ const DOG_NAP: Duration = Duration::from_secs(300);
 const DOG_ZOOM: Duration = Duration::from_millis(40);
 
 /// And how often the cursor's wake lets go of a cell. Fast: the whole of it
-/// is over in half a second, and a wake you can watch shorten is a smear
-/// rather than a hint of one.
-const SMEAR_TICK: Duration = Duration::from_millis(28);
+/// is over in a fifth of a second, which is quick enough to read as the
+/// cursor having been dragged rather than as something drawn and cleared.
+const SMEAR_TICK: Duration = Duration::from_millis(14);
 
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
@@ -370,7 +370,7 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         // asleep - one more wake-up, and then there is nothing left to draw.
         // Asleep, or no dog at all: block for ever, as this always did.
         // A wake still on screen wants the fastest clock of the three, and
-        // it only has one for half a second - the dog's rest is put off by
+        // it only has one for a fifth of a second - the dog's rest is put off by
         // that much at most, which is less than the pause it is measuring.
         let wait = match (editor.dog.running, editor.dog_may_nap()) {
             _ if editor.smear_running() => Some(SMEAR_TICK),

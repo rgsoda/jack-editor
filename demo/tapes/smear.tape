@@ -1,5 +1,5 @@
 # `:set smear`: the cells the cursor crossed, for a moment after it crossed
-# them. Recorded fast, because the whole of a wake is four hundred milliseconds.
+# them. Recorded fast, because the whole of a wake is two hundred milliseconds.
 Output demo/gif/smear.gif
 Source demo/tapes/_common.tape
 

@@ -1123,14 +1123,15 @@ The path is drawn rather than the places. Two dots would say a cursor was in
 two places; a straight line between them — Bresenham, because the cursor's real
 path between two cells is not a thing that exists and a straight one is the one
 that reads — says it came from one and went to the other. Fourteen cells at
-most, a cell let go of every 28 milliseconds, so the whole of it is over in
-about four hundred. Long enough to follow, short enough that it is gone before
-you have read it.
+most, a cell let go of every 14 milliseconds, so the whole of it is over in
+about two hundred. Fast enough to read as the cursor having been dragged there
+rather than as something drawn and then cleared.
 
 It costs nothing when it is off: the cursor's screen position is not even asked
 for. When it is on, the run loop wants a faster clock than anything else does,
-and gets it for the half second the wake is on screen — the dog's rest is put
-off by that much at most, which is less than the pause the dog is measuring.
+and gets it for the fifth of a second the wake is on screen — the dog's rest is
+put off by that much at most, which is nothing beside the pause the dog is
+measuring.
 Both frontends do the same thing, because both already had this shape of loop
 for the dog.
 

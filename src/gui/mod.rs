@@ -501,7 +501,7 @@ impl ApplicationHandler<Message> for App<'_> {
         // at all, so the loop goes back to waiting on events alone.
         let patience = match (self.editor.dog.running, self.editor.dog_may_nap()) {
             // A wake on screen wants the fastest clock of the three, and only
-            // wants it for half a second.
+            // wants it for a fifth of a second.
             _ if self.editor.smear_running() => Some(crate::SMEAR_TICK),
             (true, _) if self.editor.dog.errand == crate::editor::Errand::Lapping => {
                 Some(crate::DOG_ZOOM)
