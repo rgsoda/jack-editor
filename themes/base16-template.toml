@@ -102,6 +102,7 @@
 "ui.dim" = { fg = "$base03" }
 "ui.fold" = { fg = "$base03", italic = true }
 "ui.whitespace" = { fg = "$base02" }
+"ui.indentguide" = { fg = "$base02" }
 "ui.inlayhint" = { fg = "$base03", italic = true }
 "ui.cursorword" = { underline = true }
 "ui.cursor.other" = { reverse = true }

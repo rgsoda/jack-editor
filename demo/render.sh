@@ -76,6 +76,19 @@ for tape in "${tapes[@]}"; do
     perl -0pi -e 's/self\.held\.push\(fruit\);/self.held.push(fruit)/' "$DEMO/src/shapes.rs"
   fi
 
+  # Three tapes want a file long enough to scroll about in and nested deeply
+  # enough to have indentation worth drawing. It is copied in per take rather
+  # than kept in the fixture, where it would turn up in six other
+  # recordings' file pickers.
+  case "$name" in
+    smoothscroll | typewriter | indentguides)
+      cp "$here/long/ledger.rs" "$DEMO/src/ledger.rs"
+      git -C "$DEMO" add -A
+      GIT_AUTHOR_DATE="2026-09-14T09:12:00" GIT_COMMITTER_DATE="2026-09-14T09:12:00" \
+        git -C "$DEMO" commit -q -m "The ledger"
+      ;;
+  esac
+
   # A config directory of its own: jack writes `init` here, not in ~/.config.
   cfg="$work/config-$name"
   mkdir -p "$cfg/jack"

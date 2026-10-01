@@ -1075,6 +1075,18 @@ impl View {
         }
     }
 
+    /// How many screen rows the lines `from..to` take up, which is how far
+    /// everything on the screen moves when the top line goes from one to the
+    /// other. Wrapped, a line is as many rows as it needs; folded, the lines
+    /// a fold hides are one row between them.
+    pub fn rows_spanned(&self, from: usize, to: usize, wrap: Option<usize>) -> usize {
+        let to = to.min(self.doc.len_lines());
+        match wrap {
+            Some(width) => (from..to).map(|line| self.line_rows(line, width).len()).sum(),
+            None => self.folds.rows_between(from, to),
+        }
+    }
+
     /// `zt`, `zz`, `zb`: the view moved so the cursor's line sits where asked.
     /// The cursor does not move; only what is around it does.
     pub fn reveal(&mut self, where_to: Reveal, height: usize, wrap: Option<usize>) {

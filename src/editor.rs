@@ -474,6 +474,15 @@ pub struct Editor {
     /// moment. See `smear.rs`.
     pub smear: bool,
     pub smear_trail: crate::smear::Smear,
+    /// `:set smoothscroll`: the view drawn a little behind where it has
+    /// scrolled to, catching up over the next few frames. See `scrolling.rs`.
+    pub smoothscroll: bool,
+    pub scrolling: crate::scrolling::Scrolling,
+    /// `:set typewriter`: the cursor's line held at the middle of the window,
+    /// the text going under it rather than the view following the cursor.
+    pub typewriter: bool,
+    /// `:set indentguides`: a faint rule down each level of indentation.
+    pub indentguides: bool,
     /// `:set spotlight`: everything outside the function the cursor is in,
     /// drawn in one dim colour. Off, and nothing asks the grammar for it.
     pub spotlight: bool,
@@ -782,6 +791,10 @@ impl Editor {
             spotlight: false,
             smear: false,
             smear_trail: crate::smear::Smear::default(),
+            smoothscroll: false,
+            scrolling: crate::scrolling::Scrolling::default(),
+            typewriter: false,
+            indentguides: false,
             theme_name: String::new(),
             theme_was: None,
             coaching: false,
@@ -2487,6 +2500,22 @@ impl Editor {
                 self.smear = false;
                 self.smear_trail.forget();
             }
+            "smoothscroll" => self.smoothscroll = true,
+            "nosmoothscroll" => {
+                self.smoothscroll = false;
+                // Otherwise the view is left drawn wherever the catching up
+                // had got to, and stays there until something scrolls.
+                self.scrolling.forget();
+            }
+            "typewriter" => {
+                self.typewriter = true;
+                // So the line it is on goes to the middle now, rather than
+                // the next time the cursor moves.
+                self.scroll_to_cursor();
+            }
+            "notypewriter" => self.typewriter = false,
+            "indentguides" => self.indentguides = true,
+            "noindentguides" => self.indentguides = false,
             "editorconfig" => self.editorconfig = true,
             "noeditorconfig" => self.editorconfig = false,
             "branch" => self.show_branch = true,
@@ -2514,7 +2543,7 @@ impl Editor {
                     false => "",
                 };
                 self.message = format!(
-                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} smear={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
+                    "number={} cursorline={} dog={} rainbow={} trim={} signs={} glyphs={} shiftwidth={} expandtab={}{read} autoindent={} autopairs={} undofile={} inlayhints={} wrap={} emacs={} lsp={} tabline={} autocomplete={} textwidth={} hitcontext={} list={} cursorword={} coach={} spotlight={} smear={} smoothscroll={} typewriter={} indentguides={} editorconfig={} branch={} opener={} semicolon={} makeprg={} aiprg={} agentprg={} dogname={} theme={} guifont={} guifontsize={}",
                     self.numbers.name(),
                     self.cursorline,
                     self.show_dog,
@@ -2540,6 +2569,9 @@ impl Editor {
                     self.coaching,
                     self.spotlight,
                     self.smear,
+                    self.smoothscroll,
+                    self.typewriter,
+                    self.indentguides,
                     self.editorconfig,
                     self.show_branch,
                     match self.opener.is_empty() {
@@ -4182,7 +4214,7 @@ impl Editor {
         let window = &self.windows[id];
         let view = &self.views[window.view];
         match id == self.focus {
-            true => (view, view.sel, view.scroll_top, view.scroll_left),
+            true => (view, view.sel, self.scroll_shown(view.scroll_top), view.scroll_left),
             false => {
                 let (_, sel, top, left) = self.window_state_unfocused(id);
                 (view, sel, top, left)
@@ -4621,6 +4653,7 @@ impl Editor {
             None => {
                 let rect = self.window_rect(self.focus);
                 let (x, y) = self.view().cursor_screen(self.wrap_width());
+                let y = self.scroll_lagged_row(y, rect.text_height());
                 (x + (rect.x + self.gutter_width()) as u16, y + rect.y as u16)
             }
         }
@@ -4650,6 +4683,69 @@ impl Editor {
 
     pub fn smear_running(&self) -> bool {
         self.smear && self.smear_trail.running()
+    }
+
+    /// The view has finished scrolling for this frame: note where it got to,
+    /// so the drawing can stay behind it for a moment.
+    ///
+    /// A prompt or a picker is not a scroll to slide: the buffer under one is
+    /// not what is being looked at, and arriving back at it should be
+    /// arriving, not sliding. Off it forgets, so whatever moved while it was
+    /// off is not caught up with afterwards.
+    pub fn scroll_follows(&mut self) {
+        if !self.smoothscroll || self.prompt.is_some() || self.picker.is_some() {
+            self.scrolling.forget();
+            return;
+        }
+        let top = self.views[self.current].scroll_top;
+        self.scrolling.follows(top);
+    }
+
+    /// A tick: some of the distance left is closed, and whether any is left
+    /// is whether the loop comes back for it.
+    pub fn scroll_eases(&mut self) -> bool {
+        self.scrolling.eases()
+    }
+
+    pub fn scroll_running(&self) -> bool {
+        self.smoothscroll && self.scrolling.running()
+    }
+
+    /// Whether anything on the screen is part way through moving, which is
+    /// what the run loops ask to decide between a frame clock and waiting.
+    pub fn in_motion(&self) -> bool {
+        self.scroll_running() || self.smear_running()
+    }
+
+    /// Which line the focused window draws at the top: behind `scroll_top`
+    /// while a smooth scroll catches up, and `scroll_top` itself otherwise.
+    fn scroll_shown(&self, top: usize) -> usize {
+        match self.smoothscroll {
+            true => self.scrolling.shown().unwrap_or(top),
+            false => top,
+        }
+    }
+
+    /// Where the cursor is drawn while a smooth scroll is still catching up.
+    ///
+    /// Its row was measured against the line the view has really scrolled to,
+    /// and the window is showing a different one, so it moves by the rows
+    /// between the two - and is held inside the window while it does, because
+    /// a terminal cursor put outside its window is put somewhere else
+    /// entirely rather than hidden.
+    fn scroll_lagged_row(&self, row: u16, height: usize) -> u16 {
+        let top = self.views[self.current].scroll_top;
+        let shown = self.scroll_shown(top);
+        if shown == top {
+            return row;
+        }
+        let view = &self.views[self.current];
+        let rows = view.rows_spanned(shown.min(top), shown.max(top), self.wrap_width()) as i64;
+        let moved = match shown < top {
+            true => row as i64 + rows,
+            false => row as i64 - rows,
+        };
+        moved.clamp(0, height.saturating_sub(1) as i64) as u16
     }
 
     pub fn is_modified(&self) -> bool {
@@ -4751,7 +4847,33 @@ impl Editor {
         if std::mem::take(&mut self.view_mut().centre) {
             self.view_mut().reveal(Reveal::Middle, height, wrap.then_some(width));
         }
+        self.typewriter_holds(width, height, wrap);
         self.view_mut().scroll_to_cursor(width, height, wrap);
+    }
+
+    /// `:set typewriter`: the cursor's line is put in the middle of the
+    /// window on every move, so the line you are typing on stays where it is
+    /// and the text goes under it. The view following the cursor becomes the
+    /// cursor holding still and the file moving.
+    ///
+    /// Two places it cannot hold: the first half-screen of the file, where
+    /// there is nothing above to scroll away, and the last, where centring
+    /// would scroll the end of the file into the middle and leave the bottom
+    /// half as `~`. Both ends keep a full screen instead, and the cursor
+    /// walks the last rows the ordinary way.
+    ///
+    /// Not in a directory listing or a terminal buffer: neither is something
+    /// you are writing, and a terminal's own idea of where its last line goes
+    /// is not to be argued with.
+    fn typewriter_holds(&mut self, width: usize, height: usize, wrap: bool) {
+        let view = self.view();
+        if !self.typewriter || view.listing || view.terminal.is_some() {
+            return;
+        }
+        let most = view.doc.len_lines().saturating_sub(height);
+        let view = self.view_mut();
+        view.reveal(Reveal::Middle, height, wrap.then_some(width));
+        view.scroll_top = view.scroll_top.min(most);
     }
 
     // --- undo that outlives the editor ---------------------------------
@@ -9277,6 +9399,163 @@ a two
         e.shell = None;
         e.run_command("sh");
         assert_eq!(e.shell.as_deref(), Some(""));
+    }
+
+    /// A file long enough to scroll about in, with a window to scroll it in.
+    fn scrollable(lines: usize) -> Editor {
+        let mut e = Editor::scratch();
+        let text: String = (1..=lines).map(|n| format!("line {n}\n")).collect();
+        e.view_mut().doc.text = ropey::Rope::from_str(&text);
+        e.set_viewport(80, 24);
+        e
+    }
+
+    #[test]
+    fn typewriter_holds_the_cursor_line_at_the_middle() {
+        let mut e = scrollable(400);
+        e.run_command("set typewriter");
+        let middle = e.height / 2;
+
+        e.goto_line(200);
+        e.scroll_to_cursor();
+        assert_eq!(e.view().scroll_top, 200 - middle);
+        e.goto_line(201);
+        e.scroll_to_cursor();
+        assert_eq!(e.view().scroll_top, 201 - middle, "one line of text for one line of cursor");
+    }
+
+    /// Both ends of the file have nothing to scroll away: the cursor walks
+    /// the first and last rows the ordinary way, and the screen stays full.
+    #[test]
+    fn typewriter_cannot_hold_at_either_end_of_the_file() {
+        let mut e = scrollable(400);
+        e.run_command("set typewriter");
+
+        e.goto_line(2);
+        e.scroll_to_cursor();
+        assert_eq!(e.view().scroll_top, 0, "there is nothing above line one to show");
+
+        // And nothing below the last line: near the end the top is where the
+        // end of the file puts it, which is exactly where it would be with
+        // the typewriter off.
+        e.goto_line(398);
+        e.scroll_to_cursor();
+        let (top, centred) = (e.view().scroll_top, 398 - e.height / 2);
+        assert!(top < centred, "centring would be {centred}, and the screen would be half empty");
+        assert!(top + e.height >= e.last_line(), "the last line is still on screen: {top}");
+    }
+
+    #[test]
+    fn typewriter_centres_the_line_the_moment_it_is_turned_on() {
+        let mut e = scrollable(400);
+        e.goto_line(200);
+        e.scroll_to_cursor();
+        let before = e.view().scroll_top;
+        e.run_command("set typewriter");
+        assert_ne!(e.view().scroll_top, before);
+        assert_eq!(e.view().scroll_top, 200 - e.height / 2);
+    }
+
+    /// The whole of a smooth scroll from the editor's side: the window draws
+    /// the old top on the frame it scrolled on, catches up over the next few,
+    /// and the view's own `scroll_top` never budges from the truth.
+    #[test]
+    fn smoothscroll_draws_the_view_behind_where_it_has_scrolled_to() {
+        let mut e = scrollable(400);
+        e.run_command("set smoothscroll");
+        e.goto_line(40);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        let settled = e.view().scroll_top;
+        assert_eq!(e.window_state(e.focus()).2, settled);
+
+        e.goto_line(60);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        let scrolled = e.view().scroll_top;
+        assert_ne!(scrolled, settled, "the view really did scroll");
+        assert_eq!(e.window_state(e.focus()).2, settled, "and is drawn where it was");
+
+        assert!(e.in_motion());
+        let mut ticks = 0;
+        while e.scroll_eases() {
+            ticks += 1;
+            assert!(ticks < 40);
+            let drawn = e.window_state(e.focus()).2;
+            assert!(drawn > settled && drawn <= scrolled, "{drawn}");
+            assert_eq!(e.view().scroll_top, scrolled, "nothing about the view moved");
+        }
+        assert!(ticks > 1, "a scroll worth easing takes more than one frame");
+        assert_eq!(e.window_state(e.focus()).2, scrolled);
+        assert!(!e.in_motion());
+    }
+
+    /// The cursor goes with the text it is in, so it reads as having been
+    /// carried down the screen rather than as waiting at the bottom.
+    #[test]
+    fn the_cursor_is_drawn_with_the_text_a_smooth_scroll_is_still_sliding() {
+        let mut e = scrollable(400);
+        e.run_command("set smoothscroll");
+        e.goto_line(40);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        let settled = e.cursor_screen().1;
+
+        e.goto_line(60);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        let rows = e.window_rect(e.focus()).text_height();
+        let mut seen = vec![e.cursor_screen().1];
+        loop {
+            let more = e.scroll_eases();
+            seen.push(e.cursor_screen().1);
+            if !more {
+                break;
+            }
+        }
+        // Held inside the window the whole way: a terminal cursor put outside
+        // its window is put somewhere else entirely rather than hidden.
+        assert!(seen.iter().all(|&y| (y as usize) < rows), "{seen:?}");
+        assert!(seen[0] > settled, "it starts below where it was: {seen:?}");
+        // Coming down the screen as the text does, and landing where the
+        // settled view says it is.
+        assert!(seen.windows(2).all(|pair| pair[0] >= pair[1]), "{seen:?}");
+        assert!(!e.in_motion());
+        assert_eq!(*seen.last().unwrap(), e.cursor_screen().1, "{seen:?}");
+    }
+
+    #[test]
+    fn turning_smoothscroll_off_does_not_leave_the_view_half_slid() {
+        let mut e = scrollable(400);
+        e.run_command("set smoothscroll");
+        e.goto_line(40);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        e.goto_line(60);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        assert!(e.in_motion());
+
+        e.run_command("set nosmoothscroll");
+        assert!(!e.in_motion());
+        assert_eq!(e.window_state(e.focus()).2, e.view().scroll_top);
+    }
+
+    /// A prompt or a picker is not a window to slide: what is under one is
+    /// not what is being looked at, and coming back to it should be arriving.
+    #[test]
+    fn a_prompt_is_not_a_scroll_to_slide() {
+        let mut e = scrollable(400);
+        e.run_command("set smoothscroll");
+        e.goto_line(40);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        e.open_command_over_selection();
+        e.goto_line(80);
+        e.scroll_to_cursor();
+        e.scroll_follows();
+        assert!(!e.in_motion());
+        assert_eq!(e.window_state(e.focus()).2, e.view().scroll_top);
     }
 
     #[test]

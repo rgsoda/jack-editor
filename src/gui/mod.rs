@@ -186,6 +186,7 @@ impl App<'_> {
         self.session.before_frame(self.editor, cols, rows.saturating_sub(chrome));
 
         // After the scrolling and before the drawing, as in the terminal.
+        self.editor.scroll_follows();
         self.editor.smear_follows();
 
         let grid = self.screen.begin(cols, rows);
@@ -500,9 +501,9 @@ impl ApplicationHandler<Message> for App<'_> {
         // see whether you have gone away - and a sleeping dog needs no clock
         // at all, so the loop goes back to waiting on events alone.
         let patience = match (self.editor.dog.running, self.editor.dog_may_nap()) {
-            // A wake on screen wants the fastest clock of the three, and only
-            // wants it for a fifth of a second.
-            _ if self.editor.smear_running() => Some(crate::SMEAR_TICK),
+            // A wake on screen, or a scroll catching up, wants the fastest
+            // clock of the three, and only wants it for a moment.
+            _ if self.editor.in_motion() => Some(crate::MOTION_TICK),
             (true, _) if self.editor.dog.errand == crate::editor::Errand::Lapping => {
                 Some(crate::DOG_ZOOM)
             }
@@ -519,8 +520,10 @@ impl ApplicationHandler<Message> for App<'_> {
             // Nothing has arrived since the last frame, or this would not be
             // the wait: that much of it is the dog stopping, or dropping off.
             Some(since) if since.elapsed() >= patience => {
-                // The wake first and on its own clock, as in the terminal.
-                if self.editor.smear_running() {
+                // Drawn motion first and on its own clock, as in the
+                // terminal, and both at once is allowed.
+                if self.editor.in_motion() {
+                    self.editor.scroll_eases();
                     self.editor.smear_fades();
                 } else {
                     match self.editor.dog.running {

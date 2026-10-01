@@ -242,6 +242,23 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
         cursor_style: editor.theme.style("ui.cursor.other"),
     };
 
+    // `:set indentguides`: a rule down each level of indentation, with the
+    // step taken from what this file indents with rather than from what is
+    // configured - a rule every four columns through a file indented by two
+    // is a rule through half the text.
+    let guides = editor.indentguides.then(|| {
+        let indent = view.indent.unwrap_or(editor.indent);
+        let step = match indent.tabs {
+            true => crate::view::TAB_WIDTH,
+            false => indent.width,
+        };
+        let rule = match editor.glyphs {
+            true => '\u{2502}',
+            false => '|',
+        };
+        (step.max(1), editor.theme.style("ui.indentguide"), rule)
+    });
+
     // Wrapped, a line takes as many rows as it needs and nothing scrolls
     // sideways; each row is drawn as a line of its own, with the columns,
     // bytes and selection it covers.
@@ -329,6 +346,23 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
                 &styling,
             );
 
+            // The rules down the indentation, over the blanks the text pass
+            // has just drawn there. None at the level the text itself starts
+            // at: a rule under the first character of a line is a rule
+            // through the line.
+            if let Some((step, style, rule)) = guides.filter(|_| segment == 0) {
+                for col in (0..indent_depth(view, line)).step_by(step) {
+                    if col < styling.scroll_left {
+                        continue;
+                    }
+                    let x = styling.left + col - styling.scroll_left;
+                    if x >= styling.right {
+                        break;
+                    }
+                    surface.put(x, row, rule, 1, under(here, style));
+                }
+            }
+
             // The worst diagnostic's message, after the text where there is
             // room. Its first line: the rest is for `]d`.
             if let (Some(d), true) = (diagnostic, last) {
@@ -360,6 +394,49 @@ fn draw_window(editor: &Editor, surface: &mut Surface, id: usize, rect: Rect) {
             Some(fold) => fold.end + 1,
             None => line + 1,
         };
+    }
+}
+
+/// How far from the lines around a blank one is looked, for the indentation
+/// it has none of itself. Enough to cross any gap in code and cheap enough to
+/// do for every row on the screen.
+const LOOK: usize = 64;
+
+/// The display column `line`'s text starts at, which is how deep the rules go
+/// on it. `None` when the line has no text - whitespace and a line break are
+/// not somewhere text starts.
+fn indent_width(text: &str) -> Option<usize> {
+    let mut col = 0;
+    for ch in text.chars() {
+        match ch {
+            ' ' => col += 1,
+            '\t' => col += crate::view::TAB_WIDTH - col % crate::view::TAB_WIDTH,
+            '\n' | '\r' => return None,
+            _ => return Some(col),
+        }
+    }
+    None
+}
+
+/// How deep the rules go on a line, blank lines included.
+///
+/// A blank line has no indentation of its own, and leaving it bare puts a gap
+/// in every rule that crosses a gap between two statements - which is most of
+/// them. So it takes the deeper of the lines either side: a blank at the end
+/// of a block is still inside the block, which is the thing the rule is
+/// there to say, and a blank between two top-level functions is inside
+/// neither and gets nothing.
+fn indent_depth(view: &crate::view::View, line: usize) -> usize {
+    let text = view.doc.line_str(line);
+    if let Some(width) = indent_width(&text) {
+        return width;
+    }
+    let indent_of = |l: usize| indent_width(&view.doc.line_str(l));
+    let above = (line.saturating_sub(LOOK)..line).rev().find_map(indent_of);
+    let below = (line + 1..(line + 1 + LOOK).min(view.doc.len_lines())).find_map(indent_of);
+    match (above, below) {
+        (Some(above), Some(below)) => above.max(below),
+        _ => 0,
     }
 }
 
@@ -1824,6 +1901,91 @@ mod tests {
         editor.show_dog = true;
         editor.glyphs = false;
         assert!(!status_row(&editor, &keys).contains(status::DOG_SITTING));
+    }
+
+    /// A file indented with four spaces, with a blank line inside the deepest
+    /// block and another between the two functions.
+    fn indented_editor() -> Editor {
+        let mut editor = Editor::scratch();
+        let text = "fn one() {\n    if x {\n        deep();\n\n    }\n}\n\nfn two() {\n}\n";
+        editor.view_mut().doc.text = ropey::Rope::from_str(text);
+        editor.view_mut().indent = Some(crate::view::Indent { width: 4, tabs: false });
+        editor.set_viewport(80, 40);
+        editor.indentguides = true;
+        editor
+    }
+
+    /// One rule per level the line is inside, and none at the level its own
+    /// text starts at.
+    #[test]
+    fn indentguides_rule_down_each_level_of_indentation() {
+        let editor = indented_editor();
+        let keys = Keys::default();
+        let left = editor.gutter_width();
+        let rule = |row: usize, col: usize| row_text(&editor, &keys, row).chars().nth(left + col).unwrap();
+
+        assert_eq!(rule(0, 0), 'f', "the top level is not inside anything");
+        assert_eq!(rule(1, 0), '\u{2502}', "the `if` is one level in");
+        assert_eq!(rule(1, 4), 'i', "and the rule stops short of its own text");
+        assert_eq!(rule(2, 0), '\u{2502}', "`deep();` is two");
+        assert_eq!(rule(2, 4), '\u{2502}');
+        assert_eq!(rule(2, 8), 'd');
+    }
+
+    /// The point of looking at the lines around a blank one: a rule that
+    /// breaks where the code does not is worse than no rule.
+    #[test]
+    fn indentguides_carry_on_across_a_blank_line_inside_a_block() {
+        let editor = indented_editor();
+        let keys = Keys::default();
+        let left = editor.gutter_width();
+        let blank = row_text(&editor, &keys, 3);
+        let at = |col: usize| blank.chars().nth(left + col).unwrap();
+        assert_eq!((at(0), at(4)), ('\u{2502}', '\u{2502}'), "{blank:?}");
+        assert_eq!(at(8), ' ', "it is inside the block, not at the bottom of it");
+    }
+
+    /// And the point of taking the deeper of the two rather than always
+    /// carrying on: a blank line between two functions is inside neither.
+    #[test]
+    fn indentguides_leave_a_blank_line_between_two_functions_alone() {
+        let editor = indented_editor();
+        let keys = Keys::default();
+        let row = row_text(&editor, &keys, 6);
+        let text: String = row.chars().skip(editor.gutter_width()).collect();
+        assert!(text.trim().is_empty(), "{row:?}");
+    }
+
+    #[test]
+    fn indentguides_step_by_what_the_file_indents_with() {
+        let mut editor = Editor::scratch();
+        editor.view_mut().doc.text = ropey::Rope::from_str("a
+  b
+    c
+      d
+");
+        editor.view_mut().indent = Some(crate::view::Indent { width: 2, tabs: false });
+        editor.set_viewport(80, 40);
+        editor.indentguides = true;
+        let keys = Keys::default();
+        let left = editor.gutter_width();
+        let row = row_text(&editor, &keys, 3);
+        let at: String = row.chars().skip(left).take(7).collect();
+        assert_eq!(at, "\u{2502} \u{2502} \u{2502} d", "a rule every two columns, not every four");
+    }
+
+    #[test]
+    fn no_indentguides_without_the_setting_or_without_glyphs() {
+        let mut editor = indented_editor();
+        editor.indentguides = false;
+        let keys = Keys::default();
+        assert!(!row_text(&editor, &keys, 2).contains('\u{2502}'));
+
+        editor.indentguides = true;
+        editor.glyphs = false;
+        let row = row_text(&editor, &keys, 2);
+        assert!(!row.contains('\u{2502}'), "{row:?}");
+        assert!(row.contains('|'), "a terminal with no box drawing gets a pipe: {row:?}");
     }
 
     fn row_foregrounds(editor: &Editor, keys: &Keys, y: usize) -> Vec<Option<crossterm::style::Color>> {

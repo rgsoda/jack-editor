@@ -157,6 +157,30 @@ pub static SETTINGS: &[Setting] = &[
                 somewhere rather than the cursor turning up elsewhere.",
     },
     Setting {
+        name: "smoothscroll",
+        kind: Kind::Flag(false),
+        about: "Draw the view a little behind where it has scrolled to and \
+                let it catch up over the next few frames, so a half page \
+                slides rather than being replaced. A leap across the file \
+                still arrives in one.",
+    },
+    Setting {
+        name: "typewriter",
+        kind: Kind::Flag(false),
+        about: "Hold the cursor's line in the middle of the window and move \
+                the text under it, rather than scrolling only when the \
+                cursor would otherwise leave the screen. Both ends of the \
+                file keep a full screen instead.",
+    },
+    Setting {
+        name: "indentguides",
+        kind: Kind::Flag(false),
+        about: "A faint rule down each level of indentation, stepped by what \
+                the file itself indents with. Blank lines take the \
+                indentation of the lines around them, so a rule does not \
+                break where a block does not.",
+    },
+    Setting {
         name: "coach",
         kind: Kind::Flag(false),
         about: "Say so when a run of keys had a count in it: ten `j` rather \

@@ -118,6 +118,10 @@
 # `:set smear`: the cells the cursor has just crossed. Reversed like a
 # cursor, because that is what it is the tail of, and gone in a moment.
 "ui.smear" = { reverse = true, dim = true }
+# `:set indentguides`: the rule down each level of indentation. Fainter than
+# the whitespace marks - a rule is there to be followed sideways without being
+# read, and anything brighter competes with the code it is holding up.
+"ui.indentguide" = { fg = "#44475a" }
 # A closed fold's count, on the line it leaves showing.
 "ui.fold" = { fg = "#6272a4", italic = true }
 # `:set list`: the arrow a tab becomes and the dot a trailing space becomes.

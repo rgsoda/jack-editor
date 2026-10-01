@@ -39,6 +39,7 @@ mod register;
 #[cfg(feature = "gui")]
 mod gui;
 mod screen;
+mod scrolling;
 mod search;
 mod session;
 mod smear;
@@ -294,10 +295,13 @@ const DOG_NAP: Duration = Duration::from_secs(300);
 /// and nothing else does. Fast enough to be a run rather than a march.
 const DOG_ZOOM: Duration = Duration::from_millis(40);
 
-/// And how often the cursor's wake lets go of a cell. Fast: the whole of it
-/// is over in a fifth of a second, which is quick enough to read as the
-/// cursor having been dragged rather than as something drawn and cleared.
-const SMEAR_TICK: Duration = Duration::from_millis(14);
+/// And how often the two things that are drawn moving get their next frame:
+/// the cursor's wake letting go of a cell, and a smooth scroll closing some
+/// of the distance left. Fast - a wake is over in a fifth of a second and a
+/// half-page scroll in about a tenth, which is quick enough to read as the
+/// cursor having been dragged and the text having slid, rather than as
+/// something drawn and cleared.
+const MOTION_TICK: Duration = Duration::from_millis(14);
 
 fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Result<()> {
     let mut out = io::stdout();
@@ -335,6 +339,7 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
 
         // After the scrolling and before the drawing: until the view has
         // settled, where the cursor is going to be drawn is not yet known.
+        editor.scroll_follows();
         editor.smear_follows();
 
         ui::draw(editor, &session.keys, screen.begin(cols, rows));
@@ -369,11 +374,12 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
         // Sitting but awake: wait a nap, and a nap that runs out is the dog
         // asleep - one more wake-up, and then there is nothing left to draw.
         // Asleep, or no dog at all: block for ever, as this always did.
-        // A wake still on screen wants the fastest clock of the three, and
-        // it only has one for a fifth of a second - the dog's rest is put off by
-        // that much at most, which is less than the pause it is measuring.
+        // A wake still on screen, or a scroll still catching up, wants the
+        // fastest clock of the three, and only has one for a fraction of a
+        // second - the dog's rest is put off by that much at most, which is
+        // less than the pause it is measuring.
         let wait = match (editor.dog.running, editor.dog_may_nap()) {
-            _ if editor.smear_running() => Some(SMEAR_TICK),
+            _ if editor.in_motion() => Some(MOTION_TICK),
             (true, _) if editor.dog.errand == editor::Errand::Lapping => Some(DOG_ZOOM),
             (true, _) => Some(DOG_REST),
             (false, true) => Some(DOG_NAP),
@@ -384,9 +390,11 @@ fn run(editor: &mut Editor, rx: Receiver<Message>, input: &stream::Input) -> Res
             Some(patience) => match rx.recv_timeout(patience) {
                 Ok(message) => message,
                 Err(RecvTimeoutError::Timeout) => {
-                    // The wake goes first and on its own clock; the dog's
-                    // rest is a different and much longer question.
-                    if editor.smear_running() {
+                    // Drawn motion goes first and on its own clock; the
+                    // dog's rest is a different and much longer question.
+                    // Both at once is allowed: a scroll with a wake over it.
+                    if editor.in_motion() {
+                        editor.scroll_eases();
                         editor.smear_fades();
                         continue;
                     }

@@ -8,7 +8,7 @@ More of them, one feature at a time, in [demo/](demo/README.md).
 
 ## Status
 
-Step 77: a cursor that leaves a wake on `:set smear`, three hundred and fifty colour schemes and a picker that shows each one as you move over it, everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
+Step 77: a view that slides to where it scrolled to on `:set smoothscroll`, the cursor's line held at the middle of the window on `:set typewriter`, a rule down each level of indentation on `:set indentguides`, a cursor that leaves a wake on `:set smear`, three hundred and fifty colour schemes and a picker that shows each one as you move over it, everything but the function you are in dimmed on `:set spotlight`, a coach that names the count you did not type, a dog that barks at a build that broke and runs a lap when a language server finishes indexing, `[language]` sections in the config and `.editorconfig`, a command line you can move about in, with a history that lasts, more than one cursor on `^n`, `gm` and `gs`, folding from the grammar on `za` `zo` `zc` `zM` `zR`, `ac` and `aa`, the class and the argument as text objects, `^a` and `g-` on numbers, `gx` on links, `:set list`, `:set cursorword`, the git branch in the status line, `:hits`, every place in the quickfix list in one buffer you can edit, `:server`, a language server of your own, `:hook`, a command run when a file is opened or written, brackets coloured by how deep they are nested, `:stats`, what the session amounted to, a dog that takes commands, `:agent`, which hands a job to a program that edits the files itself, `af` and `if`, the function as a text object, `:term`, a shell in a buffer, `gq` to wrap a paragraph, `:sort`, `:diff` between two buffers, `:ai`, which asks whatever program you name about the lines you point at, a dog that fetches, buries, barks, naps, keeps count and answers to a name, a picker of what you have changed, a listing you can rename and delete in, a build in the background and its errors in the quickfix list, a directory jack works from that a launcher cannot get wrong, soft wrap, replacing across the project, sending language servers only what changed, inlay hints, project symbols from a language server, undo that survives a restart, surround with `ys` `cs` `ds`, git blame for a line, git hunks you can walk, preview, revert and stage, reopening where you left off, a diagnostics picker, brackets and quotes in pairs, reloading files changed on disk, code actions, renaming and finding uses across a project, bracketed paste, a mappable leader key, running a command with the terminal handed to it, formatting from a language server, hover and signatures from one, completion from one, indentation read from the file, closing buffers, language servers, window splits, `gc` comments, `{` `}` `zz` `H M L` `^e`, `:s` substitute, one command is one undo, `.` repeats the last change, `J` `r` `~` `gv` and operators to the ends of the file, thirteen languages, a config file that writes itself, a dog, a cursor line, the system clipboard on `^c` `^x` `^v` and `"+`, a symbol picker, command-line completion, `f` and `t`, go to definition, a jump list, a buffer list along the top, tree-sitter indentation, emacs chords and a config file, indent and dedent, autocomplete, a powerline status line, text objects, a command line, git signs, matching brackets, in-file search, line numbers, searchable help, visual mode, pickers over buffers, files and a live grep, multiple buffers, modal editing, undo, tree-sitter syntax highlighting
 with cross-language injections, damage-tracked rendering, and themes.
 
 Languages: Rust, Python, Go, Java, C, C++, JavaScript, HTML, CSS, SQL, Markdown, YAML,
@@ -239,6 +239,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
 | `:set theme=nord` | a base16 scheme by name; empty is the built-in theme, and `:themes` is the list |
 | `:set spotlight` | `nospotlight`: dim everything outside the function the cursor is in |
 | `:set smear` | `nosmear`: draw the cells the cursor just crossed, for a moment |
+| `:set smoothscroll` | `nosmoothscroll`: let the view slide to where it scrolled to |
+| `:set typewriter` | `notypewriter`: hold the cursor's line at the middle and move the text |
+| `:set indentguides` | `noindentguides`: a faint rule down each level of indentation |
 | `:set coach` | `nocoach`: say so when a run of keys had a count in it |
 | `:set branch` | `nobranch`: the git branch in the status line |
 | `:set opener=xdg-open` | what `gx` hands a link to; empty means the platform's own |
@@ -495,6 +498,9 @@ its place, so you get one tab rather than a dead `[scratch]` beside it.
   too.
 - `smear.rs` — where the cursor has lately been, as screen cells. Knows
   nothing about the editor: it is given a position and hands back a wake.
+- `scrolling.rs` — which line the window draws at its top while it is catching
+  up with where the view has really scrolled to. Knows nothing about the
+  editor either: it is given a line and hands back a line.
 - `base16.rs` — the tinted-theming scheme library as themes. The palettes and
   the template that says what sixteen colours mean are both embedded, and
   putting one through the other is a string replace and a parse.
@@ -1137,6 +1143,74 @@ for the dog.
 
 `ui.smear` in the theme is how it is drawn: reversed and dim by default, which
 is the cursor's own look faded, since that is what it is the tail of.
+
+## Smooth scrolling
+
+`:set smoothscroll` draws the view a little behind where it has actually
+scrolled to and lets it catch up over the next few frames. `^d` moves the
+viewport thirteen lines in one frame, and thirteen lines is a whole new screen
+of text with nothing in it to say where the old one went: the eye has to read
+the top line to find out which way the file moved. Sliding it says so without
+anything having to be read.
+
+Nothing about the editor's state moves. `scroll_top` is where the view is
+scrolled to, the cursor is where the cursor is, and every motion, every
+`scrolloff` and every clamp works in those. The only thing that lags is which
+line the window starts drawing at - one number, consulted in one place, and
+not consulted at all when the setting is off. The cursor comes down the screen
+with the text it is in rather than waiting at the bottom for it, and is held
+inside the window while it does, because a terminal cursor put outside its
+window is put somewhere else entirely rather than hidden.
+
+A third of what is left to go each frame, so a scroll leaves quickly and lands
+softly rather than arriving at full speed: a half page is about nine frames,
+or a tenth of a second. Past sixty lines it snaps instead. `G` in a ten
+thousand line file is not a journey through the file, it is arriving somewhere
+else in it, and there is nothing in between worth sliding past.
+
+Leaning on `^d` does not stutter: a scroll that arrives while one is still
+going on moves where the drawing is heading and leaves it where it had got to,
+so four of them are one slide rather than four restarts. A prompt or a picker
+is not a window to slide - what is under one is not what is being looked at,
+and coming back to it should be arriving.
+
+## The typewriter
+
+`:set typewriter` holds the cursor's line in the middle of the window and
+moves the text under it. The usual arrangement is the other way round: the
+cursor walks down the screen and the view only moves when the cursor is about
+to leave it, which means the line you are writing on is somewhere different
+every minute. Held in the middle it is always in the same place, with as much
+of what you have just written above it as there is room for.
+
+It is `zz` on every cursor move, which is one line in `scroll_to_cursor` and
+needed nothing new - the machinery was already there for `zz` itself. Both
+ends of the file are the exception: the first half screen has nothing above to
+scroll away and the last would put the end of the file in the middle and leave
+the bottom half as `~`, so both keep a full screen and the cursor walks those
+rows the ordinary way. Not in a directory listing or a terminal buffer, since
+neither is something you are writing.
+
+## Indent guides
+
+`:set indentguides` draws a faint rule down each level of indentation, which
+is the cheapest way to see where a block you are in the middle of began. The
+step is what the file itself indents with - the same answer `indent.rs` works
+out by reading the file, not the configured default - because a rule every
+four columns through a file indented by two is a rule through half the text.
+There is no rule at the level a line's own text starts at: a rule under the
+first character of a line is a rule through the line.
+
+Blank lines take the indentation of the lines around them, the deeper of the
+two. A gap between two statements is still inside the block they are both in,
+and a rule that broke there would say the block had ended; a blank line
+between two top-level functions is inside neither and gets nothing. The
+lookaround is bounded, so a file of nothing but blank lines is not quadratic.
+
+`ui.indentguide` in the theme is the colour - fainter than the whitespace
+marks by default, since a rule is there to be followed sideways without being
+read. With `:set noglyphs` it is a pipe rather than a box-drawing rule, like
+everything else that assumes a font.
 
 ## The spotlight
 

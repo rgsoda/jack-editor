@@ -1,6 +1,6 @@
 # The demos
 
-Sixteen recordings of jack doing what it does, and the scripts that make them.
+Nineteen recordings of jack doing what it does, and the scripts that make them.
 Nothing here is captured by hand: each GIF is a [vhs](https://github.com/charmbracelet/vhs)
 tape — a list of keys and pauses — replayed into a headless terminal, so a
 re-render after a change shows the change rather than a different take.
@@ -25,6 +25,12 @@ The `terminal` take gets one extra edit: a semicolon taken out of
 `shapes.rs`, so `:make` has a real error to put in the quickfix list. A
 warning would not do — a cached `cargo check` replays nothing, and an empty
 quickfix list demonstrates nothing.
+
+The `smoothscroll`, `typewriter` and `indentguides` takes get one extra file:
+`demo/long/ledger.rs`, copied in and committed, which is long enough to scroll
+about in and nested deeply enough to have indentation worth drawing. It is
+kept out of `demo/fixture` on purpose — there it would turn up in six other
+recordings' file pickers.
 
 `lsp.tape` and `tour.tape` want `rust-analyzer` on the path. The rest do not
 want anything.
@@ -79,6 +85,9 @@ The one at the top of the main README.
 | [`spotlight`](tapes/spotlight.tape) | `:set spotlight`, the function you are in lit and the rest dimmed |
 | [`themes`](tapes/themes.tape) | `:themes`, three hundred and fifty schemes shown as you move over them |
 | [`smear`](tapes/smear.tape) | `:set smear`, the cells the cursor crossed, for a moment |
+| [`smoothscroll`](tapes/smoothscroll.tape) | `:set smoothscroll`, a half page that slides rather than being replaced |
+| [`typewriter`](tapes/typewriter.tape) | `:set typewriter`, the cursor's line held and the text moving under it |
+| [`indentguides`](tapes/indentguides.tape) | `:set indentguides`, a rule down each level, carried across the blanks |
 
 ![editing](gif/editing.gif)
 ![cursors](gif/cursors.gif)
@@ -95,6 +104,9 @@ The one at the top of the main README.
 ![spotlight](gif/spotlight.gif)
 ![themes](gif/themes.gif)
 ![smear](gif/smear.gif)
+![smoothscroll](gif/smoothscroll.gif)
+![typewriter](gif/typewriter.gif)
+![indentguides](gif/indentguides.gif)
 
 ## Writing another one
 
