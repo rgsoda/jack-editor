@@ -46,6 +46,12 @@ const DEFAULT_AUTOCOMPLETE: usize = 2;
 /// what every comment in this repository is already written to.
 const DEFAULT_TEXTWIDTH: usize = 80;
 
+/// Rows the settings list keeps at the foot of its box to write out what the
+/// selected option does. Three: the longest of them wraps to four, and a
+/// fourth row of description is a row of list given up for a clause nobody
+/// needed - the ones that run over say so and the rest fit.
+const SETTING_NOTE: usize = 3;
+
 /// Lines either side of a place in a `:hits` buffer, before `:set hitcontext`
 /// says otherwise.
 const DEFAULT_HITCONTEXT: usize = 2;
@@ -3657,7 +3663,11 @@ impl Editor {
                     // the setting, `true` finds everything that is on, and
                     // `git` finds the two settings that are about git.
                     text: format!("{:width$}  {value:10}  {}", setting.name, setting.about),
-                    detail: String::new(),
+                    // The same words again, for the note at the foot of the
+                    // box to write out in full. On the row they are there to
+                    // be searched and are cut off at the edge; below, they
+                    // are there to be read.
+                    detail: setting.about.to_string(),
                     id: 0,
                     target: self.setting_change(setting),
                 }
@@ -4330,7 +4340,14 @@ impl Editor {
     /// drawn, what the cursor sits on and what the list scrolls by cannot
     /// disagree.
     pub fn picker_layout(&self) -> crate::picker::Layout {
-        crate::picker::Layout::new(self.screen.0, self.area_rows())
+        let layout = crate::picker::Layout::new(self.screen.0, self.area_rows());
+        // What a setting does is a sentence, and a row is not a sentence: the
+        // settings list keeps room at the bottom to write the selected one
+        // out in full. Everything else is a path or a name and fits.
+        match self.picker.as_ref().map(|picker| picker.source) {
+            Some(crate::picker::Source::Settings) => layout.with_note(SETTING_NOTE),
+            _ => layout,
+        }
     }
 
     pub fn area_rows(&self) -> usize {

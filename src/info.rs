@@ -172,7 +172,7 @@ fn inline(text: &str) -> String {
 /// One line broken to `width`, at spaces where there is one to break at and
 /// anywhere when there is not. Each piece comes with where it started in the
 /// original, so a mark on the text can be carried across the break.
-fn wrap(text: &str, width: usize) -> Vec<(usize, String)> {
+pub fn wrap(text: &str, width: usize) -> Vec<(usize, String)> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= width {
         return vec![(0, text.to_string())];

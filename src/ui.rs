@@ -764,8 +764,10 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
             let item = picker.item(m);
             // The detail is right-aligned and the text truncated to fit before
             // it, so a long grep hit cannot push the file name it came from
-            // off the row.
-            let tail = match item.detail.is_empty() {
+            // off the row. Where the box has a note at the bottom, that is
+            // where the detail goes instead: a detail on the row costs the row
+            // its width, which is the whole reason the note exists.
+            let tail = match item.detail.is_empty() || layout.note > 0 {
                 true => 0,
                 false => str_width(&item.detail) + 2,
             };
@@ -801,6 +803,43 @@ fn draw_picker(editor: &Editor, picker: &Picker, surface: &mut Surface) {
             x += 1;
         }
     }
+
+    // The note under the list: what the selection is, in full and wrapped.
+    // A row is a column of a table and a description is a sentence, so the
+    // one the selection is on is written out below rather than cut off at
+    // the edge of its row.
+    if layout.note > 0 {
+        let about = picker
+            .matches()
+            .get(picker.cursor())
+            .map(|m| picker.item(m).detail.as_str())
+            .unwrap_or_default();
+        let indent = 3;
+        let room = right.saturating_sub(left + indent).max(1);
+        let lines = crate::info::wrap(about, room);
+        for row in 0..layout.note {
+            let y = top + layout.note_rule() + 1 + row;
+            let last = row + 1 == layout.note;
+            let text = match lines.get(row) {
+                // More to say than there is room for: the last row it fits on
+                // says so, rather than stopping mid-sentence as if that were
+                // the end of it.
+                Some((_, text)) if last && lines.len() > layout.note => {
+                    let mut cut: String = text.chars().take(room.saturating_sub(1)).collect();
+                    cut.push('…');
+                    cut
+                }
+                Some((_, text)) => text.clone(),
+                None => String::new(),
+            };
+            let mut x = put_str(surface, left, y, &" ".repeat(indent), base, right);
+            x = put_str(surface, x, y, &text, base.patch(detail), right);
+            while x < right {
+                surface.put(x, y, ' ', 1, base);
+                x += 1;
+            }
+        }
+    }
 }
 
 /// The frame around a floating picker, with the rule under its prompt row.
@@ -818,13 +857,18 @@ fn draw_frame(editor: &Editor, surface: &mut Surface, layout: Layout, top: usize
     let (x0, x1) = (layout.x, layout.x + layout.width - 1);
     let (y0, y1) = (top + layout.y, top + layout.y + layout.height - 1);
     // The rule under the prompt, which is what makes the query a field of its
-    // own rather than the first line of the list.
+    // own rather than the first line of the list - and, where there is a note
+    // at the bottom, the rule over that, which does the same for it.
     let rule = top + layout.prompt_row() + 1;
+    let under = (layout.note > 0).then(|| top + layout.note_rule());
 
     for x in x0..=x1 {
         surface.put(x, y0, h, 1, style);
         surface.put(x, y1, h, 1, style);
         surface.put(x, rule, h, 1, style);
+        if let Some(under) = under {
+            surface.put(x, under, h, 1, style);
+        }
     }
     for y in y0 + 1..y1 {
         surface.put(x0, y, v, 1, style);
@@ -832,7 +876,7 @@ fn draw_frame(editor: &Editor, surface: &mut Surface, layout: Layout, top: usize
         // The inside is painted here so that every cell of the box is written
         // whatever the rows below do with it: a short list must not leave the
         // text showing through the bottom of the frame.
-        if y != rule {
+        if y != rule && Some(y) != under {
             for x in x0 + 1..x1 {
                 surface.put(x, y, ' ', 1, base);
             }
@@ -844,6 +888,10 @@ fn draw_frame(editor: &Editor, surface: &mut Surface, layout: Layout, top: usize
     surface.put(x1, y1, br, 1, style);
     surface.put(x0, rule, tee_left, 1, style);
     surface.put(x1, rule, tee_right, 1, style);
+    if let Some(under) = under {
+        surface.put(x0, under, tee_left, 1, style);
+        surface.put(x1, under, tee_right, 1, style);
+    }
 }
 
 /// The parts of drawing a line that are the same for every line in a frame.
@@ -1986,6 +2034,59 @@ mod tests {
         let row = row_text(&editor, &keys, 2);
         assert!(!row.contains('\u{2502}'), "{row:?}");
         assert!(row.contains('|'), "a terminal with no box drawing gets a pipe: {row:?}");
+    }
+
+    /// The settings list writes what the selection does under the list,
+    /// wrapped, because a description is a sentence and a row is a column.
+    #[test]
+    fn the_settings_list_writes_the_selected_option_out_underneath() {
+        let mut editor = editor_with_lines(10);
+        editor.run_command("set");
+        let keys = Keys::default();
+        let layout = editor.picker_layout();
+        assert!(layout.note > 0, "the settings list keeps room for a note");
+
+        let top = editor.top();
+        let note: Vec<String> = (0..layout.note)
+            .map(|row| row_text(&editor, &keys, top + layout.note_rule() + 1 + row))
+            .collect();
+        let said = note.join(" ");
+
+        // `number` is first, and its description is longer than a row.
+        let about = crate::command::SETTINGS[0].about;
+        assert!(about.chars().count() > layout.width, "a one-row description proves nothing");
+        for word in about.split_whitespace().take(8) {
+            assert!(said.contains(word), "{word:?} is in the note: {note:?}");
+        }
+        assert!(note.len() > 1 && !note[1].trim().is_empty(), "it wrapped: {note:?}");
+    }
+
+    /// And the note is about the selection, so it changes as the selection
+    /// does - otherwise it is a caption on the wrong picture.
+    #[test]
+    fn the_note_follows_the_selection() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut editor = editor_with_lines(10);
+        editor.run_command("set");
+        let keys = Keys::default();
+        let layout = editor.picker_layout();
+        let first = row_text(&editor, &keys, editor.top() + layout.note_rule() + 1);
+
+        editor.picker_input(KeyEvent::from(KeyCode::Down));
+        let second = row_text(&editor, &keys, editor.top() + layout.note_rule() + 1);
+        assert_ne!(first, second, "the note is about whatever is selected");
+        assert!(second.contains("Tint the row"), "cursorline is second: {second:?}");
+    }
+
+    /// Every other picker is a list of paths and names, and gives up no rows.
+    #[test]
+    fn no_other_picker_gives_up_rows_to_a_note() {
+        let mut editor = editor_with_lines(10);
+        editor.open_help_picker();
+        assert_eq!(editor.picker_layout().note, 0);
+        let full = editor.picker_layout().list_rows();
+        editor.run_command("set");
+        assert!(editor.picker_layout().list_rows() < full, "the settings list is the shorter one");
     }
 
     fn row_foregrounds(editor: &Editor, keys: &Keys, y: usize) -> Vec<Option<crossterm::style::Color>> {

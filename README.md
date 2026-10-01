@@ -851,7 +851,19 @@ config file would write above it — all three searchable, so `smear` finds the
 setting, `true` finds everything that is on, and `git` finds the two that are
 about git. It used to be one message naming all of them, which the status line
 cut off after the fifth, so there was no way to find out what anything was set
-to. Choosing one puts the line that would *change* it on the command line —
+to.
+
+A row is a column of a table and a description is a sentence, so the row is
+cut off at the edge of the box and the selected option is written out again
+underneath it, wrapped, in three rows kept back for it. The rows are kept back
+when the list opens rather than as the selection moves: a list that changed
+height under you would be worse than a description you could not read. Three
+because the longest of them wraps to four, and a fourth row of description is
+a row of list given up for a clause nobody needed — the ones that run over end
+in an ellipsis and the rest fit. No other picker gives up the room, because a
+path and a name are not sentences.
+
+Choosing one puts the line that would *change* it on the command line —
 `set notypewriter` for something that is on, the next word round for the line
 numbers, the current value to edit for the rest — rather than running it. A
 list you opened to read should not set something because you pressed enter on

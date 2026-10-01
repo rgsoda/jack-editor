@@ -18,6 +18,10 @@ pub struct Layout {
     pub height: usize,
     /// A frame around it, which is also what says it floats.
     pub framed: bool,
+    /// Rows kept at the bottom for a note about whatever the selection is on,
+    /// and a rule above them. Zero for every source but the settings, where
+    /// what an option does is a sentence and a row is not a sentence.
+    pub note: usize,
 }
 
 /// The smallest screen a floating box is worth having on. Under this there is
@@ -30,20 +34,41 @@ impl Layout {
             // The old panel: as tall as half the text area, and no frame.
             let height = (text_rows / 2).clamp(2, 13);
             let y = text_rows.saturating_sub(height);
-            return Layout { x: 0, y, width: cols, height, framed: false };
+            return Layout { x: 0, y, width: cols, height, framed: false, note: 0 };
         }
         let width = (cols * 4 / 5).clamp(FLOATS_AT.0, cols);
         let height = (text_rows * 4 / 5).clamp(FLOATS_AT.1, text_rows);
-        Layout { x: (cols - width) / 2, y: (text_rows - height) / 2, width, height, framed: true }
+        Layout { x: (cols - width) / 2, y: (text_rows - height) / 2, width, height, framed: true, note: 0 }
+    }
+
+    /// The same box with room at the bottom for a note about the selection.
+    /// Asked for once, when the picker opens, so the list does not change
+    /// height as the selection moves - a list that jumps under you is worse
+    /// than a note you cannot read.
+    pub fn with_note(self, rows: usize) -> Layout {
+        // Never more than half the box: a note is a note, and a list of two
+        // things is not a list.
+        let most = self.list_rows().saturating_sub(1) / 2;
+        Layout { note: rows.min(most), ..self }
     }
 
     /// The rows the list itself gets: the box, less its frame, its prompt row
-    /// and the rule under the prompt.
+    /// and the rule under the prompt - and less the note and the rule over it,
+    /// where there is one.
     pub fn list_rows(&self) -> usize {
-        match self.framed {
+        let box_rows = match self.framed {
             true => self.height.saturating_sub(4),
             false => self.height.saturating_sub(1),
+        };
+        match self.note {
+            0 => box_rows,
+            note => box_rows.saturating_sub(note + 1),
         }
+    }
+
+    /// The row the rule above the note goes on. The note itself starts below.
+    pub fn note_rule(&self) -> usize {
+        self.list_top() + self.list_rows()
     }
 
     pub fn prompt_row(&self) -> usize {
